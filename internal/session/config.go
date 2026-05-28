@@ -47,12 +47,18 @@ func (c Config) clientConfig() (*ssh.ClientConfig, string, error) {
 
 	timeout := 30 * time.Second
 	if c.TimeoutSec > 0 {
+		if c.TimeoutSec > 3600 {
+			c.TimeoutSec = 3600
+		}
 		timeout = time.Duration(c.TimeoutSec) * time.Second
 	}
 
 	hkcb := hostKeyCallback(c.KnownHosts)
 
-	auth := authMethods(c)
+	auth, err := authMethods(c)
+	if err != nil {
+		return nil, "", err
+	}
 
 	return &ssh.ClientConfig{
 		User:            usr,
@@ -137,19 +143,23 @@ func hostKeyCallback(kh string) ssh.HostKeyCallback {
 	return cb
 }
 
-func authMethods(c Config) []ssh.AuthMethod {
+func authMethods(c Config) ([]ssh.AuthMethod, error) {
 	var m []ssh.AuthMethod
 	h := homeDir()
 
 	if c.KeyPath != "" {
-		if key, err := os.ReadFile(c.KeyPath); err == nil {
-			if signer, err := ssh.ParsePrivateKey(key); err == nil {
-				m = append(m, ssh.PublicKeys(signer))
-			} else if p, ok := tryParseWithPass(c.Password, key); ok {
-				m = append(m, ssh.PublicKeys(p))
-			}
+		key, err := os.ReadFile(c.KeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("reading key %q: %w", c.KeyPath, err)
 		}
-		return m
+		signer, err := ssh.ParsePrivateKey(key)
+		if err != nil {
+			if p, ok := tryParseWithPass(c.Password, key); ok {
+				return []ssh.AuthMethod{ssh.PublicKeys(p)}, nil
+			}
+			return nil, fmt.Errorf("parsing key %q: %w", c.KeyPath, err)
+		}
+		return []ssh.AuthMethod{ssh.PublicKeys(signer)}, nil
 	}
 
 	if c.Password != "" {
@@ -179,7 +189,7 @@ func authMethods(c Config) []ssh.AuthMethod {
 			}
 		}
 	}
-	return m
+	return m, nil
 }
 
 func tryParseWithPass(pass string, key []byte) (ssh.Signer, bool) {

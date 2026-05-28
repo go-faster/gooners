@@ -171,7 +171,10 @@ func onceHandler(p *session.Pool) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		defer p.Close(id) //nolint:errcheck // close in defer for once handler, error not actionable
-		client, _ := p.Get(id)
+		client, err := p.Get(id)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		full := cmd
 		if cwd != "" {
 			full = "cd " + sshutil.Quote(cwd) + " && " + cmd
