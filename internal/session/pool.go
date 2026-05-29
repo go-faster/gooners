@@ -22,6 +22,10 @@ type SessionInfo struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type Provider interface {
+	Get(id string) (*ssh.Client, error)
+}
+
 type Pool struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session

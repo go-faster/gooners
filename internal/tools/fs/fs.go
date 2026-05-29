@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/mark3labs/mcp-go/mcp"
+	"golang.org/x/crypto/ssh"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/pkg/sftp"
 )
@@ -37,7 +37,11 @@ func withinDir(root, path string) (string, error) {
 	return abs, nil
 }
 
-func Register(s *server.MCPServer, p *session.Pool, uploadRoot string) {
+type SessionProvider interface {
+	Get(id string) (*ssh.Client, error)
+}
+
+func Register(s *server.MCPServer, p SessionProvider, uploadRoot string) {
 	s.AddTool(mcp.NewTool("ls",
 		mcp.WithDescription("List directory contents on remote machine."),
 		mcp.WithString("session_id", mcp.Required()),
@@ -94,7 +98,7 @@ func Register(s *server.MCPServer, p *session.Pool, uploadRoot string) {
 	), uploadFileHandler(p, uploadRoot))
 }
 
-func lsHandler(p *session.Pool) server.ToolHandlerFunc {
+func lsHandler(p SessionProvider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		path := req.GetString("path", "")
@@ -121,7 +125,7 @@ func lsHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func catHandler(p *session.Pool) server.ToolHandlerFunc {
+func catHandler(p SessionProvider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		path := req.GetString("path", "")
@@ -145,7 +149,7 @@ func catHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func grepHandler(p *session.Pool) server.ToolHandlerFunc {
+func grepHandler(p SessionProvider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		pattern := req.GetString("pattern", "")
@@ -177,7 +181,7 @@ func grepHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func findHandler(p *session.Pool) server.ToolHandlerFunc {
+func findHandler(p SessionProvider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		path := req.GetString("path", "")
@@ -206,7 +210,7 @@ func findHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func statHandler(p *session.Pool) server.ToolHandlerFunc {
+func statHandler(p SessionProvider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		path := req.GetString("path", "")
@@ -226,7 +230,7 @@ func statHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func writeFileHandler(p *session.Pool) server.ToolHandlerFunc {
+func writeFileHandler(p SessionProvider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		path := req.GetString("path", "")
@@ -269,7 +273,7 @@ func writeFileHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func uploadFileHandler(p *session.Pool, uploadRoot string) server.ToolHandlerFunc {
+func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		local := req.GetString("local_path", "")

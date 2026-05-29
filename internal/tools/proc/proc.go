@@ -52,7 +52,7 @@ func validSignal(s string) string {
 	return ""
 }
 
-func Register(s *server.MCPServer, p *session.Pool) {
+func Register(s *server.MCPServer, p session.Provider) {
 	s.AddTool(mcp.NewTool("proc_list",
 		mcp.WithDescription("List running processes (ps aux). Optional user and grep filter."),
 		mcp.WithString("session_id", mcp.Required()),
@@ -81,7 +81,7 @@ func Register(s *server.MCPServer, p *session.Pool) {
 	), killHandler(p))
 }
 
-func listHandler(p *session.Pool) server.ToolHandlerFunc {
+func listHandler(p session.Provider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		if id == "" {
@@ -109,7 +109,7 @@ func listHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func infoHandler(p *session.Pool) server.ToolHandlerFunc {
+func infoHandler(p session.Provider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		pid := req.GetString("pid", "")
@@ -138,7 +138,7 @@ func infoHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func lsofHandler(p *session.Pool) server.ToolHandlerFunc {
+func lsofHandler(p session.Provider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		pid := req.GetString("pid", "")
@@ -164,7 +164,7 @@ func lsofHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func killHandler(p *session.Pool) server.ToolHandlerFunc {
+func killHandler(p session.Provider) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		pid := req.GetString("pid", "")

@@ -1,0 +1,146 @@
+package fs
+
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"net"
+	"testing"
+	"time"
+
+	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
+)
+
+type mockExecHandler func(cmd string) (string, int)
+
+func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (*ssh.Client, func()) {
+	t.Helper()
+	config := &ssh.ServerConfig{
+		NoClientAuth: true,
+	}
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate private key: %v", err)
+	}
+
+	signer, err := ssh.NewSignerFromKey(privateKey)
+	if err != nil {
+		t.Fatalf("failed to create signer: %v", err)
+	}
+
+	config.AddHostKey(signer)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+
+	done := make(chan struct{})
+
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				select {
+				case <-done:
+					return
+				default:
+					t.Errorf("failed to accept: %v", err)
+					return
+				}
+			}
+
+			sConn, chans, reqs, err := ssh.NewServerConn(conn, config)
+			if err != nil {
+				t.Errorf("failed to handshake: %v", err)
+				continue
+			}
+
+			go ssh.DiscardRequests(reqs)
+
+			go func() {
+				for newChannel := range chans {
+					if newChannel.ChannelType() != "session" {
+						newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
+						continue
+					}
+
+					channel, requests, err := newChannel.Accept()
+					if err != nil {
+						t.Errorf("could not accept channel: %v", err)
+						continue
+					}
+
+					go func() {
+						for req := range requests {
+							switch req.Type {
+							case "exec":
+								// Parse command
+								var payload struct {
+									Command string
+								}
+								if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+									t.Errorf("failed to parse payload: %v", err)
+									req.Reply(false, nil)
+									continue
+								}
+								req.Reply(true, nil)
+
+								out, exitCode := execHandler(payload.Command)
+								channel.Write([]byte(out))
+								channel.SendRequest("exit-status", false, ssh.Marshal(struct{ uint32 }{uint32(exitCode)}))
+								channel.Close()
+							case "subsystem":
+								var payload struct {
+									Name string
+								}
+								if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+									req.Reply(false, nil)
+									continue
+								}
+								if payload.Name == "sftp" {
+									req.Reply(true, nil)
+									server, err := sftp.NewServer(channel)
+									if err != nil {
+										t.Errorf("sftp server init error: %v", err)
+										return
+									}
+									if err := server.Serve(); err != nil {
+										// typical for closed connection
+									}
+									channel.Close()
+								} else {
+									req.Reply(false, nil)
+								}
+							default:
+								req.Reply(false, nil)
+							}
+						}
+					}()
+				}
+			}()
+			_ = sConn
+		}
+	}()
+
+	clientConfig := &ssh.ClientConfig{
+		User:            "test",
+		Auth:            []ssh.AuthMethod{ssh.Password("test")},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         2 * time.Second,
+	}
+
+	client, err := ssh.Dial("tcp", listener.Addr().String(), clientConfig)
+	if err != nil {
+		t.Fatalf("failed to connect to mock server: %v", err)
+	}
+
+	cleanup := func() {
+		close(done)
+		client.Close()
+		listener.Close()
+	}
+
+	return client, cleanup
+}
