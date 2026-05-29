@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
@@ -14,7 +16,28 @@ import (
 	"github.com/pkg/sftp"
 )
 
-func Register(s *server.MCPServer, p *session.Pool) {
+const (
+	maxCatBytes  = 10 * 1024 * 1024 // 10 MiB
+	maxGrepLines = 10_000
+)
+
+// withinDir resolves path to an absolute path and verifies it is inside root.
+func withinDir(root, path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving path: %w", err)
+	}
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", fmt.Errorf("resolving relative path: %w", err)
+	}
+	if strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("path %q is outside allowed upload directory %q", path, root)
+	}
+	return abs, nil
+}
+
+func Register(s *server.MCPServer, p *session.Pool, uploadRoot string) {
 	s.AddTool(mcp.NewTool("ls",
 		mcp.WithDescription("List directory contents on remote machine."),
 		mcp.WithString("session_id", mcp.Required()),
@@ -64,11 +87,11 @@ func Register(s *server.MCPServer, p *session.Pool) {
 	), writeFileHandler(p))
 
 	s.AddTool(mcp.NewTool("upload_file",
-		mcp.WithDescription("Upload a local file to remote path via SFTP."),
+		mcp.WithDescription("Upload a local file (must be within the allowed upload directory) to remote path via SFTP."),
 		mcp.WithString("session_id", mcp.Required()),
 		mcp.WithString("local_path", mcp.Required()),
 		mcp.WithString("remote_path", mcp.Required()),
-	), uploadFileHandler(p))
+	), uploadFileHandler(p, uploadRoot))
 }
 
 func lsHandler(p *session.Pool) server.ToolHandlerFunc {
@@ -110,8 +133,8 @@ func catHandler(p *session.Pool) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		max := req.GetFloat("max_bytes", 0)
-		if max <= 0 {
-			max = 65536
+		if max <= 0 || max > maxCatBytes {
+			max = maxCatBytes
 		}
 		cmd := fmt.Sprintf("head -c %d %s", int64(max), sshutil.Quote(path))
 		res, err := sshutil.Run(ctx, client, cmd)
@@ -246,13 +269,17 @@ func writeFileHandler(p *session.Pool) server.ToolHandlerFunc {
 	}
 }
 
-func uploadFileHandler(p *session.Pool) server.ToolHandlerFunc {
+func uploadFileHandler(p *session.Pool, uploadRoot string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		local := req.GetString("local_path", "")
 		remote := req.GetString("remote_path", "")
 		if id == "" || local == "" || remote == "" {
 			return mcp.NewToolResultError("session_id, local_path and remote_path are required"), nil
+		}
+		safePath, err := withinDir(uploadRoot, local)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 		client, err := p.Get(id)
 		if err != nil {
@@ -264,7 +291,7 @@ func uploadFileHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		defer sftpClient.Close() //nolint:errcheck // sftp close error not actionable
 
-		src, err := os.Open(local)
+		src, err := os.Open(safePath)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

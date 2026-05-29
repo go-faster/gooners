@@ -136,7 +136,7 @@ func journalHandler(p *session.Pool) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		lines := req.GetFloat("lines", 0)
-		if lines <= 0 {
+		if lines <= 0 || lines > 10_000 {
 			lines = 100
 		}
 		cmd := fmt.Sprintf("journalctl --no-pager -n %d", int64(lines))
