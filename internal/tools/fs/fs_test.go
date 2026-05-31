@@ -61,7 +61,7 @@ func TestLSHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	data := parseResult(t, res)
 	if data["stdout"] != "total 0\n" {
 		t.Errorf("unexpected stdout: %v", data["stdout"])
@@ -88,7 +88,7 @@ func TestCatHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	data := parseResult(t, res)
 	if data["stdout"] != "hello world" {
 		t.Errorf("unexpected stdout: %v", data["stdout"])
@@ -119,7 +119,7 @@ func TestGrepHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	data := parseResult(t, res)
 	if data["stdout"] != "found" {
 		t.Errorf("unexpected stdout: %v", data["stdout"])
@@ -149,7 +149,7 @@ func TestFindHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	data := parseResult(t, res)
 	if data["stdout"] != "/foo/bar.txt" {
 		t.Errorf("unexpected stdout: %v", data["stdout"])
@@ -176,7 +176,7 @@ func TestStatHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	data := parseResult(t, res)
 	if data["stdout"] != "stat info" {
 		t.Errorf("unexpected stdout: %v", data["stdout"])
@@ -191,11 +191,11 @@ func TestWriteFileHandler(t *testing.T) {
 
 	handler := writeFileHandler(&dummyPool{client: client})
 	req := mcp.CallToolRequest{}
-	
-	// Create a temporary file to use as the "remote" path. 
+
+	// Create a temporary file to use as the "remote" path.
 	// Our mock sftp server uses the real local filesystem!
 	tmpRemote := filepath.Join(t.TempDir(), "remote.txt")
-	
+
 	req.Params.Arguments = map[string]interface{}{
 		"session_id": "test_id",
 		"path":       tmpRemote,
@@ -207,7 +207,7 @@ func TestWriteFileHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res)
 	}
@@ -219,12 +219,12 @@ func TestWriteFileHandler(t *testing.T) {
 	if string(content) != "hello sftp" {
 		t.Errorf("unexpected content: %s", string(content))
 	}
-	
+
 	info, err := os.Stat(tmpRemote)
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	// Check mode (might need masking depending on umask, but checking if owner read/write is enough usually)
 	if info.Mode().Perm()&0600 != 0600 {
 		t.Errorf("unexpected mode: %v", info.Mode())
@@ -239,14 +239,14 @@ func TestUploadFileHandler(t *testing.T) {
 
 	tmpRoot := t.TempDir()
 	handler := uploadFileHandler(&dummyPool{client: client}, tmpRoot)
-	
+
 	localPath := filepath.Join(tmpRoot, "local.txt")
 	if err := os.WriteFile(localPath, []byte("local content"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
-	
+
 	req := mcp.CallToolRequest{}
 	req.Params.Arguments = map[string]interface{}{
 		"session_id":  "test_id",
@@ -258,7 +258,7 @@ func TestUploadFileHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if res.IsError {
 		t.Fatalf("unexpected error: %v", res)
 	}
@@ -280,15 +280,15 @@ func TestUploadFileHandler_Security(t *testing.T) {
 
 	tmpRoot := t.TempDir()
 	handler := uploadFileHandler(&dummyPool{client: client}, tmpRoot)
-	
+
 	// Create a file OUTSIDE the allowed root
 	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
 	if err := os.WriteFile(outsideFile, []byte("secret content"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	
+
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
-	
+
 	req := mcp.CallToolRequest{}
 	args := map[string]interface{}{
 		"session_id":  "test_id",
@@ -301,18 +301,18 @@ func TestUploadFileHandler_Security(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if !res.IsError {
 		t.Fatalf("expected error due to security bounds check")
 	}
-	
+
 	// Also test relative path traversal
 	args["local_path"] = filepath.Join(tmpRoot, "..", "outside.txt")
 	res, err = handler(context.Background(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	
+
 	if !res.IsError {
 		t.Fatalf("expected error due to relative path traversal")
 	}

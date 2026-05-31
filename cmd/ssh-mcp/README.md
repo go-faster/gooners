@@ -9,6 +9,7 @@ An MCP server that exposes SSH and SFTP operations as tools for AI agents. Desig
 - `ssh_open_cfg` — open a session with explicit parameters (key path, password, port, known_hosts)
 - `ssh_close` — close a session
 - `ssh_list` — list open sessions
+- `ssh_list_machines` — list known machines from `~/.ssh/config` (and Includes); returns only connection name and username
 
 **Execution**
 - `ssh_exec` — run a command on an open session

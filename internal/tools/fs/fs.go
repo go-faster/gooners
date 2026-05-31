@@ -11,9 +11,9 @@ import (
 
 	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/mark3labs/mcp-go/mcp"
-	"golang.org/x/crypto/ssh"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/pkg/sftp"
+	"golang.org/x/crypto/ssh"
 )
 
 const (

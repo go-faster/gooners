@@ -37,6 +37,10 @@ func Register(s *server.MCPServer, p *session.Pool) {
 		mcp.WithDescription("List all currently open SSH sessions."),
 	), listHandler(p))
 
+	s.AddTool(mcp.NewTool("ssh_list_machines",
+		mcp.WithDescription("List known machines from ~/.ssh/config (and Includes). Returns only connection name and username."),
+	), listMachinesHandler())
+
 	s.AddTool(mcp.NewTool("ssh_exec",
 		mcp.WithDescription("Execute a command on an open SSH session."),
 		mcp.WithString("session_id", mcp.Required()),
@@ -191,5 +195,16 @@ func onceHandler(p *session.Pool) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
+	}
+}
+
+func listMachinesHandler() server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		machines := session.ListMachines()
+		b, err := json.Marshal(machines)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		return mcp.NewToolResultText(string(b)), nil
 	}
 }
