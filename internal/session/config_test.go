@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/stretchr/testify/require"
+
+	"github.com/go-faster/gooners/internal/sshutil"
 )
 
 // dialInsecure returns a Config that connects to addr without host-key

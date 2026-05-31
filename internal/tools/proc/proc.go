@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/go-faster/gooners/internal/session"
-	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/go-faster/gooners/internal/session"
+	"github.com/go-faster/gooners/internal/sshutil"
 )
 
 // validPID returns true if s is a non-empty string of digits (positive integer).

@@ -56,6 +56,17 @@ func newTestServer(t *testing.T) string {
 							if req.Type == "exec" {
 								req.Reply(true, nil)
 
+								var payload struct{ Command string }
+								ssh.Unmarshal(req.Payload, &payload)
+
+								if payload.Command == "error_hang" {
+									fmt.Fprint(ch, "error stdout")
+									ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{1}))
+									// Block forever to simulate a hanging background daemon
+									time.Sleep(1 * time.Hour)
+									return
+								}
+
 								// Write something to stdout and stderr
 								fmt.Fprint(ch, "partial stdout")
 								fmt.Fprint(ch.Stderr(), "partial stderr")
@@ -99,4 +110,28 @@ func TestRunWithTimeout(t *testing.T) {
 	// Result should still have the output written before timeout
 	require.Equal(t, "partial stdout", res.Stdout)
 	require.Equal(t, "partial stderr", res.Stderr)
+}
+
+func TestRunWithExitErrorAndHang(t *testing.T) {
+	addr := newTestServer(t)
+
+	clientCfg := &ssh.ClientConfig{
+		User:            "test",
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+	client, err := ssh.Dial("tcp", addr, clientCfg)
+	require.NoError(t, err)
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Use a command that triggers the mock server to send an exit-status but not close the channel.
+	// Actually, our mock server already sends exit-status 0, then waits, then closes.
+	// Let's modify the mock server to look for "error_hang" and send exit-status 1, and never close.
+	res, err := Run(ctx, client, "error_hang")
+
+	require.Error(t, err)
+	require.Equal(t, context.DeadlineExceeded, err)
+	require.Equal(t, "error stdout", res.Stdout)
 }

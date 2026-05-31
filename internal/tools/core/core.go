@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/go-faster/gooners/internal/session"
-	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/go-faster/gooners/internal/session"
+	"github.com/go-faster/gooners/internal/sshutil"
 )
 
 func Register(s *server.MCPServer, p *session.Pool) {

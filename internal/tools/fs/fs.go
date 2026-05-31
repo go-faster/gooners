@@ -10,11 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/go-faster/gooners/internal/sshutil"
 )
 
 const (
@@ -288,7 +289,7 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerF
 		if id == "" || local == "" || remote == "" {
 			return mcp.NewToolResultError("session_id, local_path and remote_path are required"), nil
 		}
-		
+
 		timeoutSec := req.GetFloat("timeout_s", 0)
 		if timeoutSec > 0 {
 			var cancel context.CancelFunc

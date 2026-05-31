@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/kballard/go-shellquote"
 	"golang.org/x/crypto/ssh"
@@ -16,14 +17,30 @@ type Result struct {
 	Error    string `json:"error,omitempty"`
 }
 
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuffer) Write(p []byte) (n int, err error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 func Run(ctx context.Context, client *ssh.Client, command string) (Result, error) {
 	sess, err := client.NewSession()
 	if err != nil {
 		return Result{}, err
 	}
-	defer sess.Close() //nolint:errcheck // session close error not actionable on defer path
 
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr safeBuffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
 
@@ -34,13 +51,22 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 
 	select {
 	case <-ctx.Done():
-		//nolint:errcheck // close on context cancel, error not actionable
-		sess.Close()
+		// Best-effort termination: signal the remote process and close the
+		// session. Run in background so we return promptly even if the
+		// underlying channel is stuck (network partition, uninterruptible
+		// remote process, etc.). The Run goroutine will exit once the SSH
+		// library unblocks (or when the whole client conn is later closed).
+		go func() {
+			_ = sess.Signal(ssh.SIGKILL)
+			_ = sess.Close()
+		}()
 		return Result{
 			Stdout: stdout.String(),
 			Stderr: stderr.String(),
 		}, ctx.Err()
 	case err := <-done:
+		// Happy path: Run has returned; close synchronously.
+		_ = sess.Close()
 		res := Result{
 			Stdout: stdout.String(),
 			Stderr: stderr.String(),
