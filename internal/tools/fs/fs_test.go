@@ -216,6 +216,12 @@ func TestUploadFileHandler(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, res.IsError, "unexpected error: %v", res)
 
+	data := parseResult(t, res)
+	require.Equal(t, true, data["ok"])
+	require.Equal(t, float64(13), data["bytes_uploaded"])
+	require.Equal(t, float64(13), data["total_bytes"])
+	require.Equal(t, float64(100), data["percent"])
+
 	content, err := os.ReadFile(remotePath)
 	require.NoError(t, err)
 	require.Equal(t, "local content", string(content))

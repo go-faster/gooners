@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -95,6 +96,7 @@ func Register(s *server.MCPServer, p SessionProvider, uploadRoot string) {
 		mcp.WithString("session_id", mcp.Required()),
 		mcp.WithString("local_path", mcp.Required()),
 		mcp.WithString("remote_path", mcp.Required()),
+		mcp.WithNumber("timeout", mcp.Description("Timeout in seconds")),
 	), uploadFileHandler(p, uploadRoot))
 }
 
@@ -281,6 +283,14 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerF
 		if id == "" || local == "" || remote == "" {
 			return mcp.NewToolResultError("session_id, local_path and remote_path are required"), nil
 		}
+		
+		timeoutSec := req.GetFloat("timeout", 0)
+		if timeoutSec > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec*float64(time.Second)))
+			defer cancel()
+		}
+
 		safePath, err := withinDir(uploadRoot, local)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
@@ -301,18 +311,68 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerF
 		}
 		defer src.Close() //nolint:errcheck // src close error not actionable
 
+		stat, err := src.Stat()
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+		totalBytes := stat.Size()
+
 		dst, err := sftpClient.Create(remote)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		defer dst.Close() //nolint:errcheck // dst close error not actionable
 
-		if _, err := io.Copy(dst, src); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		pr := &progressReader{
+			r:     src,
+			ctx:   ctx,
+			total: totalBytes,
 		}
-		b, _ := jsonForOk()
-		return mcp.NewToolResultText(b), nil
+
+		copied, err := io.Copy(dst, pr)
+
+		percent := float64(100)
+		if totalBytes > 0 {
+			percent = (float64(copied) / float64(totalBytes)) * 100
+		}
+
+		if err != nil {
+			res := map[string]interface{}{
+				"ok":             false,
+				"error":          err.Error(),
+				"bytes_uploaded": copied,
+				"total_bytes":    totalBytes,
+				"percent":        percent,
+			}
+			b, _ := json.Marshal(res)
+			return mcp.NewToolResultError(string(b)), nil
+		}
+
+		res := map[string]interface{}{
+			"ok":             true,
+			"bytes_uploaded": copied,
+			"total_bytes":    totalBytes,
+			"percent":        percent,
+		}
+		b, _ := json.Marshal(res)
+		return mcp.NewToolResultText(string(b)), nil
 	}
+}
+
+type progressReader struct {
+	r      io.Reader
+	ctx    context.Context
+	total  int64
+	copied int64
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	if err := pr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := pr.r.Read(p)
+	pr.copied += int64(n)
+	return n, err
 }
 
 func jsonForOk() (string, error) {
