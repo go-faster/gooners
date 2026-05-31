@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidPID(t *testing.T) {
@@ -27,9 +28,8 @@ func TestValidPID(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.pid, func(t *testing.T) {
-			if got := validPID(tt.pid); got != tt.valid {
-				t.Errorf("validPID(%q) = %v, want %v", tt.pid, got, tt.valid)
-			}
+			got := validPID(tt.pid)
+			require.Equal(t, tt.valid, got)
 		})
 	}
 }
@@ -55,9 +55,8 @@ func TestValidSignal(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.sig, func(t *testing.T) {
-			if got := validSignal(tt.sig); got != tt.want {
-				t.Errorf("validSignal(%q) = %v, want %v", tt.sig, got, tt.want)
-			}
+			got := validSignal(tt.sig)
+			require.Equal(t, tt.want, got)
 		})
 	}
 }
@@ -75,20 +74,12 @@ func TestKillHandler_Security(t *testing.T) {
 	req.Params.Arguments = args
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.IsError {
-		t.Errorf("expected error for invalid PID, got none")
-	}
+	require.NoError(t, err)
+	require.True(t, res.IsError, "expected error for invalid PID, got none")
 
 	args["pid"] = "1"
 	args["signal"] = "TERM; rm -rf /"
 	res, err = handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.IsError {
-		t.Errorf("expected error for invalid signal, got none")
-	}
+	require.NoError(t, err)
+	require.True(t, res.IsError, "expected error for invalid signal, got none")
 }

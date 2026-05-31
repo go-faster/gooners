@@ -86,14 +86,7 @@ func TestParseSSHConfig(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := parseSSHConfig(strings.NewReader(tc.in), nil)
-			if len(got) != len(tc.want) {
-				t.Fatalf("len mismatch: got %d want %d\n got=%+v", len(got), len(tc.want), got)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("entry %d: got %+v want %+v", i, got[i], tc.want[i])
-				}
-			}
+			require.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -106,9 +99,7 @@ func TestParseSSHConfigWithIncludeCallback(t *testing.T) {
 		seenIncludes = append(seenIncludes, incs...)
 	})
 
-	if len(seenIncludes) != 1 || seenIncludes[0] != "~/.ssh/extra" {
-		t.Errorf("expected include callback to receive [~/.ssh/extra], got %v", seenIncludes)
-	}
+	require.Equal(t, []string{"~/.ssh/extra"}, seenIncludes)
 }
 
 func FuzzParseSSHConfig(f *testing.F) {
@@ -137,12 +128,8 @@ func FuzzParseSSHConfig(f *testing.F) {
 		machines := parseSSHConfig(bytes.NewReader(data), nil)
 
 		for _, m := range machines {
-			if m.Name == "" {
-				t.Errorf("empty machine name from input %q", data)
-			}
-			if strings.ContainsAny(m.Name, "*?[]") || m.Name == "*" {
-				t.Errorf("wildcard name leaked through parser: %q", m.Name)
-			}
+			require.NotEmpty(t, m.Name, "empty machine name from input %q", data)
+			require.False(t, strings.ContainsAny(m.Name, "*?[]") || m.Name == "*", "wildcard name leaked through parser: %q", m.Name)
 			// User may be empty or set, both are valid
 			_ = m.User
 		}

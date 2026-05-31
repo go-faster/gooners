@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -22,20 +23,12 @@ func (p *dummyPool) Get(id string) (*ssh.Client, error) {
 
 func parseResult(t *testing.T, res *mcp.CallToolResult) map[string]interface{} {
 	t.Helper()
-	if res.IsError {
-		t.Fatalf("unexpected error result: %v", res)
-	}
-	if len(res.Content) != 1 {
-		t.Fatalf("expected 1 content, got %d", len(res.Content))
-	}
+	require.False(t, res.IsError, "unexpected error result: %v", res)
+	require.Len(t, res.Content, 1)
 	text, ok := res.Content[0].(mcp.TextContent)
-	if !ok {
-		t.Fatalf("expected TextContent, got %T", res.Content[0])
-	}
+	require.True(t, ok, "expected TextContent, got %T", res.Content[0])
 	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(text.Text), &data); err != nil {
-		t.Fatalf("failed to unmarshal JSON: %v, text: %q", err, text.Text)
-	}
+	require.NoError(t, json.Unmarshal([]byte(text.Text), &data), "failed to unmarshal JSON, text: %q", text.Text)
 	return data
 }
 
@@ -58,14 +51,10 @@ func TestLSHandler(t *testing.T) {
 	}
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	data := parseResult(t, res)
-	if data["stdout"] != "total 0\n" {
-		t.Errorf("unexpected stdout: %v", data["stdout"])
-	}
+	require.Equal(t, "total 0\n", data["stdout"])
 }
 
 func TestCatHandler(t *testing.T) {
@@ -85,14 +74,10 @@ func TestCatHandler(t *testing.T) {
 	}
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	data := parseResult(t, res)
-	if data["stdout"] != "hello world" {
-		t.Errorf("unexpected stdout: %v", data["stdout"])
-	}
+	require.Equal(t, "hello world", data["stdout"])
 }
 
 func TestGrepHandler(t *testing.T) {
@@ -116,14 +101,10 @@ func TestGrepHandler(t *testing.T) {
 	}
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	data := parseResult(t, res)
-	if data["stdout"] != "found" {
-		t.Errorf("unexpected stdout: %v", data["stdout"])
-	}
+	require.Equal(t, "found", data["stdout"])
 }
 
 func TestFindHandler(t *testing.T) {
@@ -146,14 +127,10 @@ func TestFindHandler(t *testing.T) {
 	}
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	data := parseResult(t, res)
-	if data["stdout"] != "/foo/bar.txt" {
-		t.Errorf("unexpected stdout: %v", data["stdout"])
-	}
+	require.Equal(t, "/foo/bar.txt", data["stdout"])
 }
 
 func TestStatHandler(t *testing.T) {
@@ -173,14 +150,10 @@ func TestStatHandler(t *testing.T) {
 	}
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	data := parseResult(t, res)
-	if data["stdout"] != "stat info" {
-		t.Errorf("unexpected stdout: %v", data["stdout"])
-	}
+	require.Equal(t, "stat info", data["stdout"])
 }
 
 func TestWriteFileHandler(t *testing.T) {
@@ -204,31 +177,18 @@ func TestWriteFileHandler(t *testing.T) {
 	}
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if res.IsError {
-		t.Fatalf("unexpected error: %v", res)
-	}
+	require.NoError(t, err)
+	require.False(t, res.IsError, "unexpected error: %v", res)
 
 	content, err := os.ReadFile(tmpRemote)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "hello sftp" {
-		t.Errorf("unexpected content: %s", string(content))
-	}
+	require.NoError(t, err)
+	require.Equal(t, "hello sftp", string(content))
 
 	info, err := os.Stat(tmpRemote)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	// Check mode (might need masking depending on umask, but checking if owner read/write is enough usually)
-	if info.Mode().Perm()&0600 != 0600 {
-		t.Errorf("unexpected mode: %v", info.Mode())
-	}
+	require.EqualValues(t, 0600, info.Mode().Perm()&0600, "unexpected mode: %v", info.Mode())
 }
 
 func TestUploadFileHandler(t *testing.T) {
@@ -241,9 +201,7 @@ func TestUploadFileHandler(t *testing.T) {
 	handler := uploadFileHandler(&dummyPool{client: client}, tmpRoot)
 
 	localPath := filepath.Join(tmpRoot, "local.txt")
-	if err := os.WriteFile(localPath, []byte("local content"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(localPath, []byte("local content"), 0644))
 
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
 
@@ -255,21 +213,12 @@ func TestUploadFileHandler(t *testing.T) {
 	}
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if res.IsError {
-		t.Fatalf("unexpected error: %v", res)
-	}
+	require.NoError(t, err)
+	require.False(t, res.IsError, "unexpected error: %v", res)
 
 	content, err := os.ReadFile(remotePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(content) != "local content" {
-		t.Errorf("unexpected content: %s", string(content))
-	}
+	require.NoError(t, err)
+	require.Equal(t, "local content", string(content))
 }
 
 func TestUploadFileHandler_Security(t *testing.T) {
@@ -283,9 +232,7 @@ func TestUploadFileHandler_Security(t *testing.T) {
 
 	// Create a file OUTSIDE the allowed root
 	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
-	if err := os.WriteFile(outsideFile, []byte("secret content"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, os.WriteFile(outsideFile, []byte("secret content"), 0644))
 
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
 
@@ -298,32 +245,20 @@ func TestUploadFileHandler_Security(t *testing.T) {
 	req.Params.Arguments = args
 
 	res, err := handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !res.IsError {
-		t.Fatalf("expected error due to security bounds check")
-	}
+	require.NoError(t, err)
+	require.True(t, res.IsError, "expected error due to security bounds check")
 
 	// Also test relative path traversal
 	args["local_path"] = filepath.Join(tmpRoot, "..", "outside.txt")
 	res, err = handler(context.Background(), req)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !res.IsError {
-		t.Fatalf("expected error due to relative path traversal")
-	}
+	require.NoError(t, err)
+	require.True(t, res.IsError, "expected error due to relative path traversal")
 }
 
 // Retain TestWithinDir at the bottom
 func TestWithinDir(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join(os.TempDir(), "gooners_test_root"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	tests := []struct {
 		name    string
@@ -365,13 +300,12 @@ func TestWithinDir(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := withinDir(root, tt.path)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("withinDir() error = %v, wantErr %v", err, tt.wantErr)
+			if tt.wantErr {
+				require.Error(t, err)
 				return
 			}
-			if !tt.wantErr && !strings.HasPrefix(got, root) {
-				t.Errorf("withinDir() got = %v, must be within %v", got, root)
-			}
+			require.NoError(t, err)
+			require.True(t, strings.HasPrefix(got, root), "withinDir() got = %v, must be within %v", got, root)
 		})
 	}
 }

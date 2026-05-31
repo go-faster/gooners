@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
+	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -20,21 +21,15 @@ func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (*ssh.Client,
 	}
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("failed to generate private key: %v", err)
-	}
+	require.NoError(t, err, "failed to generate private key")
 
 	signer, err := ssh.NewSignerFromKey(privateKey)
-	if err != nil {
-		t.Fatalf("failed to create signer: %v", err)
-	}
+	require.NoError(t, err, "failed to create signer")
 
 	config.AddHostKey(signer)
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
+	require.NoError(t, err, "failed to listen")
 
 	done := make(chan struct{})
 
@@ -132,9 +127,7 @@ func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (*ssh.Client,
 	}
 
 	client, err := ssh.Dial("tcp", listener.Addr().String(), clientConfig)
-	if err != nil {
-		t.Fatalf("failed to connect to mock server: %v", err)
-	}
+	require.NoError(t, err, "failed to connect to mock server")
 
 	cleanup := func() {
 		close(done)
