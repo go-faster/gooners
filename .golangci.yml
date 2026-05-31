@@ -1,0 +1,85 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - dogsled
+    - errcheck
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - nakedret
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    gocritic:
+      disabled-checks:
+        - hugeParam # We don't care about huge parameters much. Too many false positives.
+        - rangeValCopy # We don't care about range copies much. Too many false positives.
+        - unnecessaryBlock # Sometimes we need to use blocks for readability.
+        - ptrToRefParam # Too many false positives.
+        - exitAfterDefer # Too many false positives.
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gosec: # gosec is annoying and have a lot of false-positive results.
+      excludes:
+        - G115
+        - G117
+        - G118
+        - G703
+        - G704
+        - G705
+    lll:
+      line-length: 140
+    misspell:
+      locale: US
+    staticcheck:
+      checks:
+        - "*"
+        - "-QF1001" # Suggested simplification via De Morgan's law is not always better.
+        - "-QF1008" # Too much false positives, embedding is fine.
+  exclusions:
+    generated: lax
+    rules:
+      # Disable linters that are annoying in tests.
+      - linters:
+          - dupl
+          - errcheck
+          - funlen
+          - gocognit
+          - goconst
+          - gocyclo
+          - gosec
+          - lll
+          - scopelint
+        path: _test\.go
+      - linters:
+          - revive
+        path: _test\.go
+        text: unused-parameter
+      # exported and package-comments are for public library APIs; not required for internal app code.
+      - linters:
+          - revive
+        path: ^(cmd|internal)/
+        text: "exported: "
+      - linters:
+          - revive
+        path: ^(cmd|internal)/
+        text: "package-comments: should have a package comment"
+
+formatters:
+  enable:
+    - goimports
+    - gofumpt
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/go-faster/gooners
