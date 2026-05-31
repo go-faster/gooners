@@ -1,8 +1,10 @@
 package session
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -31,7 +33,12 @@ type Config struct {
 	ProxyJump string
 }
 
-func (c Config) clientConfig() (*ssh.ClientConfig, string, error) {
+// clientConfig returns the ssh.ClientConfig plus two addresses:
+//   - tcpAddr: resolved address for the TCP dial (honours HostName)
+//   - sshAddr: alias:port for the SSH handshake, which is what known_hosts is
+//     keyed on — OpenSSH stores/checks keys under the name the user typed, not
+//     the resolved IP.
+func (c Config) clientConfig() (cc *ssh.ClientConfig, tcpAddr, sshAddr string, err error) {
 	usr, alias, port := parseTarget(c.Machine)
 	if alias == "" {
 		alias = c.Machine
@@ -69,7 +76,9 @@ func (c Config) clientConfig() (*ssh.ClientConfig, string, error) {
 	if port == 0 {
 		port = 22
 	}
-	addr := fmt.Sprintf("%s:%d", host, port)
+	portStr := strconv.Itoa(port)
+	tcpAddr = net.JoinHostPort(host, portStr)
+	sshAddr = net.JoinHostPort(alias, portStr)
 
 	timeout := 30 * time.Second
 	if c.TimeoutSec > 0 {
@@ -79,11 +88,19 @@ func (c Config) clientConfig() (*ssh.ClientConfig, string, error) {
 		timeout = time.Duration(c.TimeoutSec) * time.Second
 	}
 
-	hkcb := hostKeyCallback(c.KnownHosts)
+	// When HostName resolution changes the address, check both the alias (how
+	// known_hosts is typically keyed by the user) and the resolved IP (how
+	// ssh-keyscan or direct-IP connections store entries).
+	var hkcb ssh.HostKeyCallback
+	if host != alias {
+		hkcb = multiAddrHostKeyCallback(c.KnownHosts, sshAddr, tcpAddr)
+	} else {
+		hkcb = hostKeyCallback(c.KnownHosts)
+	}
 
 	auth, err := authMethods(c, alias, usr)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	return &ssh.ClientConfig{
@@ -91,13 +108,13 @@ func (c Config) clientConfig() (*ssh.ClientConfig, string, error) {
 		Auth:            auth,
 		HostKeyCallback: hkcb,
 		Timeout:         timeout,
-	}, addr, nil
+	}, tcpAddr, sshAddr, nil
 }
 
 // dial opens an SSH connection to c.Machine, following ProxyJump / ProxyCommand
 // directives from ~/.ssh/config (unless overridden by Config fields).
 func (c Config) dial() (*ssh.Client, error) {
-	cc, addr, err := c.clientConfig()
+	cc, tcpAddr, sshAddr, err := c.clientConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -115,23 +132,38 @@ func (c Config) dial() (*ssh.Client, error) {
 	var client *ssh.Client
 	switch {
 	case jump != "" && jump != "none":
-		client, err = tunnelThrough(addr, cc, jump, c.KnownHosts)
+		client, err = tunnelThrough(tcpAddr, sshAddr, cc, jump, c.KnownHosts)
 	default:
-		// Fall back to ProxyCommand if set.
 		proxyCmd := gosshconfig.Get(alias, "ProxyCommand")
 		if proxyCmd != "" && proxyCmd != "none" {
-			conn, cerr := dialProxyCommand(proxyCmd, addr, cc.User)
-			if cerr != nil {
-				return nil, cerr
+			var conn net.Conn
+			conn, err = dialProxyCommand(proxyCmd, tcpAddr, cc.User)
+			if err != nil {
+				return nil, err
 			}
-			ncc, chans, reqs, cerr := ssh.NewClientConn(conn, addr, cc)
+			ncc, chans, reqs, cerr := ssh.NewClientConn(conn, sshAddr, cc)
 			if cerr != nil {
 				_ = conn.Close()
 				return nil, cerr
 			}
 			client = ssh.NewClient(ncc, chans, reqs)
 		} else {
-			client, err = ssh.Dial("tcp", addr, cc)
+			// Use net.Dial + NewClientConn so we can pass sshAddr (alias:port)
+			// to the SSH handshake. known_hosts entries are stored under the
+			// alias name, not the resolved IP, matching OpenSSH behaviour.
+			var conn net.Conn
+			conn, err = net.DialTimeout("tcp", tcpAddr, cc.Timeout)
+			if err == nil {
+				var ncc ssh.Conn
+				var chans <-chan ssh.NewChannel
+				var reqs <-chan *ssh.Request
+				ncc, chans, reqs, err = ssh.NewClientConn(conn, sshAddr, cc)
+				if err != nil {
+					_ = conn.Close()
+				} else {
+					client = ssh.NewClient(ncc, chans, reqs)
+				}
+			}
 		}
 	}
 	if err != nil {
@@ -142,12 +174,12 @@ func (c Config) dial() (*ssh.Client, error) {
 	return client, nil
 }
 
-// tunnelThrough dials targetAddr/targetCC through proxyChain, a comma-separated
-// list of jump hosts ordered left-to-right (same as ssh_config ProxyJump).
-// knownHosts is propagated to each jump hop so the same verification policy applies.
-func tunnelThrough(targetAddr string, targetCC *ssh.ClientConfig, proxyChain, knownHosts string) (*ssh.Client, error) {
-	// Split at the last comma: the rightmost entry is the host directly adjacent
-	// to the target; the rest is the inner chain to reach that host.
+// tunnelThrough dials targetTCPAddr/targetCC through proxyChain (comma-separated,
+// left-to-right as in ssh_config ProxyJump). targetSSHAddr is the alias:port used
+// for the SSH handshake so known_hosts is checked by alias, not resolved IP.
+func tunnelThrough(targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConfig, proxyChain, knownHosts string) (*ssh.Client, error) {
+	// Split at the last comma: the rightmost entry is directly adjacent to the
+	// target; the remainder is the inner chain to reach that host.
 	lastJump, innerChain := proxyChain, ""
 	if idx := strings.LastIndex(proxyChain, ","); idx != -1 {
 		innerChain = strings.TrimSpace(proxyChain[:idx])
@@ -159,18 +191,18 @@ func tunnelThrough(targetAddr string, targetCC *ssh.ClientConfig, proxyChain, kn
 		err        error
 	)
 	if innerChain == "" {
-		// Single hop: use Config.dial() so the jump host's own ssh_config entries
-		// (including its own ProxyJump) are respected.
+		// Single hop: use dial() so the jump host's own ssh_config (including
+		// its own ProxyJump) is respected.
 		jumpClient, err = Config{Machine: lastJump, KnownHosts: knownHosts}.dial()
 	} else {
 		// Multi-hop: route to lastJump through the remaining inner chain.
 		var jumpCC *ssh.ClientConfig
-		var jumpAddr string
-		jumpCC, jumpAddr, err = Config{Machine: lastJump, KnownHosts: knownHosts}.clientConfig()
+		var jumpTCPAddr, jumpSSHAddr string
+		jumpCC, jumpTCPAddr, jumpSSHAddr, err = Config{Machine: lastJump, KnownHosts: knownHosts}.clientConfig()
 		if err != nil {
 			return nil, fmt.Errorf("jump host %q: %w", lastJump, err)
 		}
-		jumpClient, err = tunnelThrough(jumpAddr, jumpCC, innerChain, knownHosts)
+		jumpClient, err = tunnelThrough(jumpTCPAddr, jumpSSHAddr, jumpCC, innerChain, knownHosts)
 		if err == nil {
 			startKeepalive(jumpClient, lastJump)
 		}
@@ -179,13 +211,13 @@ func tunnelThrough(targetAddr string, targetCC *ssh.ClientConfig, proxyChain, kn
 		return nil, fmt.Errorf("connecting to jump host %q: %w", lastJump, err)
 	}
 
-	conn, err := jumpClient.Dial("tcp", targetAddr)
+	conn, err := jumpClient.Dial("tcp", targetTCPAddr)
 	if err != nil {
 		_ = jumpClient.Close()
-		return nil, fmt.Errorf("jump %q -> %q: %w", lastJump, targetAddr, err)
+		return nil, fmt.Errorf("jump %q -> %q: %w", lastJump, targetTCPAddr, err)
 	}
 
-	ncc, chans, reqs, err := ssh.NewClientConn(&jumpedConn{conn, jumpClient}, targetAddr, targetCC)
+	ncc, chans, reqs, err := ssh.NewClientConn(&jumpedConn{conn, jumpClient}, targetSSHAddr, targetCC)
 	if err != nil {
 		_ = conn.Close()
 		_ = jumpClient.Close()
@@ -263,7 +295,6 @@ func startKeepalive(client *ssh.Client, alias string) {
 func dialProxyCommand(command, addr, remoteUser string) (net.Conn, error) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
-		// addr might not have a port when called with bare hostnames.
 		host = addr
 		portStr = "22"
 	}
@@ -387,7 +418,7 @@ func homeDir() string {
 
 func hostKeyCallback(kh string) ssh.HostKeyCallback {
 	if kh == "insecure" {
-		log.Print("WARNING: ssh host key verification disabled (insecure mode)")
+		slog.Warn("ssh host key verification disabled (insecure mode)")
 		return ssh.InsecureIgnoreHostKey()
 	}
 	path := kh
@@ -406,13 +437,49 @@ func hostKeyCallback(kh string) ssh.HostKeyCallback {
 		}
 	}
 	if err != nil {
-		log.Printf("error: failed to load known_hosts %s: %v", path, err)
+		slog.Error("failed to load known_hosts", "path", path, "err", err)
 		loadErr := err
 		return func(_ string, _ net.Addr, _ ssh.PublicKey) error {
 			return fmt.Errorf("known_hosts unavailable: %w", loadErr)
 		}
 	}
 	return cb
+}
+
+// multiAddrHostKeyCallback returns a HostKeyCallback that checks addresses[0]
+// (the alias) first, then falls back to addresses[1:] (resolved IPs).
+//
+// A key-changed error on the alias is always fatal (possible MITM). A
+// key-changed error on a fallback address is only a warning — stale IP entries
+// in known_hosts are common and should not block a new connection whose alias
+// has no entry yet. If all addresses are unknown the error names all of them so
+// the user knows exactly what to add.
+func multiAddrHostKeyCallback(kh string, addresses ...string) ssh.HostKeyCallback {
+	rawCB := hostKeyCallback(kh)
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		for i, addr := range addresses {
+			slog.Debug("checking host key", "addr", addr)
+			err := rawCB(addr, remote, key)
+			if err == nil {
+				return nil
+			}
+			var keyErr *knownhosts.KeyError
+			if errors.As(err, &keyErr) && len(keyErr.Want) > 0 {
+				if i == 0 {
+					// Alias entry exists but key changed — treat as hard failure.
+					return fmt.Errorf("host key changed for %s: %w", addr, err)
+				}
+				// Stale fallback (IP) entry — log and skip rather than failing.
+				slog.Warn("stale known_hosts entry, skipping", "addr", addr)
+				continue
+			}
+		}
+		// addresses[0] is the alias (not necessarily DNS-resolvable by ssh-keyscan);
+		// addresses[1] is the resolved IP. Use the last address for the keyscan
+		// suggestion since it's always a real address.
+		scanHost := knownhosts.Normalize(addresses[len(addresses)-1])
+		return fmt.Errorf("host key unknown — add with: ssh-keyscan -H %s >> ~/.ssh/known_hosts", scanHost)
+	}
 }
 
 func authMethods(c Config, alias string, _ string) ([]ssh.AuthMethod, error) {
@@ -436,7 +503,7 @@ func authMethods(c Config, alias string, _ string) ([]ssh.AuthMethod, error) {
 
 	if c.Password != "" {
 		m = append(m, ssh.Password(c.Password))
-		m = append(m, ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+		m = append(m, ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
 			answers := make([]string, len(questions))
 			for i := range questions {
 				answers[i] = c.Password
@@ -445,72 +512,139 @@ func authMethods(c Config, alias string, _ string) ([]ssh.AuthMethod, error) {
 		}))
 	}
 
-	// IdentitiesOnly: if set, skip agent and default key fallbacks entirely.
 	identitiesOnly := strings.EqualFold(gosshconfig.Get(alias, "IdentitiesOnly"), "yes")
+	agentSock := resolveAgentSock(alias, h)
 
-	if !identitiesOnly {
-		// Determine which agent socket to use.
-		agentSock := ""
-		switch ia := gosshconfig.Get(alias, "IdentityAgent"); strings.ToLower(ia) {
-		case "", "ssh_auth_sock":
-			agentSock = os.Getenv("SSH_AUTH_SOCK")
-		case "none":
-			// explicitly disabled
-		default:
-			if rest, ok := strings.CutPrefix(ia, "~/"); ok {
-				agentSock = filepath.Join(h, rest)
-			} else {
-				agentSock = ia
-			}
+	// IdentityFile paths from ssh_config (may include .pub files).
+	var cfgPaths []string
+	for _, p := range gosshconfig.GetAll(alias, "IdentityFile") {
+		if rest, ok := strings.CutPrefix(p, "~/"); ok {
+			p = filepath.Join(h, rest)
 		}
-		if agentSock != "" {
-			if conn, err := net.Dial("unix", agentSock); err == nil {
-				m = append(m, ssh.PublicKeysCallback(agent.NewClient(conn).Signers))
-			}
-		}
+		cfgPaths = append(cfgPaths, p)
 	}
 
-	// Collect key paths: IdentityFile from ssh_config first, then defaults
-	// (unless IdentitiesOnly restricts us to only ssh_config keys).
-	keyPaths := identityFilesFromConfig(alias, h, identitiesOnly)
+	// Determine which paths to try. IdentitiesOnly restricts to cfgPaths
+	// only when there are explicit entries; otherwise fall back to defaults.
+	keyPaths := buildKeyPaths(cfgPaths, h, identitiesOnly)
+
+	// First pass: collect allowed public keys (for agent filtering) and file signers.
+	var allowedPubs []ssh.PublicKey
+	var fileSigners []ssh.AuthMethod
 	for _, p := range keyPaths {
-		if key, err := os.ReadFile(p); err == nil {
-			if signer, err := ssh.ParsePrivateKey(key); err == nil {
-				m = append(m, ssh.PublicKeys(signer))
-			} else if pkey, ok := tryParseWithPass(c.Password, key); ok {
-				m = append(m, ssh.PublicKeys(pkey))
+		pk, signer := loadKeyFile(p, c.Password)
+		if signer != nil {
+			fileSigners = append(fileSigners, ssh.PublicKeys(signer))
+		}
+		if pk != nil {
+			allowedPubs = append(allowedPubs, pk)
+		}
+	}
+
+	// Agent: always consulted unless socket is empty. With IdentitiesOnly, only
+	// keys whose public key matches an IdentityFile entry are offered.
+	if agentSock != "" {
+		if conn, err := net.Dial("unix", agentSock); err == nil {
+			ac := agent.NewClient(conn)
+			if identitiesOnly && len(allowedPubs) > 0 {
+				m = append(m, ssh.PublicKeysCallback(filteredAgentSigners(ac, allowedPubs)))
+			} else if !identitiesOnly {
+				m = append(m, ssh.PublicKeysCallback(ac.Signers))
 			}
 		}
 	}
+
+	m = append(m, fileSigners...)
 	return m, nil
 }
 
-// identityFilesFromConfig returns key paths to try: IdentityFile entries from
-// ssh_config for alias first, then the standard defaults (unless identitiesOnly).
-// Duplicate paths are deduplicated.
-func identityFilesFromConfig(alias, home string, identitiesOnly bool) []string {
-	seen := make(map[string]struct{})
-	var out []string
-
-	add := func(p string) {
-		if rest, ok := strings.CutPrefix(p, "~/"); ok {
-			p = filepath.Join(home, rest)
-		}
+// buildKeyPaths returns the ordered, deduplicated list of key file paths to try.
+// cfgPaths come from IdentityFile in ssh_config. When identitiesOnly is true and
+// cfgPaths is non-empty, only those paths are returned; otherwise the standard
+// default key names are appended.
+func buildKeyPaths(cfgPaths []string, home string, identitiesOnly bool) []string {
+	if identitiesOnly && len(cfgPaths) > 0 {
+		return cfgPaths
+	}
+	seen := make(map[string]struct{}, len(cfgPaths)+3)
+	out := make([]string, 0, len(cfgPaths)+3)
+	for _, p := range cfgPaths {
 		if _, ok := seen[p]; !ok {
 			seen[p] = struct{}{}
 			out = append(out, p)
 		}
 	}
-
-	for _, p := range gosshconfig.GetAll(alias, "IdentityFile") {
-		add(p)
-	}
-	if !identitiesOnly || len(out) == 0 {
-		for _, name := range []string{"id_ed25519", "id_rsa", "id_ecdsa"} {
-			add(filepath.Join(home, ".ssh", name))
+	for _, name := range []string{"id_ed25519", "id_rsa", "id_ecdsa"} {
+		p := filepath.Join(home, ".ssh", name)
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
 		}
 	}
 	return out
+}
+
+// resolveAgentSock returns the SSH agent socket path for alias from ssh_config.
+func resolveAgentSock(alias, home string) string {
+	switch ia := gosshconfig.Get(alias, "IdentityAgent"); strings.ToLower(ia) {
+	case "", "ssh_auth_sock":
+		return os.Getenv("SSH_AUTH_SOCK")
+	case "none":
+		return ""
+	default:
+		if rest, ok := strings.CutPrefix(ia, "~/"); ok {
+			return filepath.Join(home, rest)
+		}
+		return ia
+	}
+}
+
+// loadKeyFile tries to load a key from path. It handles both private key files
+// and public-key files in authorized_keys format (e.g. ~/.ssh/id_ed25519.pub).
+// Returns (publicKey, signer): signer is nil for .pub-only files.
+// Returns (nil, nil) silently when the file does not exist; logs a warning when
+// the file exists but cannot be parsed as either format.
+func loadKeyFile(path, pass string) (ssh.PublicKey, ssh.Signer) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("reading identity file", "path", path, "err", err)
+		}
+		return nil, nil
+	}
+	if s, err := ssh.ParsePrivateKey(data); err == nil {
+		return s.PublicKey(), s
+	}
+	if s, ok := tryParseWithPass(pass, data); ok {
+		return s.PublicKey(), s
+	}
+	// Fall back to authorized_keys / .pub format (public key only).
+	if pk, _, _, _, err := ssh.ParseAuthorizedKey(data); err == nil {
+		return pk, nil
+	}
+	slog.Warn("identity file is not a recognized private key or public key format", "path", path)
+	return nil, nil
+}
+
+// filteredAgentSigners returns a Signers callback that only yields signers from
+// ac whose public key matches one of the allowed keys. Used for IdentitiesOnly.
+func filteredAgentSigners(ac agent.ExtendedAgent, allowed []ssh.PublicKey) func() ([]ssh.Signer, error) {
+	return func() ([]ssh.Signer, error) {
+		all, err := ac.Signers()
+		if err != nil {
+			return nil, err
+		}
+		var out []ssh.Signer
+		for _, s := range all {
+			for _, pk := range allowed {
+				if bytes.Equal(s.PublicKey().Marshal(), pk.Marshal()) {
+					out = append(out, s)
+					break
+				}
+			}
+		}
+		return out, nil
+	}
 }
 
 func tryParseWithPass(pass string, key []byte) (ssh.Signer, bool) {
