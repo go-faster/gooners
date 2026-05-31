@@ -171,6 +171,9 @@ func tunnelThrough(targetAddr string, targetCC *ssh.ClientConfig, proxyChain, kn
 			return nil, fmt.Errorf("jump host %q: %w", lastJump, err)
 		}
 		jumpClient, err = tunnelThrough(jumpAddr, jumpCC, innerChain, knownHosts)
+		if err == nil {
+			startKeepalive(jumpClient, lastJump)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("connecting to jump host %q: %w", lastJump, err)
@@ -502,7 +505,7 @@ func identityFilesFromConfig(alias, home string, identitiesOnly bool) []string {
 	for _, p := range gosshconfig.GetAll(alias, "IdentityFile") {
 		add(p)
 	}
-	if !identitiesOnly {
+	if !identitiesOnly || len(out) == 0 {
 		for _, name := range []string{"id_ed25519", "id_rsa", "id_ecdsa"} {
 			add(filepath.Join(home, ".ssh", name))
 		}
