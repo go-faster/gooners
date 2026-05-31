@@ -115,7 +115,7 @@ func listMachinesFromRoots(roots []string, home string) []Machine {
 		if err != nil {
 			return
 		}
-		defer f.Close() //nolint:errcheck // close error not actionable when reading config for listing
+		defer func() { _ = f.Close() }()
 
 		baseDir := filepath.Dir(path)
 

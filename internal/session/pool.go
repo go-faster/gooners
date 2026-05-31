@@ -40,11 +40,7 @@ func (p *Pool) Open(machine string) (string, error) {
 }
 
 func (p *Pool) OpenCfg(cfg Config) (string, error) {
-	cc, addr, err := cfg.clientConfig()
-	if err != nil {
-		return "", err
-	}
-	client, err := ssh.Dial("tcp", addr, cc)
+	client, err := cfg.dial()
 	if err != nil {
 		return "", err
 	}
@@ -65,8 +61,7 @@ func (p *Pool) Close(id string) error {
 	p.mu.Lock()
 	s, ok := p.sessions[id]
 	if ok {
-		//nolint:errcheck // Close error not actionable during session cleanup
-		s.client.Close()
+		_ = s.client.Close()
 		delete(p.sessions, id)
 	}
 	p.mu.Unlock()
@@ -96,8 +91,7 @@ func (p *Pool) List() []SessionInfo {
 func (p *Pool) Shutdown() {
 	p.mu.Lock()
 	for _, s := range p.sessions {
-		//nolint:errcheck // Close error not actionable during shutdown
-		s.client.Close()
+		_ = s.client.Close()
 	}
 	p.sessions = make(map[string]*Session)
 	p.mu.Unlock()

@@ -57,7 +57,9 @@ func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (*ssh.Client,
 			go func() {
 				for newChannel := range chans {
 					if newChannel.ChannelType() != "session" {
-						newChannel.Reject(ssh.UnknownChannelType, "unknown channel type")
+						if err := newChannel.Reject(ssh.UnknownChannelType, "unknown channel type"); err != nil {
+							t.Logf("reject channel: %v", err)
+						}
 						continue
 					}
 
@@ -71,45 +73,64 @@ func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (*ssh.Client,
 						for req := range requests {
 							switch req.Type {
 							case "exec":
-								// Parse command
 								var payload struct {
 									Command string
 								}
 								if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
 									t.Errorf("failed to parse payload: %v", err)
-									req.Reply(false, nil)
+									if err := req.Reply(false, nil); err != nil {
+										t.Logf("reply false: %v", err)
+									}
 									continue
 								}
-								req.Reply(true, nil)
+								if err := req.Reply(true, nil); err != nil {
+									t.Logf("reply true: %v", err)
+								}
 
 								out, exitCode := execHandler(payload.Command)
-								channel.Write([]byte(out))
-								channel.SendRequest("exit-status", false, ssh.Marshal(struct{ uint32 }{uint32(exitCode)}))
-								channel.Close()
+								if _, err := channel.Write([]byte(out)); err != nil {
+									t.Logf("write output: %v", err)
+								}
+								if _, err := channel.SendRequest("exit-status", false, ssh.Marshal(struct{ uint32 }{uint32(exitCode)})); err != nil {
+									t.Logf("send exit-status: %v", err)
+								}
+								if err := channel.Close(); err != nil {
+									t.Logf("close exec channel: %v", err)
+								}
 							case "subsystem":
 								var payload struct {
 									Name string
 								}
 								if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
-									req.Reply(false, nil)
+									if err := req.Reply(false, nil); err != nil {
+										t.Logf("reply false: %v", err)
+									}
 									continue
 								}
 								if payload.Name == "sftp" {
-									req.Reply(true, nil)
+									if err := req.Reply(true, nil); err != nil {
+										t.Logf("reply true: %v", err)
+									}
 									server, err := sftp.NewServer(channel)
 									if err != nil {
 										t.Errorf("sftp server init error: %v", err)
 										return
 									}
 									if err := server.Serve(); err != nil {
-										// typical for closed connection
+										t.Logf("sftp serve: %v", err)
 									}
-									channel.Close()
+									if err := channel.Close(); err != nil {
+										t.Logf("close sftp channel: %v", err)
+									}
 								} else {
-									req.Reply(false, nil)
+									if err := req.Reply(false, nil); err != nil {
+										t.Logf("reply false: %v", err)
+									}
 								}
 							default:
-								req.Reply(false, nil)
+								if err := req.Reply(false, nil); err != nil {
+									t.Logf("reply false: %v", err)
+								}
 							}
 						}
 					}()
@@ -131,8 +152,12 @@ func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (*ssh.Client,
 
 	cleanup := func() {
 		close(done)
-		client.Close()
-		listener.Close()
+		if err := client.Close(); err != nil {
+			t.Logf("close client: %v", err)
+		}
+		if err := listener.Close(); err != nil {
+			t.Logf("close listener: %v", err)
+		}
 	}
 
 	return client, cleanup
