@@ -2,7 +2,9 @@
 package main
 
 import (
+	"flag"
 	"log"
+	"log/slog"
 	"os"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -17,9 +19,26 @@ import (
 )
 
 func main() {
+	logFile := flag.String("log-file", "", "path to log file (enables structured debug logging)")
+	flag.Parse()
+
+	if *logFile != "" {
+		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			log.Fatalf("opening log file: %v", err)
+		}
+		defer func() { _ = f.Close() }()
+
+		handler := slog.NewTextHandler(f, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})
+		slog.SetDefault(slog.New(handler))
+	}
+
 	uploadRoot, err := os.Getwd()
 	if err != nil {
-		log.Fatalf("getting working directory: %v", err)
+		slog.Error("getting working directory", "err", err)
+		os.Exit(1)
 	}
 
 	pool := session.NewPool()
@@ -34,6 +53,7 @@ func main() {
 	disk.Register(s, pool)
 
 	if err := server.ServeStdio(s); err != nil {
-		log.Fatal(err)
+		slog.Error("server exited with error", "err", err)
+		os.Exit(1)
 	}
 }

@@ -3,6 +3,7 @@ package session
 import (
 	"crypto/rand"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"strings"
 	"sync"
@@ -41,18 +42,22 @@ func (p *Pool) Open(machine string) (string, error) {
 	return p.OpenCfg(Config{Machine: machine})
 }
 
-func (p *Pool) OpenCfg(cfg Config) (string, error) {
+func (p *Pool) OpenCfg(cfg Config) (id string, _ error) {
 	client, err := cfg.dial()
 	if err != nil {
+		slog.Debug("ssh dial failed", "machine", cfg.Machine, "err", err)
 		return "", err
 	}
+	defer func() {
+		slog.Debug("ssh session opened", "id", id, "machine", cfg.Machine)
+	}()
 
 	slug := machineSlug(cfg.Machine)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	for tries := 0; tries < 100; tries++ {
-		id := fmt.Sprintf("%s-%s-%s", slug, randomAdjective(), randomSurname())
+	for range 100 {
+		id = fmt.Sprintf("%s-%s-%s", slug, randomAdjective(), randomSurname())
 		if _, ok := p.sessions[id]; !ok {
 			sess := &Session{
 				ID:        id,
@@ -61,12 +66,13 @@ func (p *Pool) OpenCfg(cfg Config) (string, error) {
 				client:    client,
 			}
 			p.sessions[id] = sess
+
 			return id, nil
 		}
 	}
 
 	// Fallback (extremely unlikely): append nanos
-	id := fmt.Sprintf("%s-%d", slug, time.Now().UnixNano())
+	id = fmt.Sprintf("%s-%d", slug, time.Now().UnixNano())
 	sess := &Session{
 		ID:        id,
 		Machine:   cfg.Machine,
@@ -83,6 +89,7 @@ func (p *Pool) Close(id string) error {
 	if ok {
 		_ = s.client.Close()
 		delete(p.sessions, id)
+		slog.Debug("ssh session closed", "id", id, "machine", s.Machine)
 	}
 	p.mu.Unlock()
 	return nil
@@ -112,6 +119,7 @@ func (p *Pool) Shutdown() {
 	p.mu.Lock()
 	for _, s := range p.sessions {
 		_ = s.client.Close()
+		slog.Debug("ssh session closed (shutdown)", "id", s.ID, "machine", s.Machine)
 	}
 	p.sessions = make(map[string]*Session)
 	p.mu.Unlock()

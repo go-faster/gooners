@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/kballard/go-shellquote"
 	"golang.org/x/crypto/ssh"
@@ -36,8 +38,12 @@ func (b *safeBuffer) String() string {
 }
 
 func Run(ctx context.Context, client *ssh.Client, command string) (Result, error) {
+	start := time.Now()
+	slog.DebugContext(ctx, "ssh run start", "command", command)
+
 	sess, err := client.NewSession()
 	if err != nil {
+		slog.DebugContext(ctx, "ssh run session error", "err", err, "duration", time.Since(start))
 		return Result{}, err
 	}
 
@@ -61,9 +67,16 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 			_ = sess.Signal(ssh.SIGKILL)
 			_ = sess.Close()
 		}()
+		out, errOut := stdout.String(), stderr.String()
+		slog.DebugContext(ctx, "ssh run canceled",
+			"err", ctx.Err(),
+			"duration", time.Since(start),
+			"stdout_len", len(out),
+			"stderr_len", len(errOut),
+		)
 		return Result{
-			Stdout: stdout.String(),
-			Stderr: stderr.String(),
+			Stdout: out,
+			Stderr: errOut,
 		}, ctx.Err()
 	case err := <-done:
 		// Happy path: Run has returned; close synchronously.
@@ -72,12 +85,26 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 			Stdout: stdout.String(),
 			Stderr: stderr.String(),
 		}
+		dur := time.Since(start)
 		if err != nil {
 			if e, ok := err.(*ssh.ExitError); ok {
 				res.ExitCode = e.ExitStatus()
+				slog.DebugContext(ctx, "ssh run exited",
+					"exit_code", res.ExitCode,
+					"duration", dur,
+					"stdout_len", len(res.Stdout),
+					"stderr_len", len(res.Stderr),
+				)
 			} else {
+				slog.DebugContext(ctx, "ssh run error", "err", err, "duration", dur)
 				return res, err
 			}
+		} else {
+			slog.DebugContext(ctx, "ssh run success",
+				"duration", dur,
+				"stdout_len", len(res.Stdout),
+				"stderr_len", len(res.Stderr),
+			)
 		}
 		return res, nil
 	}

@@ -124,6 +124,8 @@ func (c Config) dial() (*ssh.Client, error) {
 		alias = c.Machine
 	}
 
+	slog.Debug("ssh dial start", "machine", c.Machine, "addr", tcpAddr, "timeout", cc.Timeout)
+
 	jump := c.ProxyJump
 	if jump == "" {
 		jump = strings.TrimSpace(gosshconfig.Get(alias, "ProxyJump"))
@@ -139,11 +141,13 @@ func (c Config) dial() (*ssh.Client, error) {
 			var conn net.Conn
 			conn, err = dialProxyCommand(proxyCmd, tcpAddr, cc.User)
 			if err != nil {
+				slog.Debug("ssh proxycommand dial failed", "machine", c.Machine, "err", err)
 				return nil, err
 			}
 			ncc, chans, reqs, cerr := ssh.NewClientConn(conn, sshAddr, cc)
 			if cerr != nil {
 				_ = conn.Close()
+				slog.Debug("ssh NewClientConn (proxycommand) failed", "machine", c.Machine, "err", cerr)
 				return nil, cerr
 			}
 			client = ssh.NewClient(ncc, chans, reqs)
@@ -153,23 +157,30 @@ func (c Config) dial() (*ssh.Client, error) {
 			// alias name, not the resolved IP, matching OpenSSH behavior.
 			var conn net.Conn
 			conn, err = net.DialTimeout("tcp", tcpAddr, cc.Timeout)
-			if err == nil {
-				var ncc ssh.Conn
-				var chans <-chan ssh.NewChannel
-				var reqs <-chan *ssh.Request
-				ncc, chans, reqs, err = ssh.NewClientConn(conn, sshAddr, cc)
-				if err != nil {
-					_ = conn.Close()
-				} else {
-					client = ssh.NewClient(ncc, chans, reqs)
-				}
+			if err != nil {
+				slog.Debug("ssh tcp dial timeout/error", "machine", c.Machine, "addr", tcpAddr, "timeout", cc.Timeout, "err", err)
+				return nil, err
 			}
+			var (
+				ncc   ssh.Conn
+				chans <-chan ssh.NewChannel
+				reqs  <-chan *ssh.Request
+			)
+			ncc, chans, reqs, err = ssh.NewClientConn(conn, sshAddr, cc)
+			if err != nil {
+				_ = conn.Close()
+				slog.Debug("ssh NewClientConn failed", "machine", c.Machine, "addr", sshAddr, "err", err)
+				return nil, err
+			}
+			client = ssh.NewClient(ncc, chans, reqs)
 		}
 	}
 	if err != nil {
+		slog.Debug("ssh dial failed", "machine", c.Machine, "err", err)
 		return nil, err
 	}
 
+	slog.Debug("ssh connected", "machine", c.Machine, "addr", tcpAddr, "alias", alias)
 	startKeepalive(client, alias)
 	return client, nil
 }
@@ -186,6 +197,8 @@ func tunnelThrough(targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConf
 		lastJump = strings.TrimSpace(proxyChain[idx+1:])
 	}
 
+	slog.Debug("ssh tunnel start", "target", targetTCPAddr, "via", lastJump, "chain", innerChain)
+
 	var (
 		jumpClient *ssh.Client
 		err        error
@@ -200,6 +213,7 @@ func tunnelThrough(targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConf
 		var jumpTCPAddr, jumpSSHAddr string
 		jumpCC, jumpTCPAddr, jumpSSHAddr, err = Config{Machine: lastJump, KnownHosts: knownHosts}.clientConfig()
 		if err != nil {
+			slog.Debug("ssh jump clientConfig failed", "jump", lastJump, "err", err)
 			return nil, fmt.Errorf("jump host %q: %w", lastJump, err)
 		}
 		jumpClient, err = tunnelThrough(jumpTCPAddr, jumpSSHAddr, jumpCC, innerChain, knownHosts)
@@ -208,12 +222,14 @@ func tunnelThrough(targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConf
 		}
 	}
 	if err != nil {
+		slog.Debug("ssh connecting to jump host failed", "jump", lastJump, "err", err)
 		return nil, fmt.Errorf("connecting to jump host %q: %w", lastJump, err)
 	}
 
 	conn, err := jumpClient.Dial("tcp", targetTCPAddr)
 	if err != nil {
 		_ = jumpClient.Close()
+		slog.Debug("ssh jump dial failed", "jump", lastJump, "target", targetTCPAddr, "err", err)
 		return nil, fmt.Errorf("jump %q -> %q: %w", lastJump, targetTCPAddr, err)
 	}
 
@@ -221,8 +237,10 @@ func tunnelThrough(targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConf
 	if err != nil {
 		_ = conn.Close()
 		_ = jumpClient.Close()
+		slog.Debug("ssh NewClientConn (jump) failed", "jump", lastJump, "target", targetSSHAddr, "err", err)
 		return nil, err
 	}
+	slog.Debug("ssh jump connected", "jump", lastJump, "target", targetTCPAddr)
 	return ssh.NewClient(ncc, chans, reqs), nil
 }
 
@@ -260,6 +278,8 @@ func startKeepalive(client *ssh.Client, alias string) {
 		}
 	}
 
+	slog.Debug("ssh keepalive enabled", "alias", alias, "interval_sec", secs, "max_count", maxCount)
+
 	done := make(chan struct{})
 	go func() {
 		_ = client.Wait()
@@ -278,7 +298,9 @@ func startKeepalive(client *ssh.Client, alias string) {
 				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 				if err != nil {
 					fails++
+					slog.Debug("ssh keepalive failed", "alias", alias, "fails", fails, "max", maxCount, "err", err)
 					if fails >= maxCount {
+						slog.Debug("ssh keepalive max failures, closing connection", "alias", alias, "fails", fails)
 						_ = client.Close()
 						return
 					}
@@ -300,6 +322,7 @@ func dialProxyCommand(command, addr, remoteUser string) (net.Conn, error) {
 	}
 
 	expanded := expandProxyCommandTokens(command, host, portStr, remoteUser)
+	slog.Debug("ssh proxycommand start", "command", expanded, "addr", addr)
 
 	cmd := exec.Command("sh", "-c", expanded) //nolint:gosec // proxy command is user-controlled, same as OpenSSH ProxyCommand
 	stdin, err := cmd.StdinPipe()

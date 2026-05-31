@@ -56,6 +56,30 @@ An MCP server that exposes SSH and SFTP operations as tools for AI agents. Desig
 go build ./cmd/ssh-mcp
 ```
 
+## Flags
+
+- `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file in append mode.  
+  Because the server uses stdio for the MCP protocol, **all logs must go to a file** when enabled.
+
+Example invocation with logging:
+
+```bash
+./ssh-mcp -log-file /tmp/ssh-mcp.log
+```
+
+In Claude config:
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "/path/to/ssh-mcp",
+      "args": ["-log-file", "/tmp/ssh-mcp.log"]
+    }
+  }
+}
+```
+
 ## Claude Code setup
 
 Add the server to your Claude Code MCP configuration. The server communicates over stdio.
