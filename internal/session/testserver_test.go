@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -74,7 +75,8 @@ func (s *testServer) handleConn(conn net.Conn, cfg *ssh.ServerConfig) {
 	}
 }
 
-// handleTestSession responds to exec requests by echoing the command back as stdout.
+// handleTestSession responds to exec requests by echoing the command back as stdout,
+// or simulating an SCP transfer if the command is "scp".
 func handleTestSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 	defer func() { _ = ch.Close() }()
 	for req := range reqs {
@@ -86,12 +88,44 @@ func handleTestSession(ch ssh.Channel, reqs <-chan *ssh.Request) {
 				continue
 			}
 			_ = req.Reply(true, nil)
+
+			if strings.HasPrefix(payload.Command, "scp ") {
+				handleTestSCP(ch, payload.Command)
+				return
+			}
+
 			_, _ = fmt.Fprintln(ch, payload.Command)
 			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{0}))
 			return
 		default:
 			_ = req.Reply(false, nil)
 		}
+	}
+}
+
+func handleTestSCP(ch ssh.Channel, cmd string) {
+	if strings.Contains(cmd, "-t") {
+		// Sink: Receive file
+		ch.Write([]byte{0})
+		buf := make([]byte, 1024)
+		// Wait for header
+		_, _ = ch.Read(buf)
+		ch.Write([]byte{0})
+		// Wait for content
+		_, _ = ch.Read(buf)
+		ch.Write([]byte{0})
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{0}))
+	} else if strings.Contains(cmd, "-f") {
+		// Source: Send file
+		buf := make([]byte, 1)
+		_, _ = ch.Read(buf)
+		content := "hello scp"
+		_, _ = fmt.Fprintf(ch, "C0644 %d test.txt\n", len(content))
+		_, _ = ch.Read(buf)
+		_, _ = ch.Write([]byte(content))
+		_, _ = ch.Write([]byte{0})
+		_, _ = ch.Read(buf)
+		_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{0}))
 	}
 }
 

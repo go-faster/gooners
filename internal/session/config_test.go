@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/go-faster/gooners/internal/sshutil"
@@ -58,4 +59,66 @@ func TestConfig_Dial_ProxyJump_Chain(t *testing.T) {
 	cfg.ProxyJump = jump1.addr + "," + jump2.addr
 
 	require.Equal(t, testOut, runCmd(t, cfg, testCmd))
+}
+
+func runSCPTest(t *testing.T, cfg Config, content string) {
+	t.Helper()
+	client, err := cfg.dial()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+
+	sess, err := client.NewSession()
+	require.NoError(t, err)
+	defer sess.Close()
+
+	w, err := sess.StdinPipe()
+	require.NoError(t, err)
+	r, err := sess.StdoutPipe()
+	require.NoError(t, err)
+
+	err = sess.Start("scp -t /tmp/test.txt")
+	require.NoError(t, err)
+
+	// Wait for 0x00
+	buf := make([]byte, 1)
+	_, err = r.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, byte(0), buf[0])
+
+	// Send header
+	fmt.Fprintf(w, "C0644 %d test.txt\n", len(content))
+
+	// Wait for 0x00
+	_, err = r.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, byte(0), buf[0])
+
+	// Send content + 0x00
+	w.Write([]byte(content))
+	w.Write([]byte{0})
+
+	// Wait for 0x00
+	_, err = r.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, byte(0), buf[0])
+
+	err = sess.Wait()
+	require.NoError(t, err)
+}
+
+func TestConfig_Dial_SCP(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t)
+	runSCPTest(t, dialInsecure(srv.addr), "scp test content")
+}
+
+func TestConfig_Dial_SCP_ProxyJump(t *testing.T) {
+	t.Parallel()
+	target := newTestServer(t)
+	jump := newTestServer(t)
+
+	cfg := dialInsecure(target.addr)
+	cfg.ProxyJump = jump.addr
+
+	runSCPTest(t, cfg, "scp proxyjump test content")
 }
