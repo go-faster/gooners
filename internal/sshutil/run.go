@@ -41,10 +41,32 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 	start := time.Now()
 	slog.DebugContext(ctx, "ssh run start", "command", command)
 
-	sess, err := client.NewSession()
-	if err != nil {
-		slog.DebugContext(ctx, "ssh run session error", "err", err, "duration", time.Since(start))
-		return Result{}, err
+	type sessionResult struct {
+		sess *ssh.Session
+		err  error
+	}
+	sessCh := make(chan sessionResult, 1)
+	go func() {
+		sess, err := client.NewSession()
+		sessCh <- sessionResult{sess, err}
+	}()
+
+	var sess *ssh.Session
+	select {
+	case <-ctx.Done():
+		slog.DebugContext(ctx, "ssh run canceled during NewSession", "err", ctx.Err(), "duration", time.Since(start))
+		go func() {
+			if res := <-sessCh; res.err == nil {
+				_ = res.sess.Close()
+			}
+		}()
+		return Result{}, ctx.Err()
+	case res := <-sessCh:
+		if res.err != nil {
+			slog.DebugContext(ctx, "ssh run session error", "err", res.err, "duration", time.Since(start))
+			return Result{}, res.err
+		}
+		sess = res.sess
 	}
 
 	var stdout, stderr safeBuffer

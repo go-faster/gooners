@@ -240,20 +240,50 @@ func statHandler(p SessionProvider) server.ToolHandlerFunc {
 }
 
 func writeFileHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		path := req.GetString("path", "")
 		content := req.GetString("content", "")
 		if id == "" || path == "" {
 			return mcp.NewToolResultError("session_id and path are required"), nil
 		}
+		
+		timeoutSec := req.GetFloat("timeout_s", 0)
+		if timeoutSec > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec*float64(time.Second)))
+			defer cancel()
+		}
+
 		client, err := p.Get(id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		sftpClient, err := sftp.NewClient(client)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		
+		type sftpResult struct {
+			client *sftp.Client
+			err    error
+		}
+		sftpCh := make(chan sftpResult, 1)
+		go func() {
+			sClient, err := sftp.NewClient(client)
+			sftpCh <- sftpResult{sClient, err}
+		}()
+
+		var sftpClient *sftp.Client
+		select {
+		case <-ctx.Done():
+			go func() {
+				if res := <-sftpCh; res.err == nil {
+					_ = res.client.Close()
+				}
+			}()
+			return mcp.NewToolResultError(ctx.Err().Error()), nil
+		case res := <-sftpCh:
+			if res.err != nil {
+				return mcp.NewToolResultError(res.err.Error()), nil
+			}
+			sftpClient = res.client
 		}
 		defer sftpClient.Close() //nolint:errcheck // sftp close error not actionable
 
@@ -306,9 +336,30 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerF
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		sftpClient, err := sftp.NewClient(client)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		type sftpResult struct {
+			client *sftp.Client
+			err    error
+		}
+		sftpCh := make(chan sftpResult, 1)
+		go func() {
+			sClient, err := sftp.NewClient(client)
+			sftpCh <- sftpResult{sClient, err}
+		}()
+
+		var sftpClient *sftp.Client
+		select {
+		case <-ctx.Done():
+			go func() {
+				if res := <-sftpCh; res.err == nil {
+					_ = res.client.Close()
+				}
+			}()
+			return mcp.NewToolResultError(ctx.Err().Error()), nil
+		case res := <-sftpCh:
+			if res.err != nil {
+				return mcp.NewToolResultError(res.err.Error()), nil
+			}
+			sftpClient = res.client
 		}
 		defer sftpClient.Close() //nolint:errcheck // sftp close error not actionable
 

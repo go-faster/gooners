@@ -61,10 +61,23 @@ func newTestServer(t *testing.T) string {
 							var payload struct{ Command string }
 							ssh.Unmarshal(req.Payload, &payload)
 
+							if payload.Command == "success" {
+								fmt.Fprint(ch, "success stdout")
+								ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{0}))
+								return
+							}
+
 							if payload.Command == "error_hang" {
 								fmt.Fprint(ch, "error stdout")
 								ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{1}))
 								// Block forever to simulate a hanging background daemon
+								time.Sleep(1 * time.Hour)
+								return
+							}
+
+							if payload.Command == "timeout_hang" {
+								fmt.Fprint(ch, "hanging")
+								// Block forever to simulate a hanging command
 								time.Sleep(1 * time.Hour)
 								return
 							}
@@ -135,4 +148,40 @@ func TestRunWithExitErrorAndHang(t *testing.T) {
 	require.Error(t, err)
 	require.Equal(t, context.DeadlineExceeded, err)
 	require.Equal(t, "error stdout", res.Stdout)
+}
+
+func TestRunTimeoutsAndRecovery(t *testing.T) {
+	addr := newTestServer(t)
+
+	clientCfg := &ssh.ClientConfig{
+		User:            "test",
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+	}
+	client, err := ssh.Dial("tcp", addr, clientCfg)
+	require.NoError(t, err)
+	defer client.Close()
+
+	// 1. Run first command successfully
+	ctxSuccess, cancelSuccess := context.WithTimeout(context.Background(), 1*time.Second)
+	res, err := Run(ctxSuccess, client, "success")
+	cancelSuccess()
+	require.NoError(t, err)
+	require.Equal(t, "success stdout", res.Stdout)
+
+	// 2. Run 10 timeouts
+	for range 10 {
+		ctxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		resTimeout, errTimeout := Run(ctxTimeout, client, "timeout_hang")
+		cancelTimeout()
+		require.Error(t, errTimeout)
+		require.Equal(t, context.DeadlineExceeded, errTimeout)
+		require.Equal(t, "hanging", resTimeout.Stdout)
+	}
+
+	// 3. The next command should run normally without blocking or failing
+	ctxRecovery, cancelRecovery := context.WithTimeout(context.Background(), 1*time.Second)
+	resRecovery, errRecovery := Run(ctxRecovery, client, "success")
+	cancelRecovery()
+	require.NoError(t, errRecovery)
+	require.Equal(t, "success stdout", resRecovery.Stdout)
 }

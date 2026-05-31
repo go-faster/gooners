@@ -153,7 +153,7 @@ func execHandler(p *session.Pool, sudo bool) server.ToolHandlerFunc {
 		c := ctx
 		if t > 0 {
 			var cancel context.CancelFunc
-			c, cancel = context.WithTimeout(ctx, time.Duration(t)*time.Second)
+			c, cancel = context.WithTimeout(ctx, time.Duration(t * float64(time.Second)))
 			defer cancel()
 		}
 		res, err := sshutil.Run(c, client, full)
@@ -190,7 +190,7 @@ func onceHandler(p *session.Pool) server.ToolHandlerFunc {
 		c := ctx
 		if t > 0 {
 			var cancel context.CancelFunc
-			c, cancel = context.WithTimeout(ctx, time.Duration(t)*time.Second)
+			c, cancel = context.WithTimeout(ctx, time.Duration(t * float64(time.Second)))
 			defer cancel()
 		}
 		res, err := sshutil.Run(c, client, full)
