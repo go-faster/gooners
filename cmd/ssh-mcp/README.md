@@ -58,16 +58,49 @@ go build ./cmd/ssh-mcp
 
 ## Flags
 
-- `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file in append mode.  
-  Because the server uses stdio for the MCP protocol, **all logs must go to a file** when enabled.
+- `-transport <stdio|streamable-http|sse>` — protocol to use (default: `stdio`)
+- `-addr <host:port>` — listen address for HTTP transports (`streamable-http`, `sse`). Default `:8080`
+- `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file in append mode.
 
-Example invocation with logging:
+**Recommendation**: Use `streamable-http` when possible. The stdio transport in many MCP libraries (including the one used here) uses a simplified newline-delimited protocol that is incompatible with strict clients such as recent Claude Code / Claude Desktop. Streamable HTTP is the current MCP-recommended transport and works reliably.
+
+Examples:
 
 ```bash
-./ssh-mcp -log-file /tmp/ssh-mcp.log
+# Default (stdio) – best for simple local use
+./ssh-mcp
+
+# Streamable HTTP – recommended for Claude and most modern clients
+./ssh-mcp -transport streamable-http -addr :8080 -log-file /tmp/ssh-mcp.log
+
+# SSE (older alternative)
+./ssh-mcp -transport sse -addr :8080
 ```
 
-In Claude config:
+## Claude Code setup
+
+### Streamable HTTP (recommended)
+
+Start the server:
+
+```bash
+./ssh-mcp -transport streamable-http -addr :8080
+```
+
+**`~/.claude.json`** (or project `.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "type": "streamable-http",
+      "url": "http://localhost:8080/mcp"
+    }
+  }
+}
+```
+
+### Stdio (simple local use)
 
 ```json
 {
@@ -80,41 +113,15 @@ In Claude config:
 }
 ```
 
-## Claude Code setup
-
-Add the server to your Claude Code MCP configuration. The server communicates over stdio.
-
-**`~/.claude.json`** (global, all projects):
-```json
-{
-  "mcpServers": {
-    "ssh": {
-      "command": "/path/to/ssh-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-Or using `claude mcp add` (run from a directory you want as the upload root):
+Or using `claude mcp add` (from the directory you want as upload root):
 
 ```bash
 claude mcp add ssh /path/to/ssh-mcp
 ```
 
-The server's **working directory at launch** becomes the upload root for `upload_file`. If you want to upload files from a project directory, start Claude Code from that directory or configure the `cwd` in your MCP config:
+> **Note**: Many users experience "protocol errors" or silent failures with the stdio transport because Claude sends `Content-Length`-framed messages while the current stdio implementation expects simple newline-delimited JSON. Use **streamable-http** if you hit this.
 
-```json
-{
-  "mcpServers": {
-    "ssh": {
-      "command": "/path/to/ssh-mcp",
-      "args": [],
-      "cwd": "/home/you/projects/myproject"
-    }
-  }
-}
-```
+The server's **working directory at launch** becomes the upload root for `upload_file`.
 
 ## Known hosts setup
 

@@ -3,8 +3,10 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -18,8 +20,37 @@ import (
 	"github.com/go-faster/gooners/internal/tools/systemd"
 )
 
+func runServer(s *server.MCPServer, transport, addr string) error {
+	switch transport {
+	case "stdio", "":
+		slog.Info("starting ssh-mcp on stdio transport")
+		if err := server.ServeStdio(s); err != nil {
+			return fmt.Errorf("stdio server exited with error: %w", err)
+		}
+	case "streamable-http":
+		h := server.NewStreamableHTTPServer(s)
+		slog.Info("starting ssh-mcp on streamable-http transport", "at", fmt.Sprintf("http://%s/mcp", addr))
+		if err := http.ListenAndServe(addr, h); err != nil { //nolint:gosec // G114: timeouts not required for local/trusted MCP usage
+			return fmt.Errorf("streamable-http server exited with error: %w", err)
+		}
+	case "sse":
+		sse := server.NewSSEServer(s)
+		http.Handle("/sse", sse.SSEHandler())
+		http.Handle("/message", sse.MessageHandler())
+		slog.Info("starting ssh-mcp on SSE transport", "at", fmt.Sprintf("http://%s", addr))
+		if err := http.ListenAndServe(addr, nil); err != nil { //nolint:gosec // G114: timeouts not required for local/trusted MCP usage
+			return fmt.Errorf("sse server exited with error: %W", err)
+		}
+	default:
+		return fmt.Errorf("unknown transport: %q", transport)
+	}
+	panic("unreachable")
+}
+
 func main() {
 	logFile := flag.String("log-file", "", "path to log file (enables structured debug logging)")
+	transport := flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
+	addr := flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
 	flag.Parse()
 
 	if *logFile != "" {
@@ -52,8 +83,8 @@ func main() {
 	proc.Register(s, pool)
 	disk.Register(s, pool)
 
-	if err := server.ServeStdio(s); err != nil {
-		slog.Error("server exited with error", "err", err)
+	if err := runServer(s, *transport, *addr); err != nil {
+		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}
 }
