@@ -1,3 +1,4 @@
+// Package systemd registers MCP tools for inspecting systemd units.
 package systemd
 
 import (

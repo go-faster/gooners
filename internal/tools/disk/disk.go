@@ -1,3 +1,4 @@
+// Package disk registers MCP tools for disk and filesystem inspection (lsblk, mounts).
 package disk
 
 import (

@@ -1,3 +1,4 @@
+// Package proc registers MCP tools for process inspection and management (ps, kill).
 package proc
 
 import (

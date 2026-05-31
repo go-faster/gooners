@@ -1,8 +1,11 @@
+// Package main is the entrypoint for the ssh-mcp MCP server.
 package main
 
 import (
 	"log"
 	"os"
+
+	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/tools/core"
@@ -11,7 +14,6 @@ import (
 	"github.com/go-faster/gooners/internal/tools/proc"
 	"github.com/go-faster/gooners/internal/tools/sysinfo"
 	"github.com/go-faster/gooners/internal/tools/systemd"
-	"github.com/mark3labs/mcp-go/server"
 )
 
 func main() {

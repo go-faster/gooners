@@ -188,7 +188,7 @@ func TestWriteFileHandler(t *testing.T) {
 	require.NoError(t, err)
 
 	// Check mode (might need masking depending on umask, but checking if owner read/write is enough usually)
-	require.EqualValues(t, 0600, info.Mode().Perm()&0600, "unexpected mode: %v", info.Mode())
+	require.EqualValues(t, 0o600, info.Mode().Perm()&0o600, "unexpected mode: %v", info.Mode())
 }
 
 func TestUploadFileHandler(t *testing.T) {
@@ -201,7 +201,7 @@ func TestUploadFileHandler(t *testing.T) {
 	handler := uploadFileHandler(&dummyPool{client: client}, tmpRoot)
 
 	localPath := filepath.Join(tmpRoot, "local.txt")
-	require.NoError(t, os.WriteFile(localPath, []byte("local content"), 0644))
+	require.NoError(t, os.WriteFile(localPath, []byte("local content"), 0o644))
 
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
 
@@ -238,7 +238,7 @@ func TestUploadFileHandler_Security(t *testing.T) {
 
 	// Create a file OUTSIDE the allowed root
 	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
-	require.NoError(t, os.WriteFile(outsideFile, []byte("secret content"), 0644))
+	require.NoError(t, os.WriteFile(outsideFile, []byte("secret content"), 0o644))
 
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
 

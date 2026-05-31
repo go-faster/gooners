@@ -1,3 +1,4 @@
+// Package core registers the core MCP tools for opening SSH sessions and running commands.
 package core
 
 import (
@@ -68,7 +69,7 @@ func Register(s *server.MCPServer, p *session.Pool) {
 }
 
 func openHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		machine := req.GetString("machine", "")
 		if machine == "" {
 			return mcp.NewToolResultError("machine is required"), nil
@@ -83,7 +84,7 @@ func openHandler(p *session.Pool) server.ToolHandlerFunc {
 }
 
 func openCfgHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		cfg := session.Config{
 			Machine:    req.GetString("machine", ""),
 			User:       req.GetString("user", ""),
@@ -110,7 +111,7 @@ func openCfgHandler(p *session.Pool) server.ToolHandlerFunc {
 }
 
 func closeHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		if id == "" {
 			return mcp.NewToolResultError("session_id is required"), nil
@@ -122,7 +123,7 @@ func closeHandler(p *session.Pool) server.ToolHandlerFunc {
 }
 
 func listHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		list := p.List()
 		b, _ := json.Marshal(list)
 		return mcp.NewToolResultText(string(b)), nil
@@ -202,7 +203,7 @@ func onceHandler(p *session.Pool) server.ToolHandlerFunc {
 }
 
 func listMachinesHandler() server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		machines := session.ListMachines()
 		b, err := json.Marshal(machines)
 		if err != nil {

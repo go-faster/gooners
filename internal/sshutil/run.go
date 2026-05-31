@@ -1,3 +1,4 @@
+// Package sshutil provides helpers for running commands over SSH connections.
 package sshutil
 
 import (

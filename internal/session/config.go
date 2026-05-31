@@ -34,7 +34,7 @@ type Config struct {
 }
 
 // clientConfig returns the ssh.ClientConfig plus two addresses:
-//   - tcpAddr: resolved address for the TCP dial (honours HostName)
+//   - tcpAddr: resolved address for the TCP dial (honors HostName)
 //   - sshAddr: alias:port for the SSH handshake, which is what known_hosts is
 //     keyed on — OpenSSH stores/checks keys under the name the user typed, not
 //     the resolved IP.
@@ -150,7 +150,7 @@ func (c Config) dial() (*ssh.Client, error) {
 		} else {
 			// Use net.Dial + NewClientConn so we can pass sshAddr (alias:port)
 			// to the SSH handshake. known_hosts entries are stored under the
-			// alias name, not the resolved IP, matching OpenSSH behaviour.
+			// alias name, not the resolved IP, matching OpenSSH behavior.
 			var conn net.Conn
 			conn, err = net.DialTimeout("tcp", tcpAddr, cc.Timeout)
 			if err == nil {
@@ -301,7 +301,7 @@ func dialProxyCommand(command, addr, remoteUser string) (net.Conn, error) {
 
 	expanded := expandProxyCommandTokens(command, host, portStr, remoteUser)
 
-	cmd := exec.Command("sh", "-c", expanded)
+	cmd := exec.Command("sh", "-c", expanded) //nolint:gosec // proxy command is user-controlled, same as OpenSSH ProxyCommand
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("proxy command stdin pipe: %w", err)
@@ -319,7 +319,7 @@ func dialProxyCommand(command, addr, remoteUser string) (net.Conn, error) {
 	return &proxyCommandConn{stdin: stdin, stdout: stdout, cmd: cmd}, nil
 }
 
-func expandProxyCommandTokens(command, host, port, user string) string {
+func expandProxyCommandTokens(command, host, port, remoteUser string) string {
 	var b strings.Builder
 	for i := 0; i < len(command); i++ {
 		if command[i] == '%' && i+1 < len(command) {
@@ -333,7 +333,7 @@ func expandProxyCommandTokens(command, host, port, user string) string {
 				i++
 				continue
 			case 'r':
-				b.WriteString(user)
+				b.WriteString(remoteUser)
 				i++
 				continue
 			case '%':
@@ -419,7 +419,7 @@ func homeDir() string {
 func hostKeyCallback(kh string) ssh.HostKeyCallback {
 	if kh == "insecure" {
 		slog.Warn("ssh host key verification disabled (insecure mode)")
-		return ssh.InsecureIgnoreHostKey()
+		return ssh.InsecureIgnoreHostKey() //nolint:gosec // explicitly requested by user via KnownHosts=insecure
 	}
 	path := kh
 	if path == "" {
@@ -430,6 +430,7 @@ func hostKeyCallback(kh string) ssh.HostKeyCallback {
 		if os.IsNotExist(err) {
 			dir := filepath.Dir(path)
 			_ = os.MkdirAll(dir, 0o700)
+			//nolint:gosec // known_hosts is not secret (like OpenSSH)
 			if f, err2 := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644); err2 == nil {
 				_ = f.Close()
 			}
@@ -456,7 +457,7 @@ func hostKeyCallback(kh string) ssh.HostKeyCallback {
 // the user knows exactly what to add.
 func multiAddrHostKeyCallback(kh string, addresses ...string) ssh.HostKeyCallback {
 	rawCB := hostKeyCallback(kh)
-	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+	return func(_ string, remote net.Addr, key ssh.PublicKey) error {
 		for i, addr := range addresses {
 			slog.Debug("checking host key", "addr", addr)
 			err := rawCB(addr, remote, key)
@@ -482,7 +483,7 @@ func multiAddrHostKeyCallback(kh string, addresses ...string) ssh.HostKeyCallbac
 	}
 }
 
-func authMethods(c Config, alias string, _ string) ([]ssh.AuthMethod, error) {
+func authMethods(c Config, alias, _ string) ([]ssh.AuthMethod, error) {
 	var m []ssh.AuthMethod
 	h := homeDir()
 
@@ -502,8 +503,7 @@ func authMethods(c Config, alias string, _ string) ([]ssh.AuthMethod, error) {
 	}
 
 	if c.Password != "" {
-		m = append(m, ssh.Password(c.Password))
-		m = append(m, ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
+		m = append(m, ssh.Password(c.Password), ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
 			answers := make([]string, len(questions))
 			for i := range questions {
 				answers[i] = c.Password
@@ -605,7 +605,7 @@ func resolveAgentSock(alias, home string) string {
 // Returns (nil, nil) silently when the file does not exist; logs a warning when
 // the file exists but cannot be parsed as either format.
 func loadKeyFile(path, pass string) (ssh.PublicKey, ssh.Signer) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path comes from ssh config or explicit KeyPath, user-controlled
 	if err != nil {
 		if !os.IsNotExist(err) {
 			slog.Warn("reading identity file", "path", path, "err", err)

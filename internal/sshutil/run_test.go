@@ -53,30 +53,31 @@ func newTestServer(t *testing.T) string {
 					go func(ch ssh.Channel, reqs <-chan *ssh.Request) {
 						defer ch.Close()
 						for req := range reqs {
-							if req.Type == "exec" {
-								req.Reply(true, nil)
-
-								var payload struct{ Command string }
-								ssh.Unmarshal(req.Payload, &payload)
-
-								if payload.Command == "error_hang" {
-									fmt.Fprint(ch, "error stdout")
-									ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{1}))
-									// Block forever to simulate a hanging background daemon
-									time.Sleep(1 * time.Hour)
-									return
-								}
-
-								// Write something to stdout and stderr
-								fmt.Fprint(ch, "partial stdout")
-								fmt.Fprint(ch.Stderr(), "partial stderr")
-
-								// Sleep a bit so the client times out
-								time.Sleep(500 * time.Millisecond)
-
-								// Send exit status (it shouldn't be reached if client times out first)
-								ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{0}))
+							if req.Type != "exec" {
+								continue
 							}
+							req.Reply(true, nil)
+
+							var payload struct{ Command string }
+							ssh.Unmarshal(req.Payload, &payload)
+
+							if payload.Command == "error_hang" {
+								fmt.Fprint(ch, "error stdout")
+								ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{1}))
+								// Block forever to simulate a hanging background daemon
+								time.Sleep(1 * time.Hour)
+								return
+							}
+
+							// Write something to stdout and stderr
+							fmt.Fprint(ch, "partial stdout")
+							fmt.Fprint(ch.Stderr(), "partial stderr")
+
+							// Sleep a bit so the client times out
+							time.Sleep(500 * time.Millisecond)
+
+							// Send exit status (it shouldn't be reached if client times out first)
+							ch.SendRequest("exit-status", false, ssh.Marshal(struct{ C uint32 }{0}))
 						}
 					}(ch, creqs)
 				}

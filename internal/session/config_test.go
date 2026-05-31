@@ -16,7 +16,7 @@ func dialInsecure(addr string) Config {
 	return Config{Machine: addr, KnownHosts: "insecure"}
 }
 
-// runCmd runs a single command on a just-dialled connection and returns stdout.
+// runCmd runs a single command on a just-dialed connection and returns stdout.
 func runCmd(t *testing.T, cfg Config, cmd string) string {
 	t.Helper()
 	client, err := cfg.dial()
@@ -29,8 +29,10 @@ func runCmd(t *testing.T, cfg Config, cmd string) string {
 }
 
 // The test server echoes the command as stdout, so "echo hello" → "echo hello\n".
-const testCmd = "echo hello"
-const testOut = "echo hello\n"
+const (
+	testCmd = "echo hello"
+	testOut = "echo hello\n"
+)
 
 func TestConfig_Dial_Direct(t *testing.T) {
 	t.Parallel()

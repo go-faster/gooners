@@ -1,3 +1,4 @@
+// Package sysinfo registers MCP tools for system information (network, OS, users).
 package sysinfo
 
 import (

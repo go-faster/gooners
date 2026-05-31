@@ -14,7 +14,7 @@ import (
 
 type mockExecHandler func(cmd string) (string, int)
 
-func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (*ssh.Client, func()) {
+func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (client *ssh.Client, cleanup func()) {
 	t.Helper()
 	config := &ssh.ServerConfig{
 		NoClientAuth: true,
@@ -147,10 +147,10 @@ func setupMockSSHServer(t *testing.T, execHandler mockExecHandler) (*ssh.Client,
 		Timeout:         2 * time.Second,
 	}
 
-	client, err := ssh.Dial("tcp", listener.Addr().String(), clientConfig)
+	client, err = ssh.Dial("tcp", listener.Addr().String(), clientConfig)
 	require.NoError(t, err, "failed to connect to mock server")
 
-	cleanup := func() {
+	cleanup = func() {
 		close(done)
 		if err := client.Close(); err != nil {
 			t.Logf("close client: %v", err)

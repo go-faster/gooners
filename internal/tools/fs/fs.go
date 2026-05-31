@@ -1,3 +1,4 @@
+// Package fs registers MCP tools for remote file operations (ls, cat, upload, download, grep).
 package fs
 
 import (
@@ -140,11 +141,11 @@ func catHandler(p SessionProvider) server.ToolHandlerFunc {
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		max := req.GetFloat("max_bytes", 0)
-		if max <= 0 || max > maxCatBytes {
-			max = maxCatBytes
+		maxBytes := req.GetFloat("max_bytes", 0)
+		if maxBytes <= 0 || maxBytes > maxCatBytes {
+			maxBytes = maxCatBytes
 		}
-		cmd := fmt.Sprintf("head -c %d %s", int64(max), sshutil.Quote(path))
+		cmd := fmt.Sprintf("head -c %d %s", int64(maxBytes), sshutil.Quote(path))
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
@@ -173,9 +174,9 @@ func grepHandler(p SessionProvider) server.ToolHandlerFunc {
 		if req.GetBool("case_insensitive", false) {
 			cmd += " -i"
 		}
-		max := req.GetFloat("max_lines", 0)
-		if max > 0 {
-			cmd += fmt.Sprintf(" -m %d", int64(max))
+		maxLines := req.GetFloat("max_lines", 0)
+		if maxLines > 0 {
+			cmd += fmt.Sprintf(" -m %d", int64(maxLines))
 		}
 		cmd += " " + sshutil.Quote(pattern) + " " + sshutil.Quote(path)
 		res, err := sshutil.Run(ctx, client, cmd)
@@ -239,7 +240,7 @@ func statHandler(p SessionProvider) server.ToolHandlerFunc {
 }
 
 func writeFileHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		path := req.GetString("path", "")
 		content := req.GetString("content", "")
@@ -311,7 +312,7 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerF
 		}
 		defer sftpClient.Close() //nolint:errcheck // sftp close error not actionable
 
-		src, err := os.Open(safePath)
+		src, err := os.Open(safePath) //nolint:gosec // safePath validated by withinDir, user-initiated file operation
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

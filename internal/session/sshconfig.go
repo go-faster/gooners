@@ -1,3 +1,5 @@
+// Package session provides SSH configuration parsing, host key handling,
+// authentication methods, and connection pooling for remote machine access.
 package session
 
 import (
@@ -111,7 +113,7 @@ func listMachinesFromRoots(roots []string, home string) []Machine {
 		if depth > 10 {
 			return
 		}
-		f, err := os.Open(path)
+		f, err := os.Open(path) //nolint:gosec // path from ssh config Include or user-provided roots, trusted input
 		if err != nil {
 			return
 		}
