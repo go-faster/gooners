@@ -5,6 +5,7 @@ go 1.26.3
 require (
 	github.com/google/uuid v1.6.0
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
+	github.com/kevinburke/ssh_config v1.6.0
 	github.com/mark3labs/mcp-go v0.54.1
 	github.com/pkg/sftp v1.13.10
 	github.com/stretchr/testify v1.11.1

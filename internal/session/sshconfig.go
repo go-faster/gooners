@@ -122,8 +122,8 @@ func listMachinesFromRoots(roots []string, home string) []Machine {
 		parsed := parseSSHConfig(f, func(incs []string) {
 			for _, inc := range incs {
 				incPath := inc
-				if strings.HasPrefix(inc, "~/") {
-					incPath = filepath.Join(home, inc[2:])
+				if rest, ok := strings.CutPrefix(inc, "~/"); ok {
+					incPath = filepath.Join(home, rest)
 				} else if !filepath.IsAbs(inc) {
 					incPath = filepath.Join(baseDir, inc)
 				}

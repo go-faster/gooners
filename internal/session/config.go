@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	gosshconfig "github.com/kevinburke/ssh_config"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -28,6 +29,28 @@ type Config struct {
 
 func (c Config) clientConfig() (*ssh.ClientConfig, string, error) {
 	usr, host, port := parseTarget(c.Machine)
+	if host == "" {
+		host = c.Machine
+	}
+
+	// Apply ~/.ssh/config settings as fallbacks for the resolved hostname alias.
+	if cfgHostname := gosshconfig.Get(host, "HostName"); cfgHostname != "" && cfgHostname != host {
+		host = cfgHostname
+	}
+	if usr == "" {
+		if cfgUser := gosshconfig.Get(c.Machine, "User"); cfgUser != "" {
+			usr = cfgUser
+		}
+	}
+	if port == 0 {
+		if cfgPort := gosshconfig.Get(c.Machine, "Port"); cfgPort != "" {
+			if p, err := strconv.Atoi(cfgPort); err == nil {
+				port = p
+			}
+		}
+	}
+
+	// Explicit Config fields override ssh_config.
 	if c.User != "" {
 		usr = c.User
 	}
@@ -39,9 +62,6 @@ func (c Config) clientConfig() (*ssh.ClientConfig, string, error) {
 	}
 	if port == 0 {
 		port = 22
-	}
-	if host == "" {
-		host = c.Machine
 	}
 	addr := fmt.Sprintf("%s:%d", host, port)
 
@@ -179,8 +199,9 @@ func authMethods(c Config) ([]ssh.AuthMethod, error) {
 		}
 	}
 
-	for _, name := range []string{"id_ed25519", "id_rsa", "id_ecdsa"} {
-		p := filepath.Join(h, ".ssh", name)
+	// Collect key paths: IdentityFile from ssh_config first, then defaults.
+	keyPaths := identityFilesFromConfig(c.Machine, h)
+	for _, p := range keyPaths {
 		if key, err := os.ReadFile(p); err == nil {
 			if signer, err := ssh.ParsePrivateKey(key); err == nil {
 				m = append(m, ssh.PublicKeys(signer))
@@ -190,6 +211,32 @@ func authMethods(c Config) ([]ssh.AuthMethod, error) {
 		}
 	}
 	return m, nil
+}
+
+// identityFilesFromConfig returns key paths to try: IdentityFile entries from
+// ssh_config for the given alias, followed by the standard default key names.
+// Duplicates (from ssh_config overriding defaults) are deduplicated.
+func identityFilesFromConfig(alias, home string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+
+	add := func(p string) {
+		if rest, ok := strings.CutPrefix(p, "~/"); ok {
+			p = filepath.Join(home, rest)
+		}
+		if _, ok := seen[p]; !ok {
+			seen[p] = struct{}{}
+			out = append(out, p)
+		}
+	}
+
+	for _, p := range gosshconfig.GetAll(alias, "IdentityFile") {
+		add(p)
+	}
+	for _, name := range []string{"id_ed25519", "id_rsa", "id_ecdsa"} {
+		add(filepath.Join(home, ".ssh", name))
+	}
+	return out
 }
 
 func tryParseWithPass(pass string, key []byte) (ssh.Signer, bool) {
