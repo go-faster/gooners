@@ -12,7 +12,8 @@ import (
 type Result struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code"`
+	ExitCode int    `json:"exit_code,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 func Run(ctx context.Context, client *ssh.Client, command string) (Result, error) {
@@ -35,7 +36,10 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 	case <-ctx.Done():
 		//nolint:errcheck // close on context cancel, error not actionable
 		sess.Close()
-		return Result{}, ctx.Err()
+		return Result{
+			Stdout: stdout.String(),
+			Stderr: stderr.String(),
+		}, ctx.Err()
 	case err := <-done:
 		res := Result{
 			Stdout: stdout.String(),

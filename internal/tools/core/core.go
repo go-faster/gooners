@@ -156,7 +156,8 @@ func execHandler(p *session.Pool, sudo bool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(c, client, full)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -192,7 +193,8 @@ func onceHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(c, client, full)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}

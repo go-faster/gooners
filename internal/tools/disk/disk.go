@@ -45,7 +45,8 @@ func lsblkHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -67,7 +68,8 @@ func mountsHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -89,7 +91,8 @@ func dfHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}

@@ -74,7 +74,8 @@ func statusHandler(p *session.Pool) server.ToolHandlerFunc {
 		cmd := "systemctl status " + sshutil.Quote(unit)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -99,7 +100,8 @@ func listUnitsHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -119,7 +121,8 @@ func mutatingHandler(p *session.Pool, action string) server.ToolHandlerFunc {
 		cmd := "sudo -n systemctl " + action + " " + sshutil.Quote(unit)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -157,7 +160,8 @@ func journalHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}

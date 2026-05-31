@@ -48,7 +48,8 @@ func netAddrsHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -67,7 +68,8 @@ func osInfoHandler(p *session.Pool) server.ToolHandlerFunc {
 		cmd := "hostname; echo '---'; uname -a; echo '---'; cat /etc/os-release 2>/dev/null || cat /etc/redhat-release 2>/dev/null || echo 'os-release: not found'"
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -85,7 +87,8 @@ func uptimeHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, "uptime")
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -103,7 +106,8 @@ func memHandler(p *session.Pool) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, "free -h")
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}

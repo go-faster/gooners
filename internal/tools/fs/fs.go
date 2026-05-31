@@ -96,7 +96,7 @@ func Register(s *server.MCPServer, p SessionProvider, uploadRoot string) {
 		mcp.WithString("session_id", mcp.Required()),
 		mcp.WithString("local_path", mcp.Required()),
 		mcp.WithString("remote_path", mcp.Required()),
-		mcp.WithNumber("timeout", mcp.Description("Timeout in seconds")),
+		mcp.WithNumber("timeout_s", mcp.Description("Timeout in seconds")),
 	), uploadFileHandler(p, uploadRoot))
 }
 
@@ -121,7 +121,8 @@ func lsHandler(p SessionProvider) server.ToolHandlerFunc {
 		cmd += " " + sshutil.Quote(path)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -145,7 +146,8 @@ func catHandler(p SessionProvider) server.ToolHandlerFunc {
 		cmd := fmt.Sprintf("head -c %d %s", int64(max), sshutil.Quote(path))
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -177,7 +179,8 @@ func grepHandler(p SessionProvider) server.ToolHandlerFunc {
 		cmd += " " + sshutil.Quote(pattern) + " " + sshutil.Quote(path)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -206,7 +209,8 @@ func findHandler(p SessionProvider) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -226,7 +230,8 @@ func statHandler(p SessionProvider) server.ToolHandlerFunc {
 		cmd := "stat " + sshutil.Quote(path)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -284,7 +289,7 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerF
 			return mcp.NewToolResultError("session_id, local_path and remote_path are required"), nil
 		}
 		
-		timeoutSec := req.GetFloat("timeout", 0)
+		timeoutSec := req.GetFloat("timeout_s", 0)
 		if timeoutSec > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec*float64(time.Second)))

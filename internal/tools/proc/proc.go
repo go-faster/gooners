@@ -103,7 +103,8 @@ func listHandler(p session.Provider) server.ToolHandlerFunc {
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -132,7 +133,8 @@ func infoHandler(p session.Provider) server.ToolHandlerFunc {
 		)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -158,7 +160,8 @@ func lsofHandler(p session.Provider) server.ToolHandlerFunc {
 		)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
@@ -185,7 +188,8 @@ func killHandler(p session.Provider) server.ToolHandlerFunc {
 		cmd := fmt.Sprintf("sudo -n kill -%s %s", sig, pid)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			res.Error = err.Error()
+			return mcp.NewToolResultError(res.Text()), nil
 		}
 		return mcp.NewToolResultText(res.Text()), nil
 	}
