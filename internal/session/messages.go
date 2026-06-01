@@ -61,3 +61,34 @@ type ExecResponse struct {
 	ExitCode int
 	Err      error
 }
+
+type UploadRequest struct {
+	SessionID  string
+	LocalPath  string
+	RemotePath string
+	resp       chan<- UploadResponse
+}
+
+func (UploadRequest) isRequest() {}
+
+type UploadResponse struct {
+	UploadID string
+	Err      error
+}
+
+type UploadStatusRequest struct {
+	SessionID string
+	UploadID  string
+	resp      chan<- UploadStatusResponse
+}
+
+func (UploadStatusRequest) isRequest() {}
+
+type UploadStatusResponse struct {
+	UploadID      string
+	BytesUploaded int64
+	TotalBytes    int64
+	Percent       float64
+	Done          bool
+	Err           error
+}

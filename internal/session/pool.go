@@ -6,13 +6,16 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kballard/go-shellquote"
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -21,6 +24,19 @@ type Session struct {
 	Machine   string
 	CreatedAt time.Time
 	client    *ssh.Client
+	uploads   map[string]*UploadJob
+}
+
+type UploadJob struct {
+	ID            string
+	LocalPath     string
+	RemotePath    string
+	TotalBytes    int64
+	BytesUploaded int64
+	Done          bool
+	Err           error
+	mu            sync.Mutex
+	cancel        context.CancelFunc
 }
 
 type SessionInfo struct {
@@ -31,6 +47,9 @@ type SessionInfo struct {
 
 type Provider interface {
 	Get(ctx context.Context, id string) (*ssh.Client, error)
+	SFTP(ctx context.Context, id string) (*sftp.Client, error)
+	Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error)
+	UploadStatus(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error)
 }
 
 // Pool manages SSH sessions.
@@ -77,6 +96,7 @@ func (p *Pool) Run(ctx context.Context) {
 				Machine:   res.req.Config.Machine,
 				CreatedAt: time.Now(),
 				client:    res.client,
+				uploads:   make(map[string]*UploadJob),
 			}
 			sessions[id] = sess
 			slog.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
@@ -108,6 +128,9 @@ func (p *Pool) Run(ctx context.Context) {
 			case CloseRequest:
 				s, ok := sessions[r.ID]
 				if ok {
+					for _, job := range s.uploads {
+						job.cancel()
+					}
 					_ = s.client.Close()
 					delete(sessions, r.ID)
 					slog.Debug("ssh session closed", "id", r.ID, "machine", s.Machine)
@@ -119,6 +142,51 @@ func (p *Pool) Run(ctx context.Context) {
 					out = append(out, SessionInfo{ID: s.ID, Machine: s.Machine, CreatedAt: s.CreatedAt})
 				}
 				r.resp <- out
+
+			case UploadRequest:
+				s, ok := sessions[r.SessionID]
+				if !ok {
+					r.resp <- UploadResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
+					continue
+				}
+				uploadID := fmt.Sprintf("upload-%d", time.Now().UnixNano())
+				uCtx, uCancel := context.WithCancel(ctx)
+				job := &UploadJob{
+					ID:         uploadID,
+					LocalPath:  r.LocalPath,
+					RemotePath: r.RemotePath,
+					cancel:     uCancel,
+				}
+				s.uploads[uploadID] = job
+				go runUpload(uCtx, s.client, job)
+				r.resp <- UploadResponse{UploadID: uploadID}
+
+			case UploadStatusRequest:
+				s, ok := sessions[r.SessionID]
+				if !ok {
+					r.resp <- UploadStatusResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
+					continue
+				}
+				job, ok := s.uploads[r.UploadID]
+				if !ok {
+					r.resp <- UploadStatusResponse{Err: fmt.Errorf("upload not found: %s", r.UploadID)}
+					continue
+				}
+				job.mu.Lock()
+				percent := float64(100)
+				if job.TotalBytes > 0 {
+					percent = (float64(job.BytesUploaded) / float64(job.TotalBytes)) * 100
+				}
+				r.resp <- UploadStatusResponse{
+					UploadID:      job.ID,
+					BytesUploaded: job.BytesUploaded,
+					TotalBytes:    job.TotalBytes,
+					Percent:       percent,
+					Done:          job.Done,
+					Err:           job.Err,
+				}
+				job.mu.Unlock()
+
 			case ExecRequest:
 				s, ok := sessions[r.SessionID]
 				if !ok {
@@ -362,6 +430,36 @@ func (p *Pool) List(ctx context.Context) ([]SessionInfo, error) {
 	}
 }
 
+func (p *Pool) Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error) {
+	respCh := make(chan UploadResponse, 1)
+	select {
+	case p.reqCh <- UploadRequest{SessionID: sessionID, LocalPath: localPath, RemotePath: remotePath, resp: respCh}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	select {
+	case resp := <-respCh:
+		return resp.UploadID, resp.Err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (p *Pool) UploadStatus(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error) {
+	respCh := make(chan UploadStatusResponse, 1)
+	select {
+	case p.reqCh <- UploadStatusRequest{SessionID: sessionID, UploadID: uploadID, resp: respCh}:
+	case <-ctx.Done():
+		return UploadStatusResponse{}, ctx.Err()
+	}
+	select {
+	case resp := <-respCh:
+		return resp, resp.Err
+	case <-ctx.Done():
+		return UploadStatusResponse{}, ctx.Err()
+	}
+}
+
 func generateSessionID(machine string, sessions map[string]*Session) string {
 	slug := machineSlug(machine)
 	for range 100 {
@@ -430,4 +528,84 @@ func randomIndex(n int) int {
 		return int(time.Now().UnixNano() % int64(n))
 	}
 	return int(v.Int64())
+}
+
+type poolProgressReader struct {
+	r   io.Reader
+	ctx context.Context
+	job *UploadJob
+}
+
+func (pr *poolProgressReader) Read(p []byte) (int, error) {
+	if err := pr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := pr.r.Read(p)
+	pr.job.mu.Lock()
+	pr.job.BytesUploaded += int64(n)
+	pr.job.mu.Unlock()
+	return n, err
+}
+
+func runUpload(ctx context.Context, client *ssh.Client, job *UploadJob) {
+	defer func() {
+		job.mu.Lock()
+		job.Done = true
+		job.mu.Unlock()
+	}()
+
+	if err := func() error {
+		src, err := os.Open(job.LocalPath)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = src.Close()
+		}()
+
+		stat, err := src.Stat()
+		if err != nil {
+			return err
+		}
+
+		job.mu.Lock()
+		job.TotalBytes = stat.Size()
+		job.mu.Unlock()
+
+		sftpClient, err := sftp.NewClient(client)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = sftpClient.Close()
+		}()
+
+		dst, err := sftpClient.Create(job.RemotePath)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = dst.Close()
+		}()
+
+		pr := &poolProgressReader{r: src, ctx: ctx, job: job}
+		if _, err := io.Copy(dst, pr); err != nil {
+			return err
+		}
+
+		return nil
+	}(); err != nil {
+		job.mu.Lock()
+		job.Err = err
+		job.mu.Unlock()
+		return
+	}
+}
+
+func (p *Pool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {
+	client, err := p.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return sftp.NewClient(client)
 }

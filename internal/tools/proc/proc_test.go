@@ -66,7 +66,7 @@ func TestKillHandler_Security(t *testing.T) {
 	handler := killHandler(nil) // dummyPool not needed if it fails validation early
 
 	req := mcp.CallToolRequest{}
-	args := map[string]interface{}{
+	args := map[string]any{
 		"session_id": "test_id",
 		"pid":        "1; rm -rf /",
 		"signal":     "TERM",

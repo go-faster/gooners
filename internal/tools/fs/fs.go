@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
 )
 
@@ -42,6 +42,9 @@ func withinDir(root, path string) (string, error) {
 
 type SessionProvider interface {
 	Get(ctx context.Context, id string) (*ssh.Client, error)
+	SFTP(ctx context.Context, id string) (*sftp.Client, error)
+	Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error)
+	UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
 }
 
 func Register(s *server.MCPServer, p SessionProvider, uploadRoot string) {
@@ -94,12 +97,18 @@ func Register(s *server.MCPServer, p SessionProvider, uploadRoot string) {
 	), writeFileHandler(p))
 
 	s.AddTool(mcp.NewTool("upload_file",
-		mcp.WithDescription("Upload a local file (must be within the allowed upload directory) to remote path via SFTP."),
+		mcp.WithDescription("Upload a local file asynchronously to remote path via SFTP. Returns an upload_id."),
 		mcp.WithString("session_id", mcp.Required()),
 		mcp.WithString("local_path", mcp.Required()),
 		mcp.WithString("remote_path", mcp.Required()),
 		mcp.WithNumber("timeout_s", mcp.Description("Timeout in seconds")),
 	), uploadFileHandler(p, uploadRoot))
+
+	s.AddTool(mcp.NewTool("upload_status",
+		mcp.WithDescription("Check the status of an asynchronous file upload."),
+		mcp.WithString("session_id", mcp.Required()),
+		mcp.WithString("upload_id", mcp.Required()),
+	), uploadStatusHandler(p))
 }
 
 func lsHandler(p SessionProvider) server.ToolHandlerFunc {
@@ -255,35 +264,9 @@ func writeFileHandler(p SessionProvider) server.ToolHandlerFunc {
 			defer cancel()
 		}
 
-		client, err := p.Get(ctx, id)
+		sftpClient, err := p.SFTP(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
-		}
-
-		type sftpResult struct {
-			client *sftp.Client
-			err    error
-		}
-		sftpCh := make(chan sftpResult, 1)
-		go func() {
-			sClient, err := sftp.NewClient(client)
-			sftpCh <- sftpResult{sClient, err}
-		}()
-
-		var sftpClient *sftp.Client
-		select {
-		case <-ctx.Done():
-			go func() {
-				if res := <-sftpCh; res.err == nil {
-					_ = res.client.Close()
-				}
-			}()
-			return mcp.NewToolResultError(ctx.Err().Error()), nil
-		case res := <-sftpCh:
-			if res.err != nil {
-				return mcp.NewToolResultError(res.err.Error()), nil
-			}
-			sftpClient = res.client
 		}
 		defer sftpClient.Close() //nolint:errcheck // sftp close error not actionable
 
@@ -332,105 +315,50 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerF
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		client, err := p.Get(ctx, id)
+
+		uploadID, err := p.Upload(ctx, id, safePath, remote)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		type sftpResult struct {
-			client *sftp.Client
-			err    error
-		}
-		sftpCh := make(chan sftpResult, 1)
-		go func() {
-			sClient, err := sftp.NewClient(client)
-			sftpCh <- sftpResult{sClient, err}
-		}()
 
-		var sftpClient *sftp.Client
-		select {
-		case <-ctx.Done():
-			go func() {
-				if res := <-sftpCh; res.err == nil {
-					_ = res.client.Close()
-				}
-			}()
-			return mcp.NewToolResultError(ctx.Err().Error()), nil
-		case res := <-sftpCh:
-			if res.err != nil {
-				return mcp.NewToolResultError(res.err.Error()), nil
-			}
-			sftpClient = res.client
-		}
-		defer sftpClient.Close() //nolint:errcheck // sftp close error not actionable
-
-		src, err := os.Open(safePath) //nolint:gosec // safePath validated by withinDir, user-initiated file operation
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		defer src.Close() //nolint:errcheck // src close error not actionable
-
-		stat, err := src.Stat()
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		totalBytes := stat.Size()
-
-		dst, err := sftpClient.Create(remote)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		defer dst.Close() //nolint:errcheck // dst close error not actionable
-
-		pr := &progressReader{
-			r:     src,
-			ctx:   ctx,
-			total: totalBytes,
-		}
-
-		copied, err := io.Copy(dst, pr)
-
-		percent := float64(100)
-		if totalBytes > 0 {
-			percent = (float64(copied) / float64(totalBytes)) * 100
-		}
-
-		if err != nil {
-			res := map[string]interface{}{
-				"ok":             false,
-				"error":          err.Error(),
-				"bytes_uploaded": copied,
-				"total_bytes":    totalBytes,
-				"percent":        percent,
-			}
-			b, _ := json.Marshal(res)
-			return mcp.NewToolResultError(string(b)), nil
-		}
-
-		res := map[string]interface{}{
-			"ok":             true,
-			"bytes_uploaded": copied,
-			"total_bytes":    totalBytes,
-			"percent":        percent,
+		res := map[string]any{
+			"ok":        true,
+			"upload_id": uploadID,
 		}
 		b, _ := json.Marshal(res)
 		return mcp.NewToolResultText(string(b)), nil
 	}
 }
 
-type progressReader struct {
-	r      io.Reader
-	ctx    context.Context
-	total  int64
-	copied int64
-}
+func uploadStatusHandler(p SessionProvider) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		id := req.GetString("session_id", "")
+		uploadID := req.GetString("upload_id", "")
+		if id == "" || uploadID == "" {
+			return mcp.NewToolResultError("session_id and upload_id are required"), nil
+		}
 
-func (pr *progressReader) Read(p []byte) (int, error) {
-	if err := pr.ctx.Err(); err != nil {
-		return 0, err
+		status, err := p.UploadStatus(ctx, id, uploadID)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		res := map[string]any{
+			"ok":             true,
+			"upload_id":      status.UploadID,
+			"bytes_uploaded": status.BytesUploaded,
+			"total_bytes":    status.TotalBytes,
+			"percent":        status.Percent,
+			"done":           status.Done,
+		}
+		if status.Err != nil {
+			res["error"] = status.Err.Error()
+			res["ok"] = false
+		}
+
+		b, _ := json.Marshal(res)
+		return mcp.NewToolResultText(string(b)), nil
 	}
-	n, err := pr.r.Read(p)
-	pr.copied += int64(n)
-	return n, err
 }
 
 func jsonForOk() (string, error) {

@@ -3,14 +3,18 @@ package fs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/pkg/sftp"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/go-faster/gooners/internal/session"
 )
 
 type dummyPool struct {
@@ -21,13 +25,38 @@ func (p *dummyPool) Get(ctx context.Context, id string) (*ssh.Client, error) {
 	return p.client, nil
 }
 
-func parseResult(t *testing.T, res *mcp.CallToolResult) map[string]interface{} {
+func (p *dummyPool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {
+	if p.client == nil {
+		return nil, fmt.Errorf("no client in dummy pool")
+	}
+	return sftp.NewClient(p.client)
+}
+
+func (p *dummyPool) Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error) {
+	data, err := os.ReadFile(localPath)
+	if err == nil {
+		_ = os.WriteFile(remotePath, data, 0o644)
+	}
+	return "upload-123", nil
+}
+
+func (p *dummyPool) UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error) {
+	return session.UploadStatusResponse{
+		UploadID:      uploadID,
+		BytesUploaded: 100,
+		TotalBytes:    100,
+		Percent:       100,
+		Done:          true,
+	}, nil
+}
+
+func parseResult(t *testing.T, res *mcp.CallToolResult) map[string]any {
 	t.Helper()
 	require.False(t, res.IsError, "unexpected error result: %v", res)
 	require.Len(t, res.Content, 1)
 	text, ok := res.Content[0].(mcp.TextContent)
 	require.True(t, ok, "expected TextContent, got %T", res.Content[0])
-	var data map[string]interface{}
+	var data map[string]any
 	require.NoError(t, json.Unmarshal([]byte(text.Text), &data), "failed to unmarshal JSON, text: %q", text.Text)
 	return data
 }
@@ -43,7 +72,7 @@ func TestLSHandler(t *testing.T) {
 
 	handler := lsHandler(&dummyPool{client: client})
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]interface{}{
+	req.Params.Arguments = map[string]any{
 		"session_id": "test_id",
 		"path":       "/foo bar",
 		"long":       true,
@@ -68,7 +97,7 @@ func TestCatHandler(t *testing.T) {
 
 	handler := catHandler(&dummyPool{client: client})
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]interface{}{
+	req.Params.Arguments = map[string]any{
 		"session_id": "test_id",
 		"path":       "/foo bar.txt",
 	}
@@ -91,7 +120,7 @@ func TestGrepHandler(t *testing.T) {
 
 	handler := grepHandler(&dummyPool{client: client})
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]interface{}{
+	req.Params.Arguments = map[string]any{
 		"session_id":       "test_id",
 		"pattern":          "search pat",
 		"path":             "/foo",
@@ -118,7 +147,7 @@ func TestFindHandler(t *testing.T) {
 
 	handler := findHandler(&dummyPool{client: client})
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]interface{}{
+	req.Params.Arguments = map[string]any{
 		"session_id": "test_id",
 		"path":       "/foo",
 		"name":       "*.txt",
@@ -144,7 +173,7 @@ func TestStatHandler(t *testing.T) {
 
 	handler := statHandler(&dummyPool{client: client})
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]interface{}{
+	req.Params.Arguments = map[string]any{
 		"session_id": "test_id",
 		"path":       "/foo",
 	}
@@ -169,7 +198,7 @@ func TestWriteFileHandler(t *testing.T) {
 	// Our mock sftp server uses the real local filesystem!
 	tmpRemote := filepath.Join(t.TempDir(), "remote.txt")
 
-	req.Params.Arguments = map[string]interface{}{
+	req.Params.Arguments = map[string]any{
 		"session_id": "test_id",
 		"path":       tmpRemote,
 		"content":    "hello sftp",
@@ -206,7 +235,7 @@ func TestUploadFileHandler(t *testing.T) {
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
 
 	req := mcp.CallToolRequest{}
-	req.Params.Arguments = map[string]interface{}{
+	req.Params.Arguments = map[string]any{
 		"session_id":  "test_id",
 		"local_path":  localPath,
 		"remote_path": remotePath,
@@ -218,9 +247,7 @@ func TestUploadFileHandler(t *testing.T) {
 
 	data := parseResult(t, res)
 	require.Equal(t, true, data["ok"])
-	require.Equal(t, float64(13), data["bytes_uploaded"])
-	require.Equal(t, float64(13), data["total_bytes"])
-	require.Equal(t, float64(100), data["percent"])
+	require.Equal(t, "upload-123", data["upload_id"])
 
 	content, err := os.ReadFile(remotePath)
 	require.NoError(t, err)
@@ -243,7 +270,7 @@ func TestUploadFileHandler_Security(t *testing.T) {
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
 
 	req := mcp.CallToolRequest{}
-	args := map[string]interface{}{
+	args := map[string]any{
 		"session_id":  "test_id",
 		"local_path":  outsideFile, // Should fail!
 		"remote_path": remotePath,
@@ -314,4 +341,24 @@ func TestWithinDir(t *testing.T) {
 			require.True(t, strings.HasPrefix(got, root), "withinDir() got = %v, must be within %v", got, root)
 		})
 	}
+}
+
+func TestUploadStatusHandler(t *testing.T) {
+	handler := uploadStatusHandler(&dummyPool{})
+
+	req := mcp.CallToolRequest{}
+	req.Params.Arguments = map[string]any{
+		"session_id": "test_id",
+		"upload_id":  "upload-123",
+	}
+
+	res, err := handler(context.Background(), req)
+	require.NoError(t, err)
+	require.False(t, res.IsError, "unexpected error: %v", res)
+
+	data := parseResult(t, res)
+	require.Equal(t, true, data["ok"])
+	require.Equal(t, "upload-123", data["upload_id"])
+	require.Equal(t, float64(100), data["percent"])
+	require.Equal(t, true, data["done"])
 }

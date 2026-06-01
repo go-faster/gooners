@@ -4,6 +4,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -190,16 +191,24 @@ func onceHandler(p *session.Pool) server.ToolHandlerFunc {
 }
 
 func execResult(res session.ExecResponse) (*mcp.CallToolResult, error) {
-	obj := map[string]interface{}{"stdout": res.Stdout, "stderr": res.Stderr}
+	obj := map[string]any{"stdout": res.Stdout, "stderr": res.Stderr}
 	if res.ExitCode != 0 {
 		obj["exit_code"] = res.ExitCode
 	}
+
 	if res.Err != nil {
 		obj["error"] = res.Err.Error()
-		b, _ := json.Marshal(obj)
+		b, err := json.Marshal(obj)
+		if err != nil {
+			return nil, fmt.Errorf("marshal exec error: %w", err)
+		}
 		return mcp.NewToolResultError(string(b)), nil
 	}
-	b, _ := json.Marshal(obj)
+
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return nil, fmt.Errorf("marshal exec result: %w", err)
+	}
 	return mcp.NewToolResultText(string(b)), nil
 }
 
