@@ -81,7 +81,8 @@ func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, any] {
 			cmd += " -a"
 		}
 		cmd += " " + sshutil.Quote(args.Path)
-		res, err := sshutil.Run(ctx, client, cmd)
+
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{
@@ -115,7 +116,7 @@ func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, any] {
 			maxBytes = maxCatBytes
 		}
 		cmd := fmt.Sprintf("head -c %d %s", int64(maxBytes), sshutil.Quote(args.Path))
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -153,7 +154,7 @@ func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, any] {
 			cmd += fmt.Sprintf(" -m %d", int64(args.MaxLines))
 		}
 		cmd += " " + sshutil.Quote(args.Pattern) + " " + sshutil.Quote(args.Path)
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -189,7 +190,7 @@ func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, any] {
 		if args.MaxDepth > 0 {
 			cmd += fmt.Sprintf(" -maxdepth %d", int64(args.MaxDepth))
 		}
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -213,7 +214,7 @@ func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, any] {
 			return nil, nil, err
 		}
 		cmd := "stat " + sshutil.Quote(args.Path)
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -235,14 +236,14 @@ func writeFileHandler(p SessionProvider) mcp.ToolHandlerFor[writeFileParams, any
 		if args.SessionID == "" || args.Path == "" || args.Content == "" {
 			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		c := ctx
+		timeout := 60.0
 		if args.TimeoutSec > 0 {
-			var cancel context.CancelFunc
-			c, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSec)*time.Second)
-			defer cancel()
+			timeout = args.TimeoutSec
 		}
+		writeCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
 
-		sftpClient, err := p.SFTP(c, args.SessionID)
+		sftpClient, err := p.SFTP(writeCtx, args.SessionID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -284,17 +285,17 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) mcp.ToolHandlerFor[
 		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
 			return nil, nil, fmt.Errorf("session_id, local_path and remote_path are required")
 		}
-		c := ctx
+		timeout := 60.0
 		if args.TimeoutSec > 0 {
-			var cancel context.CancelFunc
-			c, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSec)*time.Second)
-			defer cancel()
+			timeout = args.TimeoutSec
 		}
+		uploadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
 		safePath, err := withinDir(uploadRoot, args.LocalPath)
 		if err != nil {
 			return nil, nil, err
 		}
-		uploadID, err := p.Upload(c, args.SessionID, safePath, args.RemotePath)
+		uploadID, err := p.Upload(uploadCtx, args.SessionID, safePath, args.RemotePath)
 		if err != nil {
 			return nil, nil, err
 		}

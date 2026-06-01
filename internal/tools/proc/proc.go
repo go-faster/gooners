@@ -86,7 +86,7 @@ func listHandler(p session.Provider) mcp.ToolHandlerFor[procListParams, any] {
 		if args.MaxLines > 0 {
 			cmd += fmt.Sprintf(" | head -n %d", int64(args.MaxLines))
 		}
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -119,7 +119,7 @@ func infoHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
 				"echo '=== cwd ===' && readlink /proc/%s/cwd 2>/dev/null",
 			args.PID, args.PID, args.PID, args.PID,
 		)
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -141,7 +141,7 @@ func lsofHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
 			return nil, nil, err
 		}
 		cmd := fmt.Sprintf("lsof -p %s 2>/dev/null || ls -la /proc/%s/fd 2>/dev/null", args.PID, args.PID)
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -173,7 +173,7 @@ func killHandler(p session.Provider) mcp.ToolHandlerFor[killParams, any] {
 			return nil, nil, err
 		}
 		cmd := fmt.Sprintf("sudo -n kill -%s %s", sig, args.PID)
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil

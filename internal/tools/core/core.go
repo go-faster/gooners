@@ -63,7 +63,11 @@ func openHandler(p *session.Pool) mcp.ToolHandlerFor[openParams, any] {
 		if args.Machine == "" {
 			return nil, nil, fmt.Errorf("machine is required")
 		}
-		id, err := p.Open(ctx, args.Machine)
+
+		openCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		id, err := p.Open(openCtx, args.Machine)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -95,7 +99,13 @@ func openCfgHandler(p *session.Pool) mcp.ToolHandlerFor[openCfgParams, any] {
 			TimeoutSec: args.TimeoutSec,
 			KnownHosts: args.KnownHosts,
 		}
-		id, err := p.OpenCfg(ctx, cfg)
+		timeout := 30
+		if args.TimeoutSec > 0 {
+			timeout = args.TimeoutSec
+		}
+		openCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+		id, err := p.OpenCfg(openCtx, cfg)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -146,13 +156,13 @@ func execHandler(p *session.Pool, sudo bool) mcp.ToolHandlerFor[execParams, any]
 		if args.SessionID == "" || args.Command == "" {
 			return nil, nil, fmt.Errorf("session_id and command are required")
 		}
-		c := ctx
+		timeout := 60
 		if args.TimeoutSec > 0 {
-			var cancel context.CancelFunc
-			c, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSec)*time.Second)
-			defer cancel()
+			timeout = args.TimeoutSec
 		}
-		res := p.Exec(c, session.ExecRequest{
+		execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+		res := p.Exec(execCtx, session.ExecRequest{
 			SessionID: args.SessionID,
 			Command:   args.Command,
 			Cwd:       args.Cwd,
@@ -174,20 +184,20 @@ func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, any] {
 		if args.Machine == "" || args.Command == "" {
 			return nil, nil, fmt.Errorf("machine and command are required")
 		}
-		id, err := p.Open(ctx, args.Machine)
+		timeout := 60
+		if args.TimeoutSec > 0 {
+			timeout = args.TimeoutSec
+		}
+		onceCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+
+		id, err := p.Open(onceCtx, args.Machine)
 		if err != nil {
 			return nil, nil, err
 		}
-		defer func() { _ = p.Close(ctx, id) }()
+		defer func() { _ = p.Close(ctx, id) }() // Use parent context for closing
 
-		c := ctx
-		if args.TimeoutSec > 0 {
-			var cancel context.CancelFunc
-			c, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSec)*time.Second)
-			defer cancel()
-		}
-
-		res := p.Exec(c, session.ExecRequest{
+		res := p.Exec(onceCtx, session.ExecRequest{
 			SessionID: id,
 			Command:   args.Command,
 			Cwd:       args.Cwd,

@@ -115,7 +115,7 @@ func TestRunWithTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	res, err := Run(ctx, client, "sleep 1")
+	res, err := Run(ctx, client, "sleep 1", RunOptions{})
 
 	// Expecting context deadline exceeded
 	require.Error(t, err)
@@ -143,7 +143,7 @@ func TestRunWithExitErrorAndHang(t *testing.T) {
 	// Use a command that triggers the mock server to send an exit-status but not close the channel.
 	// Actually, our mock server already sends exit-status 0, then waits, then closes.
 	// Let's modify the mock server to look for "error_hang" and send exit-status 1, and never close.
-	res, err := Run(ctx, client, "error_hang")
+	res, err := Run(ctx, client, "error_hang", RunOptions{})
 
 	require.Error(t, err)
 	require.Equal(t, context.DeadlineExceeded, err)
@@ -163,7 +163,7 @@ func TestRunTimeoutsAndRecovery(t *testing.T) {
 
 	// 1. Run first command successfully
 	ctxSuccess, cancelSuccess := context.WithTimeout(context.Background(), 1*time.Second)
-	res, err := Run(ctxSuccess, client, "success")
+	res, err := Run(ctxSuccess, client, "success", RunOptions{})
 	cancelSuccess()
 	require.NoError(t, err)
 	require.Equal(t, "success stdout", res.Stdout)
@@ -171,7 +171,7 @@ func TestRunTimeoutsAndRecovery(t *testing.T) {
 	// 2. Run 10 timeouts
 	for range 10 {
 		ctxTimeout, cancelTimeout := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		resTimeout, errTimeout := Run(ctxTimeout, client, "timeout_hang")
+		resTimeout, errTimeout := Run(ctxTimeout, client, "timeout_hang", RunOptions{})
 		cancelTimeout()
 		require.Error(t, errTimeout)
 		require.Equal(t, context.DeadlineExceeded, errTimeout)
@@ -180,7 +180,7 @@ func TestRunTimeoutsAndRecovery(t *testing.T) {
 
 	// 3. The next command should run normally without blocking or failing
 	ctxRecovery, cancelRecovery := context.WithTimeout(context.Background(), 1*time.Second)
-	resRecovery, errRecovery := Run(ctxRecovery, client, "success")
+	resRecovery, errRecovery := Run(ctxRecovery, client, "success", RunOptions{})
 	cancelRecovery()
 	require.NoError(t, errRecovery)
 	require.Equal(t, "success stdout", resRecovery.Stdout)

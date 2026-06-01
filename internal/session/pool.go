@@ -102,6 +102,12 @@ func (p *Pool) Run(ctx context.Context) {
 			slog.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
 			res.req.resp <- OpenResponse{ID: id}
 
+			// Watch the connection and remove the session if it drops or fails.
+			go func(sessionID string, c *ssh.Client) {
+				_ = c.Wait()
+				_ = p.Close(context.Background(), sessionID)
+			}(id, res.client)
+
 		case req := <-p.reqCh:
 			switch r := req.(type) {
 			case OpenRequest:

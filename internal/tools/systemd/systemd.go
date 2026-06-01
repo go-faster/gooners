@@ -36,7 +36,7 @@ func statusHandler(p *session.Pool) mcp.ToolHandlerFor[systemdBaseParams, any] {
 			return nil, nil, err
 		}
 		cmd := "systemctl status " + sshutil.Quote(args.Unit)
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -67,7 +67,7 @@ func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, any] 
 		if args.Type != "" {
 			cmd += " --type=" + sshutil.Quote(args.Type)
 		}
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -86,7 +86,7 @@ func mutatingHandler(p *session.Pool, action string) mcp.ToolHandlerFor[systemdB
 			return nil, nil, err
 		}
 		cmd := "sudo -n systemctl " + action + " " + sshutil.Quote(args.Unit)
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -134,7 +134,7 @@ func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, any] {
 		if args.Priority != "" {
 			cmd += " -p " + sshutil.Quote(args.Priority)
 		}
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil

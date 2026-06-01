@@ -13,6 +13,16 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+type RunOptions struct {
+	Timeout time.Duration
+}
+
+func (opts *RunOptions) setDefaults() {
+	if opts.Timeout == 0 {
+		opts.Timeout = time.Minute
+	}
+}
+
 type Result struct {
 	Stdout   string `json:"stdout"`
 	Stderr   string `json:"stderr"`
@@ -37,9 +47,14 @@ func (b *safeBuffer) String() string {
 	return b.buf.String()
 }
 
-func Run(ctx context.Context, client *ssh.Client, command string) (Result, error) {
+func Run(ctx context.Context, client *ssh.Client, command string, opts RunOptions) (Result, error) {
+	opts.setDefaults()
+
+	runCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+
 	start := time.Now()
-	slog.DebugContext(ctx, "ssh run start", "command", command)
+	slog.DebugContext(runCtx, "ssh run start", "command", command)
 
 	type sessionResult struct {
 		sess *ssh.Session
@@ -53,17 +68,17 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 
 	var sess *ssh.Session
 	select {
-	case <-ctx.Done():
-		slog.DebugContext(ctx, "ssh run canceled during NewSession", "err", ctx.Err(), "duration", time.Since(start))
+	case <-runCtx.Done():
+		slog.DebugContext(runCtx, "ssh run canceled during NewSession", "err", runCtx.Err(), "duration", time.Since(start))
 		go func() {
 			if res := <-sessCh; res.err == nil {
 				_ = res.sess.Close()
 			}
 		}()
-		return Result{}, ctx.Err()
+		return Result{}, runCtx.Err()
 	case res := <-sessCh:
 		if res.err != nil {
-			slog.DebugContext(ctx, "ssh run session error", "err", res.err, "duration", time.Since(start))
+			slog.DebugContext(runCtx, "ssh run session error", "err", res.err, "duration", time.Since(start))
 			return Result{}, res.err
 		}
 		sess = res.sess
@@ -79,7 +94,7 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 	}()
 
 	select {
-	case <-ctx.Done():
+	case <-runCtx.Done():
 		// Best-effort termination: signal the remote process and close the
 		// session. Run in background so we return promptly even if the
 		// underlying channel is stuck (network partition, uninterruptible
@@ -90,8 +105,8 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 			_ = sess.Close()
 		}()
 		out, errOut := stdout.String(), stderr.String()
-		slog.DebugContext(ctx, "ssh run canceled",
-			"err", ctx.Err(),
+		slog.DebugContext(runCtx, "ssh run canceled",
+			"err", runCtx.Err(),
 			"duration", time.Since(start),
 			"stdout_len", len(out),
 			"stderr_len", len(errOut),
@@ -99,7 +114,7 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 		return Result{
 			Stdout: out,
 			Stderr: errOut,
-		}, ctx.Err()
+		}, runCtx.Err()
 	case err := <-done:
 		// Happy path: Run has returned; close synchronously.
 		_ = sess.Close()
@@ -111,18 +126,18 @@ func Run(ctx context.Context, client *ssh.Client, command string) (Result, error
 		if err != nil {
 			if e, ok := err.(*ssh.ExitError); ok {
 				res.ExitCode = e.ExitStatus()
-				slog.DebugContext(ctx, "ssh run exited",
+				slog.DebugContext(runCtx, "ssh run exited",
 					"exit_code", res.ExitCode,
 					"duration", dur,
 					"stdout_len", len(res.Stdout),
 					"stderr_len", len(res.Stderr),
 				)
 			} else {
-				slog.DebugContext(ctx, "ssh run error", "err", err, "duration", dur)
+				slog.DebugContext(runCtx, "ssh run error", "err", err, "duration", dur)
 				return res, err
 			}
 		} else {
-			slog.DebugContext(ctx, "ssh run success",
+			slog.DebugContext(runCtx, "ssh run success",
 				"duration", dur,
 				"stdout_len", len(res.Stdout),
 				"stderr_len", len(res.Stderr),

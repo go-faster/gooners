@@ -37,7 +37,7 @@ func lsblkHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		if args.Device != "" {
 			cmd += " " + sshutil.Quote(args.Device)
 		}
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -59,7 +59,7 @@ func mountsHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		if args.FSType != "" {
 			cmd += " | awk '$3 == " + sshutil.Quote(args.FSType) + "'"
 		}
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
@@ -81,7 +81,7 @@ func dfHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		if args.Path != "" {
 			cmd += " " + sshutil.Quote(args.Path)
 		}
-		res, err := sshutil.Run(ctx, client, cmd)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil

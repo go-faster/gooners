@@ -23,7 +23,7 @@ func runCmd(t *testing.T, cfg Config, cmd string) string {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 
-	res, err := sshutil.Run(context.Background(), client, cmd)
+	res, err := sshutil.Run(context.Background(), client, cmd, sshutil.RunOptions{})
 	require.NoError(t, err)
 	return res.Stdout
 }
