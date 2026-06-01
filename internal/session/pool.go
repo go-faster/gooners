@@ -287,7 +287,6 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 		r.resp <- ExecResponse{
 			Stdout: out,
 			Stderr: errOut,
-			Err:    fmt.Errorf("handler timeout"),
 		}
 		go func() {
 			_ = sess.Signal(ssh.SIGKILL)
@@ -361,8 +360,13 @@ func (p *Pool) Exec(ctx context.Context, r ExecRequest) ExecResponse {
 	case res := <-respCh:
 		return res
 	case <-ctx.Done():
+		ctxErr := ctx.Err()
 		close(cancelCh)
-		return <-respCh
+		res := <-respCh
+		if res.Err == nil {
+			res.Err = ctxErr
+		}
+		return res
 	}
 }
 
