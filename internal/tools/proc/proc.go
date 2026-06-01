@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
@@ -54,145 +53,131 @@ func validSignal(s string) string {
 	return ""
 }
 
-func Register(s *server.MCPServer, p session.Provider) {
-	s.AddTool(mcp.NewTool("proc_list",
-		mcp.WithDescription("List running processes (ps aux). Optional user and grep filter."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("user"),
-		mcp.WithString("filter"),
-		mcp.WithNumber("max_lines"),
-	), listHandler(p))
-
-	s.AddTool(mcp.NewTool("proc_info",
-		mcp.WithDescription("Show details for a process: /proc/<pid>/status, cmdline, exe, cwd."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("pid", mcp.Required()),
-	), infoHandler(p))
-
-	s.AddTool(mcp.NewTool("proc_lsof",
-		mcp.WithDescription("List open files for a process. Uses lsof if available, falls back to /proc/<pid>/fd."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("pid", mcp.Required()),
-	), lsofHandler(p))
-
-	s.AddTool(mcp.NewTool("proc_kill",
-		mcp.WithDescription("Send a signal to a process (uses sudo -n). Default signal: TERM."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("pid", mcp.Required()),
-		mcp.WithString("signal"),
-	), killHandler(p))
+func Register(s *mcp.Server, p session.Provider) {
+	mcp.AddTool(s, &mcp.Tool{Name: "proc_list", Description: "List running processes (ps aux). Optional user and grep filter."}, listHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "proc_info", Description: "Show details for a process: /proc/<pid>/status, cmdline, exe, cwd."}, infoHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "proc_lsof", Description: "List open files for a process. Uses lsof if available, falls back to /proc/<pid>/fd."}, lsofHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "proc_kill", Description: "Send a signal to a process (uses sudo -n). Default signal: TERM."}, killHandler(p))
 }
 
-func listHandler(p session.Provider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		if id == "" {
-			return mcp.NewToolResultError("session_id is required"), nil
+type procListParams struct {
+	SessionID string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	User      string  `json:"user,omitempty" jsonschema:"Filter by username"`
+	Filter    string  `json:"filter,omitempty" jsonschema:"grep filter for process names"`
+	MaxLines  float64 `json:"max_lines,omitempty" jsonschema:"Maximum lines of output"`
+}
+
+func listHandler(p session.Provider) mcp.ToolHandlerFor[procListParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args procListParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" {
+			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 		cmd := "ps aux"
-		if u := req.GetString("user", ""); u != "" {
-			cmd = "ps -u " + sshutil.Quote(u) + " aux"
+		if args.User != "" {
+			cmd = "ps -u " + sshutil.Quote(args.User) + " aux"
 		}
-		if f := req.GetString("filter", ""); f != "" {
-			cmd = "(" + cmd + ") | grep -i " + sshutil.Quote(f)
+		if args.Filter != "" {
+			cmd = "(" + cmd + ") | grep -i " + sshutil.Quote(args.Filter)
 		}
-		if n := req.GetFloat("max_lines", 0); n > 0 {
-			cmd += fmt.Sprintf(" | head -n %d", int64(n))
+		if args.MaxLines > 0 {
+			cmd += fmt.Sprintf(" | head -n %d", int64(args.MaxLines))
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func infoHandler(p session.Provider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		pid := req.GetString("pid", "")
-		if id == "" || pid == "" {
-			return mcp.NewToolResultError("session_id and pid are required"), nil
+type procPIDParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	PID       string `json:"pid" jsonschema:"Process ID"`
+}
+
+func infoHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args procPIDParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.PID == "" {
+			return nil, nil, fmt.Errorf("session_id and pid are required")
 		}
-		if !validPID(pid) {
-			return mcp.NewToolResultError("pid must be a positive integer"), nil
+		if !validPID(args.PID) {
+			return nil, nil, fmt.Errorf("pid must be a positive integer")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 		cmd := fmt.Sprintf(
 			"echo '=== status ===' && cat /proc/%s/status 2>/dev/null && "+
 				"echo '=== cmdline ===' && tr '\\0' ' ' < /proc/%s/cmdline 2>/dev/null && echo && "+
 				"echo '=== exe ===' && readlink /proc/%s/exe 2>/dev/null && "+
 				"echo '=== cwd ===' && readlink /proc/%s/cwd 2>/dev/null",
-			pid, pid, pid, pid,
+			args.PID, args.PID, args.PID, args.PID,
 		)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func lsofHandler(p session.Provider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		pid := req.GetString("pid", "")
-		if id == "" || pid == "" {
-			return mcp.NewToolResultError("session_id and pid are required"), nil
+func lsofHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args procPIDParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.PID == "" {
+			return nil, nil, fmt.Errorf("session_id and pid are required")
 		}
-		if !validPID(pid) {
-			return mcp.NewToolResultError("pid must be a positive integer"), nil
+		if !validPID(args.PID) {
+			return nil, nil, fmt.Errorf("pid must be a positive integer")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		cmd := fmt.Sprintf(
-			"lsof -p %s 2>/dev/null || ls -la /proc/%s/fd 2>/dev/null",
-			pid, pid,
-		)
+		cmd := fmt.Sprintf("lsof -p %s 2>/dev/null || ls -la /proc/%s/fd 2>/dev/null", args.PID, args.PID)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func killHandler(p session.Provider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		pid := req.GetString("pid", "")
-		if id == "" || pid == "" {
-			return mcp.NewToolResultError("session_id and pid are required"), nil
+type killParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	PID       string `json:"pid" jsonschema:"Process ID"`
+	Signal    string `json:"signal,omitempty" jsonschema:"Signal to send (e.g. TERM, KILL)"`
+}
+
+func killHandler(p session.Provider) mcp.ToolHandlerFor[killParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args killParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.PID == "" {
+			return nil, nil, fmt.Errorf("session_id and pid are required")
 		}
-		if !validPID(pid) {
-			return mcp.NewToolResultError("pid must be a positive integer"), nil
+		if !validPID(args.PID) {
+			return nil, nil, fmt.Errorf("pid must be a positive integer")
 		}
-		sig := validSignal(req.GetString("signal", ""))
+		sig := validSignal(args.Signal)
 		if sig == "" {
-			return mcp.NewToolResultError("unknown signal; use a number or one of: TERM KILL HUP INT QUIT USR1 USR2 STOP CONT ABRT"), nil
+			return nil, nil, fmt.Errorf("unknown signal; use a number or one of: TERM KILL HUP INT QUIT USR1 USR2 STOP CONT ABRT")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		cmd := fmt.Sprintf("sudo -n kill -%s %s", sig, pid)
+		cmd := fmt.Sprintf("sudo -n kill -%s %s", sig, args.PID)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }

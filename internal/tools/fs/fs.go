@@ -10,8 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
@@ -47,302 +46,278 @@ type SessionProvider interface {
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
 }
 
-func Register(s *server.MCPServer, p SessionProvider, uploadRoot string) {
-	s.AddTool(mcp.NewTool("ls",
-		mcp.WithDescription("List directory contents on remote machine."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("path", mcp.Required()),
-		mcp.WithBoolean("long"),
-		mcp.WithBoolean("all"),
-	), lsHandler(p))
-
-	s.AddTool(mcp.NewTool("cat",
-		mcp.WithDescription("Read file contents (truncated) from remote."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("path", mcp.Required()),
-		mcp.WithNumber("max_bytes"),
-	), catHandler(p))
-
-	s.AddTool(mcp.NewTool("grep",
-		mcp.WithDescription("Search file contents on remote."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("pattern", mcp.Required()),
-		mcp.WithString("path", mcp.Required()),
-		mcp.WithBoolean("recursive"),
-		mcp.WithBoolean("case_insensitive"),
-		mcp.WithNumber("max_lines"),
-	), grepHandler(p))
-
-	s.AddTool(mcp.NewTool("find",
-		mcp.WithDescription("Find files/directories on remote."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("path", mcp.Required()),
-		mcp.WithString("name"),
-		mcp.WithString("type"),
-		mcp.WithNumber("max_depth"),
-	), findHandler(p))
-
-	s.AddTool(mcp.NewTool("stat",
-		mcp.WithDescription("Stat a path on remote."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("path", mcp.Required()),
-	), statHandler(p))
-
-	s.AddTool(mcp.NewTool("write_file",
-		mcp.WithDescription("Write or overwrite a file on remote via SFTP."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("path", mcp.Required()),
-		mcp.WithString("content", mcp.Required()),
-		mcp.WithString("mode"),
-	), writeFileHandler(p))
-
-	s.AddTool(mcp.NewTool("upload_file",
-		mcp.WithDescription("Upload a local file asynchronously to remote path via SFTP. Returns an upload_id."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("local_path", mcp.Required()),
-		mcp.WithString("remote_path", mcp.Required()),
-		mcp.WithNumber("timeout_s", mcp.Description("Timeout in seconds")),
-	), uploadFileHandler(p, uploadRoot))
-
-	s.AddTool(mcp.NewTool("upload_status",
-		mcp.WithDescription("Check the status of an asynchronous file upload."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("upload_id", mcp.Required()),
-	), uploadStatusHandler(p))
+func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
+	mcp.AddTool(s, &mcp.Tool{Name: "ls", Description: "List directory contents on remote machine."}, lsHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "cat", Description: "Read file contents (truncated) from remote."}, catHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "grep", Description: "Search file contents on remote."}, grepHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "find", Description: "Find files/directories on remote."}, findHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "stat", Description: "Stat a path on remote."}, statHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP."}, writeFileHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
+	mcp.AddTool(s, &mcp.Tool{Name: "upload_status", Description: "Check the status of an asynchronous file upload."}, uploadStatusHandler(p))
 }
 
-func lsHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		path := req.GetString("path", "")
-		if id == "" || path == "" {
-			return mcp.NewToolResultError("session_id and path are required"), nil
+type lsParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Path      string `json:"path" jsonschema:"Directory path to list"`
+	Long      bool   `json:"long,omitempty" jsonschema:"Return long format (like ls -l)"`
+	All       bool   `json:"all,omitempty" jsonschema:"Include hidden files (like ls -a)"`
+}
+
+func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args lsParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Path == "" {
+			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 		cmd := "ls"
-		if req.GetBool("long", false) {
+		if args.Long {
 			cmd += " -l"
 		}
-		if req.GetBool("all", false) {
+		if args.All {
 			cmd += " -a"
 		}
-		cmd += " " + sshutil.Quote(path)
+		cmd += " " + sshutil.Quote(args.Path)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+				IsError: true,
+			}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+		}, nil, nil
 	}
 }
 
-func catHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		path := req.GetString("path", "")
-		if id == "" || path == "" {
-			return mcp.NewToolResultError("session_id and path are required"), nil
+type catParams struct {
+	SessionID string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Path      string  `json:"path" jsonschema:"File path to read"`
+	MaxBytes  float64 `json:"max_bytes,omitempty" jsonschema:"Maximum number of bytes to return"`
+}
+
+func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args catParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Path == "" {
+			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		maxBytes := req.GetFloat("max_bytes", 0)
+		maxBytes := args.MaxBytes
 		if maxBytes <= 0 || maxBytes > maxCatBytes {
 			maxBytes = maxCatBytes
 		}
-		cmd := fmt.Sprintf("head -c %d %s", int64(maxBytes), sshutil.Quote(path))
+		cmd := fmt.Sprintf("head -c %d %s", int64(maxBytes), sshutil.Quote(args.Path))
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func grepHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		pattern := req.GetString("pattern", "")
-		path := req.GetString("path", "")
-		if id == "" || pattern == "" || path == "" {
-			return mcp.NewToolResultError("session_id, pattern and path are required"), nil
+type grepParams struct {
+	SessionID       string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Pattern         string  `json:"pattern" jsonschema:"Search pattern/regex"`
+	Path            string  `json:"path" jsonschema:"File or directory to search in"`
+	Recursive       bool    `json:"recursive,omitempty" jsonschema:"Search recursively"`
+	CaseInsensitive bool    `json:"case_insensitive,omitempty" jsonschema:"Ignore case"`
+	MaxLines        float64 `json:"max_lines,omitempty" jsonschema:"Maximum matching lines to return"`
+}
+
+func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args grepParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Pattern == "" || args.Path == "" {
+			return nil, nil, fmt.Errorf("session_id, pattern and path are required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 		cmd := "grep"
-		if req.GetBool("recursive", false) {
+		if args.Recursive {
 			cmd += " -r"
 		}
-		if req.GetBool("case_insensitive", false) {
+		if args.CaseInsensitive {
 			cmd += " -i"
 		}
-		maxLines := req.GetFloat("max_lines", 0)
-		if maxLines > 0 {
-			cmd += fmt.Sprintf(" -m %d", int64(maxLines))
+		if args.MaxLines > 0 {
+			cmd += fmt.Sprintf(" -m %d", int64(args.MaxLines))
 		}
-		cmd += " " + sshutil.Quote(pattern) + " " + sshutil.Quote(path)
+		cmd += " " + sshutil.Quote(args.Pattern) + " " + sshutil.Quote(args.Path)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func findHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		path := req.GetString("path", "")
-		if id == "" || path == "" {
-			return mcp.NewToolResultError("session_id and path are required"), nil
+type findParams struct {
+	SessionID string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Path      string  `json:"path" jsonschema:"Directory path to search in"`
+	Name      string  `json:"name,omitempty" jsonschema:"File name pattern to match (e.g. *.txt)"`
+	Type      string  `json:"type,omitempty" jsonschema:"File type (f=file, d=directory)"`
+	MaxDepth  float64 `json:"max_depth,omitempty" jsonschema:"Maximum depth of directories to search"`
+}
+
+func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args findParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Path == "" {
+			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		cmd := "find " + sshutil.Quote(path)
-		if n := req.GetString("name", ""); n != "" {
-			cmd += " -name " + sshutil.Quote(n)
+		cmd := "find " + sshutil.Quote(args.Path)
+		if args.Name != "" {
+			cmd += " -name " + sshutil.Quote(args.Name)
 		}
-		if t := req.GetString("type", ""); t != "" {
-			cmd += " -type " + sshutil.Quote(t)
+		if args.Type != "" {
+			cmd += " -type " + sshutil.Quote(args.Type)
 		}
-		if d := req.GetFloat("max_depth", 0); d > 0 {
-			cmd += fmt.Sprintf(" -maxdepth %d", int64(d))
+		if args.MaxDepth > 0 {
+			cmd += fmt.Sprintf(" -maxdepth %d", int64(args.MaxDepth))
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func statHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		path := req.GetString("path", "")
-		if id == "" || path == "" {
-			return mcp.NewToolResultError("session_id and path are required"), nil
+type statParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Path      string `json:"path" jsonschema:"File or directory path to stat"`
+}
+
+func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args statParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Path == "" {
+			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		cmd := "stat " + sshutil.Quote(path)
+		cmd := "stat " + sshutil.Quote(args.Path)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func writeFileHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		path := req.GetString("path", "")
-		content := req.GetString("content", "")
-		if id == "" || path == "" {
-			return mcp.NewToolResultError("session_id and path are required"), nil
-		}
+type writeFileParams struct {
+	SessionID  string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Path       string  `json:"path" jsonschema:"Remote path to write to"`
+	Content    string  `json:"content" jsonschema:"File content to write"`
+	Mode       string  `json:"mode,omitempty" jsonschema:"File permissions (e.g. 0644)"`
+	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
+}
 
-		timeoutSec := req.GetFloat("timeout_s", 0)
-		if timeoutSec > 0 {
+func writeFileHandler(p SessionProvider) mcp.ToolHandlerFor[writeFileParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args writeFileParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Path == "" || args.Content == "" {
+			return nil, nil, fmt.Errorf("session_id and path are required")
+		}
+		c := ctx
+		if args.TimeoutSec > 0 {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec*float64(time.Second)))
+			c, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSec)*time.Second)
 			defer cancel()
 		}
 
-		sftpClient, err := p.SFTP(ctx, id)
+		sftpClient, err := p.SFTP(c, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		defer sftpClient.Close() //nolint:errcheck // sftp close error not actionable
+		defer func() { _ = sftpClient.Close() }()
 
-		modeStr := req.GetString("mode", "")
 		mode := os.FileMode(0o644)
-		if modeStr != "" {
+		if args.Mode != "" {
 			var m uint32
-			if _, err := fmt.Sscanf(modeStr, "%o", &m); err == nil {
+			if _, err := fmt.Sscanf(args.Mode, "%o", &m); err == nil {
 				mode = os.FileMode(m)
 			}
 		}
 
-		f, err := sftpClient.Create(path)
+		f, err := sftpClient.Create(args.Path)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		defer f.Close() //nolint:errcheck // file close error not actionable on defer
-		if _, err := f.Write([]byte(content)); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+		defer func() { _ = f.Close() }()
+		if _, err := f.Write([]byte(args.Content)); err != nil {
+			return nil, nil, err
 		}
 		if err := f.Chmod(mode); err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		b, _ := jsonForOk()
-		return mcp.NewToolResultText(b), nil
+
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mustJSONOk()}}}, nil, nil
 	}
 }
 
-func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		local := req.GetString("local_path", "")
-		remote := req.GetString("remote_path", "")
-		if id == "" || local == "" || remote == "" {
-			return mcp.NewToolResultError("session_id, local_path and remote_path are required"), nil
-		}
+type uploadFileParams struct {
+	SessionID  string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	LocalPath  string  `json:"local_path" jsonschema:"Local path on the MCP server to upload from"`
+	RemotePath string  `json:"remote_path" jsonschema:"Remote path to upload to"`
+	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
+}
 
-		timeoutSec := req.GetFloat("timeout_s", 0)
-		if timeoutSec > 0 {
+func uploadFileHandler(p SessionProvider, uploadRoot string) mcp.ToolHandlerFor[uploadFileParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadFileParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
+			return nil, nil, fmt.Errorf("session_id, local_path and remote_path are required")
+		}
+		c := ctx
+		if args.TimeoutSec > 0 {
 			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec*float64(time.Second)))
+			c, cancel = context.WithTimeout(ctx, time.Duration(args.TimeoutSec)*time.Second)
 			defer cancel()
 		}
-
-		safePath, err := withinDir(uploadRoot, local)
+		safePath, err := withinDir(uploadRoot, args.LocalPath)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-
-		uploadID, err := p.Upload(ctx, id, safePath, remote)
+		uploadID, err := p.Upload(c, args.SessionID, safePath, args.RemotePath)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-
-		res := map[string]any{
-			"ok":        true,
-			"upload_id": uploadID,
-		}
-		b, _ := json.Marshal(res)
-		return mcp.NewToolResultText(string(b)), nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(map[string]any{"ok": true, "upload_id": uploadID})}},
+		}, nil, nil
 	}
 }
 
-func uploadStatusHandler(p SessionProvider) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		uploadID := req.GetString("upload_id", "")
-		if id == "" || uploadID == "" {
-			return mcp.NewToolResultError("session_id and upload_id are required"), nil
-		}
+type uploadStatusParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	UploadID  string `json:"upload_id" jsonschema:"The upload ID returned by upload_file"`
+}
 
-		status, err := p.UploadStatus(ctx, id, uploadID)
+func uploadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[uploadStatusParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadStatusParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.UploadID == "" {
+			return nil, nil, fmt.Errorf("session_id and upload_id are required")
+		}
+		status, err := p.UploadStatus(ctx, args.SessionID, args.UploadID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-
 		res := map[string]any{
 			"ok":             true,
 			"upload_id":      status.UploadID,
@@ -355,13 +330,16 @@ func uploadStatusHandler(p SessionProvider) server.ToolHandlerFunc {
 			res["error"] = status.Err.Error()
 			res["ok"] = false
 		}
-
-		b, _ := json.Marshal(res)
-		return mcp.NewToolResultText(string(b)), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(res)}}}, nil, nil
 	}
 }
 
-func jsonForOk() (string, error) {
-	b, err := json.Marshal(map[string]bool{"ok": true})
-	return string(b), err
+func mustJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func mustJSONOk() string {
+	b, _ := json.Marshal(map[string]bool{"ok": true})
+	return string(b)
 }

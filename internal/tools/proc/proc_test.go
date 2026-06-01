@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,23 +63,19 @@ func TestValidSignal(t *testing.T) {
 
 // Ensure security barriers hold in KillHandler
 func TestKillHandler_Security(t *testing.T) {
-	handler := killHandler(nil) // dummyPool not needed if it fails validation early
+	handler := killHandler(nil)
 
-	req := mcp.CallToolRequest{}
-	args := map[string]any{
-		"session_id": "test_id",
-		"pid":        "1; rm -rf /",
-		"signal":     "TERM",
-	}
-	req.Params.Arguments = args
+	_, _, err := handler(context.Background(), &mcp.CallToolRequest{}, killParams{
+		SessionID: "test_id",
+		PID:       "1; rm -rf /",
+		Signal:    "TERM",
+	})
+	require.Error(t, err) // validation error returned directly (becomes tool error)
 
-	res, err := handler(context.Background(), req)
-	require.NoError(t, err)
-	require.True(t, res.IsError, "expected error for invalid PID, got none")
-
-	args["pid"] = "1"
-	args["signal"] = "TERM; rm -rf /"
-	res, err = handler(context.Background(), req)
-	require.NoError(t, err)
-	require.True(t, res.IsError, "expected error for invalid signal, got none")
+	_, _, err = handler(context.Background(), &mcp.CallToolRequest{}, killParams{
+		SessionID: "test_id",
+		PID:       "1",
+		Signal:    "TERM; rm -rf /",
+	})
+	require.Error(t, err)
 }

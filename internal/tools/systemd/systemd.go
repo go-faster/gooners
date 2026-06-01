@@ -5,166 +5,140 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
-
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 )
 
-func Register(s *server.MCPServer, p *session.Pool) {
-	s.AddTool(mcp.NewTool("systemctl_status",
-		mcp.WithDescription("Show status of a systemd unit."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("unit", mcp.Required()),
-	), statusHandler(p))
-
-	s.AddTool(mcp.NewTool("systemctl_list_units",
-		mcp.WithDescription("List systemd units."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("state"),
-		mcp.WithString("type"),
-	), listUnitsHandler(p))
-
-	s.AddTool(mcp.NewTool("systemctl_start",
-		mcp.WithDescription("Start a systemd unit (uses sudo -n)."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("unit", mcp.Required()),
-	), mutatingHandler(p, "start"))
-
-	s.AddTool(mcp.NewTool("systemctl_stop",
-		mcp.WithDescription("Stop a systemd unit (uses sudo -n)."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("unit", mcp.Required()),
-	), mutatingHandler(p, "stop"))
-
-	s.AddTool(mcp.NewTool("systemctl_restart",
-		mcp.WithDescription("Restart a systemd unit (uses sudo -n)."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("unit", mcp.Required()),
-	), mutatingHandler(p, "restart"))
-
-	s.AddTool(mcp.NewTool("systemctl_reload",
-		mcp.WithDescription("Reload a systemd unit (uses sudo -n)."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("unit", mcp.Required()),
-	), mutatingHandler(p, "reload"))
-
-	s.AddTool(mcp.NewTool("journald_tail",
-		mcp.WithDescription("Query recent journal entries."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("unit"),
-		mcp.WithString("since"),
-		mcp.WithString("until"),
-		mcp.WithNumber("lines"),
-		mcp.WithString("grep"),
-		mcp.WithString("priority"),
-	), journalHandler(p))
+func Register(s *mcp.Server, p *session.Pool) {
+	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_status", Description: "Show status of a systemd unit."}, statusHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_list_units", Description: "List systemd units."}, listUnitsHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_start", Description: "Start a systemd unit (uses sudo -n)."}, mutatingHandler(p, "start"))
+	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_stop", Description: "Stop a systemd unit (uses sudo -n)."}, mutatingHandler(p, "stop"))
+	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_restart", Description: "Restart a systemd unit (uses sudo -n)."}, mutatingHandler(p, "restart"))
+	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_reload", Description: "Reload a systemd unit (uses sudo -n)."}, mutatingHandler(p, "reload"))
+	mcp.AddTool(s, &mcp.Tool{Name: "journald_tail", Description: "Query recent journal entries."}, journalHandler(p))
 }
 
-func statusHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		unit := req.GetString("unit", "")
-		if id == "" || unit == "" {
-			return mcp.NewToolResultError("session_id and unit are required"), nil
+type systemdBaseParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Unit      string `json:"unit" jsonschema:"Name of the systemd unit (e.g. nginx.service)"`
+}
+
+func statusHandler(p *session.Pool) mcp.ToolHandlerFor[systemdBaseParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args systemdBaseParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Unit == "" {
+			return nil, nil, fmt.Errorf("session_id and unit are required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		cmd := "systemctl status " + sshutil.Quote(unit)
+		cmd := "systemctl status " + sshutil.Quote(args.Unit)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func listUnitsHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		if id == "" {
-			return mcp.NewToolResultError("session_id is required"), nil
+type listUnitsParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	State     string `json:"state,omitempty" jsonschema:"Filter by unit state (e.g. active, failed)"`
+	Type      string `json:"type,omitempty" jsonschema:"Filter by unit type (e.g. service, timer)"`
+}
+
+func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args listUnitsParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" {
+			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 		cmd := "systemctl list-units"
-		if st := req.GetString("state", ""); st != "" {
-			cmd += " --state=" + sshutil.Quote(st)
+		if args.State != "" {
+			cmd += " --state=" + sshutil.Quote(args.State)
 		}
-		if t := req.GetString("type", ""); t != "" {
-			cmd += " --type=" + sshutil.Quote(t)
+		if args.Type != "" {
+			cmd += " --type=" + sshutil.Quote(args.Type)
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func mutatingHandler(p *session.Pool, action string) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		unit := req.GetString("unit", "")
-		if id == "" || unit == "" {
-			return mcp.NewToolResultError("session_id and unit are required"), nil
+func mutatingHandler(p *session.Pool, action string) mcp.ToolHandlerFor[systemdBaseParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args systemdBaseParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Unit == "" {
+			return nil, nil, fmt.Errorf("session_id and unit are required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		cmd := "sudo -n systemctl " + action + " " + sshutil.Quote(unit)
+		cmd := "sudo -n systemctl " + action + " " + sshutil.Quote(args.Unit)
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func journalHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		if id == "" {
-			return mcp.NewToolResultError("session_id is required"), nil
+type journalParams struct {
+	SessionID string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Unit      string  `json:"unit,omitempty" jsonschema:"Filter by systemd unit"`
+	Since     string  `json:"since,omitempty" jsonschema:"Show entries starting from this time/date"`
+	Until     string  `json:"until,omitempty" jsonschema:"Show entries up to this time/date"`
+	Lines     float64 `json:"lines,omitempty" jsonschema:"Number of lines to show"`
+	Grep      string  `json:"grep,omitempty" jsonschema:"Filter output by regular expression"`
+	Priority  string  `json:"priority,omitempty" jsonschema:"Filter by priority (e.g. err, warning)"`
+}
+
+func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args journalParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" {
+			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
-		lines := req.GetFloat("lines", 0)
+		lines := args.Lines
 		if lines <= 0 || lines > 10_000 {
 			lines = 100
 		}
 		cmd := fmt.Sprintf("journalctl --no-pager -n %d", int64(lines))
-		if u := req.GetString("unit", ""); u != "" {
-			cmd += " -u " + sshutil.Quote(u)
+		if args.Unit != "" {
+			cmd += " -u " + sshutil.Quote(args.Unit)
 		}
-		if since := req.GetString("since", ""); since != "" {
-			cmd += " --since=" + sshutil.Quote(since)
+		if args.Since != "" {
+			cmd += " --since=" + sshutil.Quote(args.Since)
 		}
-		if until := req.GetString("until", ""); until != "" {
-			cmd += " --until=" + sshutil.Quote(until)
+		if args.Until != "" {
+			cmd += " --until=" + sshutil.Quote(args.Until)
 		}
-		if g := req.GetString("grep", ""); g != "" {
-			cmd += " -g " + sshutil.Quote(g)
+		if args.Grep != "" {
+			cmd += " -g " + sshutil.Quote(args.Grep)
 		}
-		if pri := req.GetString("priority", ""); pri != "" {
-			cmd += " -p " + sshutil.Quote(pri)
+		if args.Priority != "" {
+			cmd += " -p " + sshutil.Quote(args.Priority)
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }

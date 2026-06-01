@@ -3,99 +3,89 @@ package disk
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
 )
 
-func Register(s *server.MCPServer, p *session.Pool) {
-	s.AddTool(mcp.NewTool("disk_lsblk",
-		mcp.WithDescription("List block devices with their sizes, types, and mount points (lsblk)."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("device"),
-	), lsblkHandler(p))
-
-	s.AddTool(mcp.NewTool("disk_mounts",
-		mcp.WithDescription("Show current mounts with filesystem type and options (/proc/mounts)."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("fstype"),
-	), mountsHandler(p))
-
-	s.AddTool(mcp.NewTool("disk_df",
-		mcp.WithDescription("Report disk space usage (df -h)."),
-		mcp.WithString("session_id", mcp.Required()),
-		mcp.WithString("path"),
-	), dfHandler(p))
+func Register(s *mcp.Server, p *session.Pool) {
+	mcp.AddTool(s, &mcp.Tool{Name: "disk_lsblk", Description: "List block devices with their sizes, types, and mount points (lsblk)."}, lsblkHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "disk_mounts", Description: "Show current mounts with filesystem type and options (/proc/mounts)."}, mountsHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "disk_df", Description: "Report disk space usage (df -h)."}, dfHandler(p))
 }
 
-func lsblkHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		if id == "" {
-			return mcp.NewToolResultError("session_id is required"), nil
+type diskSessionParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Device    string `json:"device,omitempty" jsonschema:"Block device name (e.g. sda)"`
+	FSType    string `json:"fstype,omitempty" jsonschema:"Filter by filesystem type"`
+	Path      string `json:"path,omitempty" jsonschema:"Path to check disk usage for"`
+}
+
+func lsblkHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args diskSessionParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" {
+			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 		cmd := "lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID"
-		if dev := req.GetString("device", ""); dev != "" {
-			cmd += " " + sshutil.Quote(dev)
+		if args.Device != "" {
+			cmd += " " + sshutil.Quote(args.Device)
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func mountsHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		if id == "" {
-			return mcp.NewToolResultError("session_id is required"), nil
+func mountsHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args diskSessionParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" {
+			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 		cmd := "cat /proc/mounts"
-		if fs := req.GetString("fstype", ""); fs != "" {
-			cmd += " | awk '$3 == " + sshutil.Quote(fs) + "'"
+		if args.FSType != "" {
+			cmd += " | awk '$3 == " + sshutil.Quote(args.FSType) + "'"
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
 
-func dfHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		id := req.GetString("session_id", "")
-		if id == "" {
-			return mcp.NewToolResultError("session_id is required"), nil
+func dfHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args diskSessionParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" {
+			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, id)
+		client, err := p.Get(ctx, args.SessionID)
 		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
+			return nil, nil, err
 		}
 		cmd := "df -h"
-		if path := req.GetString("path", ""); path != "" {
-			cmd += " " + sshutil.Quote(path)
+		if args.Path != "" {
+			cmd += " " + sshutil.Quote(args.Path)
 		}
 		res, err := sshutil.Run(ctx, client, cmd)
 		if err != nil {
 			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return mcp.NewToolResultText(res.Text()), nil
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
