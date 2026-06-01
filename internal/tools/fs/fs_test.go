@@ -170,8 +170,79 @@ func TestStatHandler(t *testing.T) {
 	require.Equal(t, "stat info", data["stdout"])
 }
 
+func TestDUHandler(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		if cmd == "du -h -s -d 1 '/foo bar'" {
+			return "4.0K\t/foo bar\n", 0
+		}
+		return "unexpected command: " + cmd, 1
+	})
+	defer cleanup()
+
+	handler := duHandler(&dummyPool{client: client})
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, duParams{
+		SessionID: "test_id",
+		Path:      "/foo bar",
+		Human:     true,
+		Summarize: true,
+		MaxDepth:  1,
+	})
+	require.NoError(t, err)
+
+	data := parseResult(t, res)
+	require.Equal(t, "4.0K\t/foo bar\n", data["stdout"])
+}
+
 func TestWriteFileHandler(t *testing.T) {
-	t.Skip("SFTP write test requires full SFTP mock; skipped during MCP SDK migration")
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		return "", 0
+	})
+	defer cleanup()
+
+	tmpFile := filepath.Join(t.TempDir(), "test_write.txt")
+	handler := writeFileHandler(&dummyPool{client: client})
+
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, writeFileParams{
+		SessionID: "test_id",
+		Path:      tmpFile,
+		Content:   "hello write",
+		Mode:      "0644",
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	data := parseResult(t, res)
+	require.Equal(t, true, data["ok"])
+
+	content, err := os.ReadFile(tmpFile)
+	require.NoError(t, err)
+	require.Equal(t, "hello write", string(content))
+}
+
+func TestTruncateHandler(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		return "", 0
+	})
+	defer cleanup()
+
+	tmpFile := filepath.Join(t.TempDir(), "test_truncate.txt")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("hello truncate"), 0o644))
+
+	handler := truncateHandler(&dummyPool{client: client})
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, truncateParams{
+		SessionID: "test_id",
+		Path:      tmpFile,
+		Size:      5,
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	data := parseResult(t, res)
+	require.Equal(t, true, data["ok"])
+
+	content, err := os.ReadFile(tmpFile)
+	require.NoError(t, err)
+	require.Equal(t, "hello", string(content))
 }
 
 func TestUploadFileHandler(t *testing.T) {
@@ -206,7 +277,6 @@ func TestUploadFileHandler(t *testing.T) {
 }
 
 func TestUploadFileHandler_Security(t *testing.T) {
-	t.Skip("upload security test requires more sophisticated mock after migration")
 	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
 		return "", 0
 	})
@@ -226,8 +296,8 @@ func TestUploadFileHandler_Security(t *testing.T) {
 		LocalPath:  outsideFile,
 		RemotePath: remotePath,
 	})
-	require.NoError(t, err)
-	require.True(t, res.IsError, "expected error due to security bounds check")
+	require.Error(t, err, "expected error due to security bounds check")
+	require.Nil(t, res)
 
 	// relative path traversal
 	res, _, err = handler(context.Background(), &mcp.CallToolRequest{}, uploadFileParams{
@@ -235,8 +305,8 @@ func TestUploadFileHandler_Security(t *testing.T) {
 		LocalPath:  filepath.Join(tmpRoot, "..", "outside.txt"),
 		RemotePath: remotePath,
 	})
-	require.NoError(t, err)
-	require.True(t, res.IsError, "expected error due to relative path traversal")
+	require.Error(t, err, "expected error due to relative path traversal")
+	require.Nil(t, res)
 }
 
 // Retain TestWithinDir at the bottom

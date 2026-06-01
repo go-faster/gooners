@@ -40,7 +40,7 @@ internal/
   tools/              ← MCP tool registrations
     core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec
     disk/             ← disk_df, disk_lsblk, disk_mounts
-    fs/               ← ls, cat, find, grep, stat, upload_file, write_file
+    fs/               ← ls, cat, find, grep, stat, du, truncate, upload_file, write_file
     proc/             ← proc_list, proc_info, proc_lsof, proc_kill
     sysinfo/          ← sys_mem, sys_net_addrs, sys_os_info, sys_uptime
     systemd/          ← systemctl_* tools

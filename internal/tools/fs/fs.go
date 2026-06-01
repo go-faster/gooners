@@ -52,6 +52,8 @@ func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
 	mcp.AddTool(s, &mcp.Tool{Name: "grep", Description: "Search file contents on remote."}, grepHandler(p))
 	mcp.AddTool(s, &mcp.Tool{Name: "find", Description: "Find files/directories on remote."}, findHandler(p))
 	mcp.AddTool(s, &mcp.Tool{Name: "stat", Description: "Stat a path on remote."}, statHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "du", Description: "Get directory or file size (disk usage)."}, duHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "truncate", Description: "Truncate file to given size on remote via SFTP."}, truncateHandler(p))
 	mcp.AddTool(s, &mcp.Tool{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP."}, writeFileHandler(p))
 	mcp.AddTool(s, &mcp.Tool{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
 	mcp.AddTool(s, &mcp.Tool{Name: "upload_status", Description: "Check the status of an asynchronous file upload."}, uploadStatusHandler(p))
@@ -220,6 +222,79 @@ func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, any] {
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+	}
+}
+
+type duParams struct {
+	SessionID string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Path      string  `json:"path" jsonschema:"Path to measure size for"`
+	Human     bool    `json:"human,omitempty" jsonschema:"Use human readable sizes (du -h)"`
+	Summarize bool    `json:"summarize,omitempty" jsonschema:"Summarize result (du -s)"`
+	MaxDepth  float64 `json:"max_depth,omitempty" jsonschema:"Limit directory depth (du -d)"`
+	All       bool    `json:"all,omitempty" jsonschema:"Include individual files (du -a)"`
+}
+
+func duHandler(p SessionProvider) mcp.ToolHandlerFor[duParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args duParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Path == "" {
+			return nil, nil, fmt.Errorf("session_id and path are required")
+		}
+		client, err := p.Get(ctx, args.SessionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		cmd := "du"
+		if args.Human {
+			cmd += " -h"
+		}
+		if args.Summarize {
+			cmd += " -s"
+		}
+		if args.All {
+			cmd += " -a"
+		}
+		if args.MaxDepth > 0 {
+			cmd += fmt.Sprintf(" -d %d", int64(args.MaxDepth))
+		}
+		cmd += " " + sshutil.Quote(args.Path)
+		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		if err != nil {
+			res.Error = err.Error()
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+	}
+}
+
+type truncateParams struct {
+	SessionID string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Path      string  `json:"path" jsonschema:"Remote path to truncate"`
+	Size      float64 `json:"size" jsonschema:"New size in bytes (0 to empty file)"`
+}
+
+func truncateHandler(p SessionProvider) mcp.ToolHandlerFor[truncateParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args truncateParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.Path == "" {
+			return nil, nil, fmt.Errorf("session_id and path are required")
+		}
+		if args.Size < 0 {
+			return nil, nil, fmt.Errorf("size must be >= 0")
+		}
+
+		timeout := 60.0
+		truncCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+
+		sftpClient, err := p.SFTP(truncCtx, args.SessionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer func() { _ = sftpClient.Close() }()
+		if err := sftpClient.Truncate(args.Path, int64(args.Size)); err != nil {
+			return nil, nil, err
+		}
+
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mustJSONOk()}}}, nil, nil
 	}
 }
 
