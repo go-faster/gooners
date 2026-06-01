@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md / CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to AI coding assistants (like Claude Code, OpenCode, Cursor, and Copilot) when working with code in this repository.
 
 ## Purpose
 
@@ -30,6 +30,39 @@ golangci-lint fmt ./...
 golangci-lint run ./...
 ```
 
+## Architecture
+
+```
+cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
+internal/
+  session/            ← SSH session pool & async upload tracking
+  sshutil/            ← SSH config / known-hosts helpers
+  tools/              ← MCP tool registrations
+    core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec
+    disk/             ← disk_df, disk_lsblk, disk_mounts
+    fs/               ← ls, cat, find, grep, stat, upload_file, write_file
+    proc/             ← proc_list, proc_info, proc_lsof, proc_kill
+    sysinfo/          ← sys_mem, sys_net_addrs, sys_os_info, sys_uptime
+    systemd/          ← systemctl_* tools
+skills/jx/            ← Agent skill for github.com/go-faster/jx
+```
+
+The `ssh-mcp` file in the repo root is a **compiled binary** (not a source directory) — ignore it when navigating source.
+
+## Key Dependencies
+
+- `github.com/modelcontextprotocol/go-sdk` — MCP server/tool SDK; all tool registrations call `mcp.NewServer` and pass a `session.Pool`.
+
+## ssh-mcp Build
+
+```bash
+go build ./cmd/ssh-mcp
+# Run with default stdio transport (for Claude Code / Claude Desktop):
+./ssh-mcp
+# Or HTTP transport with debug logging:
+./ssh-mcp -transport streamable-http -addr :8080 -log-file /tmp/ssh-mcp.log
+```
+
 ## Skills
 
 Skills follow the [Agent Skills](https://agentskills.io) standard. Each skill lives in its own directory under `skills/`:
@@ -47,7 +80,6 @@ skills/
 ## Go Standards
 
 - Use `golangci-lint fmt ./...` for formatting (not `gofmt` or `goimports` directly).
-- When using `ogen`-generated HTTP clients/servers, prefer a single `default` response over multiple error codes — required for the `convenient errors` feature.
 - Avoid loading generated files into context; use search tools or gopls instead.
 
 ## README
