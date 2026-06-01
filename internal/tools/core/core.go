@@ -12,7 +12,15 @@ import (
 	"github.com/go-faster/gooners/internal/session"
 )
 
-func Register(s *mcp.Server, p *session.Pool) {
+type RegisterOptions struct {
+	// DisableSudo prevents registration of the ssh_sudo_exec tool.
+	DisableSudo bool
+	// SudoPassword is a server-level fallback used when the per-call sudo_password
+	// field is empty. Supports file, env, and credential-command sources.
+	SudoPassword SudoPasswordProvider
+}
+
+func Register(s *mcp.Server, p *session.Pool, opts RegisterOptions) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ssh_open",
 		Description: "Open SSH connection using defaults from ~/.ssh/config and keys.",
@@ -41,12 +49,14 @@ func Register(s *mcp.Server, p *session.Pool) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ssh_exec",
 		Description: "Execute a command on an open SSH session.",
-	}, execHandler(p, false))
+	}, execHandler(p, false, nil))
 
-	mcp.AddTool(s, &mcp.Tool{
-		Name:        "ssh_sudo_exec",
-		Description: "Execute a command with sudo -n on an open SSH session. Requires passwordless sudo on the target.",
-	}, execHandler(p, true))
+	if !opts.DisableSudo {
+		mcp.AddTool(s, &mcp.Tool{
+			Name:        "ssh_sudo_exec",
+			Description: "Execute a command with sudo on an open SSH session. If sudo requires a password, pass it via sudo_password or configure a server-level source (-sudo-password-file/-env/-cmd). Otherwise uses sudo -n.",
+		}, execHandler(p, true, opts.SudoPassword))
+	}
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "ssh_once_exec",
@@ -145,16 +155,29 @@ func listMachinesHandler() mcp.ToolHandlerFor[struct{}, any] {
 }
 
 type execParams struct {
-	SessionID  string `json:"session_id" jsonschema:"The ID of the SSH session"`
-	Command    string `json:"command" jsonschema:"Command to execute"`
-	Cwd        string `json:"cwd,omitempty" jsonschema:"Working directory for the command"`
-	TimeoutSec int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
+	SessionID    string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Command      string `json:"command" jsonschema:"Command to execute"`
+	Description  string `json:"description,omitempty" jsonschema:"Optional description of what this command will do (appended as a comment)"`
+	Cwd          string `json:"cwd,omitempty" jsonschema:"Working directory for the command"`
+	TimeoutSec   int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
+	SudoPassword string `json:"sudo_password,omitempty" jsonschema:"Sudo password if required"`
 }
 
-func execHandler(p *session.Pool, sudo bool) mcp.ToolHandlerFor[execParams, any] {
+func execHandler(p *session.Pool, sudo bool, sudoPasswd SudoPasswordProvider) mcp.ToolHandlerFor[execParams, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args execParams) (*mcp.CallToolResult, any, error) {
 		if args.SessionID == "" || args.Command == "" {
 			return nil, nil, fmt.Errorf("session_id and command are required")
+		}
+		if len(args.Command) > 50000 {
+			return nil, nil, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
+		}
+		sudoPwd := args.SudoPassword
+		if sudoPwd == "" && sudo && sudoPasswd != nil {
+			pwd, err := sudoPasswd.Password(ctx)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving sudo password: %w", err)
+			}
+			sudoPwd = pwd
 		}
 		timeout := 60
 		if args.TimeoutSec > 0 {
@@ -163,26 +186,32 @@ func execHandler(p *session.Pool, sudo bool) mcp.ToolHandlerFor[execParams, any]
 		execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
 		res := p.Exec(execCtx, session.ExecRequest{
-			SessionID: args.SessionID,
-			Command:   args.Command,
-			Cwd:       args.Cwd,
-			Sudo:      sudo,
+			SessionID:    args.SessionID,
+			Command:      args.Command,
+			Description:  args.Description,
+			Cwd:          args.Cwd,
+			Sudo:         sudo,
+			SudoPassword: sudoPwd,
 		})
 		return execResult(res)
 	}
 }
 
 type onceParams struct {
-	Machine    string `json:"machine" jsonschema:"Host to connect to"`
-	Command    string `json:"command" jsonschema:"Command to execute"`
-	Cwd        string `json:"cwd,omitempty" jsonschema:"Working directory for the command"`
-	TimeoutSec int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
+	Machine     string `json:"machine" jsonschema:"Host to connect to"`
+	Command     string `json:"command" jsonschema:"Command to execute"`
+	Description string `json:"description,omitempty" jsonschema:"Optional description of what this command will do (appended as a comment)"`
+	Cwd         string `json:"cwd,omitempty" jsonschema:"Working directory for the command"`
+	TimeoutSec  int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
 }
 
 func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args onceParams) (*mcp.CallToolResult, any, error) {
 		if args.Machine == "" || args.Command == "" {
 			return nil, nil, fmt.Errorf("machine and command are required")
+		}
+		if len(args.Command) > 50000 {
+			return nil, nil, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
 		}
 		timeout := 60
 		if args.TimeoutSec > 0 {
@@ -198,9 +227,10 @@ func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, any] {
 		defer func() { _ = p.Close(ctx, id) }() // Use parent context for closing
 
 		res := p.Exec(onceCtx, session.ExecRequest{
-			SessionID: id,
-			Command:   args.Command,
-			Cwd:       args.Cwd,
+			SessionID:   id,
+			Command:     args.Command,
+			Description: args.Description,
+			Cwd:         args.Cwd,
 		})
 		return execResult(res)
 	}

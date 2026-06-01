@@ -54,6 +54,10 @@ func main() {
 	logFile := flag.String("log-file", "", "path to log file (enables structured debug logging)")
 	transport := flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
 	addr := flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
+	disableSudo := flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
+	sudoPasswordFile := flag.String("sudo-password-file", "", "file containing the sudo password (re-read on each use)")
+	sudoPasswordEnv := flag.String("sudo-password-env", "", "env var containing the sudo password")
+	sudoPasswordCmd := flag.String("sudo-password-cmd", "", "command whose stdout is used as the sudo password (result is cached)")
 	flag.Parse()
 
 	if *logFile != "" {
@@ -81,8 +85,18 @@ func main() {
 	pool := session.NewPool()
 	go pool.Run(ctx)
 
+	var sudoPasswd core.SudoPasswordProvider
+	switch {
+	case *sudoPasswordFile != "":
+		sudoPasswd = &core.FilePasswordProvider{Path: *sudoPasswordFile}
+	case *sudoPasswordEnv != "":
+		sudoPasswd = &core.EnvPasswordProvider{VarName: *sudoPasswordEnv}
+	case *sudoPasswordCmd != "":
+		sudoPasswd = &core.CommandPasswordProvider{Command: *sudoPasswordCmd}
+	}
+
 	s := mcp.NewServer(&mcp.Implementation{Name: "ssh-mcp", Version: "0.1.0"}, nil)
-	core.Register(s, pool)
+	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, SudoPassword: sudoPasswd})
 	fs.Register(s, pool, uploadRoot)
 	systemd.Register(s, pool)
 	sysinfo.Register(s, pool)

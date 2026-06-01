@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/big"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -226,12 +227,28 @@ func (b *safeBuffer) String() string {
 
 func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecRequest) {
 	start := time.Now()
-	full := r.Command
+
+	cmdText := r.Command
+	if r.Description != "" {
+		// Prevent command injection via newlines in the description
+		desc := strings.ReplaceAll(r.Description, "\n", " ")
+		desc = strings.ReplaceAll(desc, "\r", " ")
+		cmdText += " # " + strings.ReplaceAll(desc, "#", "\\#")
+	}
+
+	full := cmdText
 	if r.Cwd != "" {
-		full = "cd " + shellquote.Join(r.Cwd) + " && " + r.Command
+		full = "cd " + shellquote.Join(r.Cwd) + " && " + cmdText
 	}
 	if r.Sudo {
-		full = "sudo -n -- sh -c " + shellquote.Join(full)
+		if r.SudoPassword != "" {
+			// -S reads password from stdin; -p "" suppresses the prompt.
+			// Password is delivered via sess.Stdin, keeping it out of the process list.
+			full = "sudo -S -p \"\" -- sh -c " + shellquote.Join(full)
+		} else {
+			// -n: fail immediately if a password is required (passwordless sudo only).
+			full = "sudo -n -- sh -c " + shellquote.Join(full)
+		}
 	}
 
 	slog.DebugContext(ctx, "ssh run start", "command", full)
@@ -276,6 +293,9 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 	var stdout, stderr safeBuffer
 	sess.Stdout = &stdout
 	sess.Stderr = &stderr
+	if r.Sudo && r.SudoPassword != "" {
+		sess.Stdin = strings.NewReader(r.SudoPassword + "\n")
+	}
 
 	done := make(chan error, 1)
 	go func() {
@@ -295,6 +315,12 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			Stderr: errOut,
 		}
 		go func() {
+			abortSess, err := client.NewSession()
+			if err == nil {
+				abortCmd := "timeout 3s pkill -f " + shellquote.Join(regexp.QuoteMeta(cmdText)) + " 2>/dev/null || true"
+				_ = abortSess.Run(abortCmd)
+				_ = abortSess.Close()
+			}
 			_ = sess.Signal(ssh.SIGKILL)
 			_ = sess.Close()
 		}()
@@ -313,6 +339,12 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			Err:    ctx.Err(),
 		}
 		go func() {
+			abortSess, err := client.NewSession()
+			if err == nil {
+				abortCmd := "timeout 3s pkill -f " + shellquote.Join(regexp.QuoteMeta(cmdText)) + " 2>/dev/null || true"
+				_ = abortSess.Run(abortCmd)
+				_ = abortSess.Close()
+			}
 			_ = sess.Signal(ssh.SIGKILL)
 			_ = sess.Close()
 		}()

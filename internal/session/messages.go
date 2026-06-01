@@ -45,12 +45,14 @@ type ListRequest struct {
 func (ListRequest) isRequest() {}
 
 type ExecRequest struct {
-	SessionID string
-	Command   string
-	Cwd       string
-	Sudo      bool
-	resp      chan<- ExecResponse
-	cancel    <-chan struct{} // Closed when handler times out
+	SessionID    string
+	Command      string
+	Description  string
+	Cwd          string
+	Sudo         bool
+	SudoPassword string
+	resp         chan<- ExecResponse
+	cancel       <-chan struct{} // Closed when handler times out
 }
 
 func (ExecRequest) isRequest() {}

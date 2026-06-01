@@ -20,6 +20,31 @@ go build ./cmd/ssh-mcp
 - `-transport <stdio|streamable-http|sse>` — protocol to use (default: `stdio`)
 - `-addr <host:port>` — listen address for HTTP transports (`streamable-http`, `sse`). Default `:8080`
 - `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file in append mode.
+- `-disable-sudo` — do not register the `ssh_sudo_exec` tool. Useful when deploying to untrusted contexts to reduce the capability surface.
+
+### Sudo password sources
+
+Instead of passing `sudo_password` in every `ssh_sudo_exec` call, you can configure a server-level source. Exactly one of the following flags may be set:
+
+| Flag | Source | Re-read? |
+|------|--------|----------|
+| `-sudo-password-file <path>` | Contents of a file (leading/trailing newline stripped) | Every call |
+| `-sudo-password-env <VAR>` | Value of an environment variable | Every call |
+| `-sudo-password-cmd <cmd>` | stdout of a command (e.g. `pass show host/sudo`) | Once, then cached |
+
+```bash
+# From a file (e.g. Docker secret or tmpfs)
+./ssh-mcp -sudo-password-file /run/secrets/sudo_pass
+
+# From an env var
+SUDO_PASS=hunter2 ./ssh-mcp -sudo-password-env SUDO_PASS
+
+# From a credential helper
+./ssh-mcp -sudo-password-cmd "pass show myserver/sudo"
+./ssh-mcp -sudo-password-cmd "secret-tool lookup service ssh-mcp account sudo"
+```
+
+The per-call `sudo_password` field always takes precedence over the server-level source when both are provided.
 
 **Recommendation**: `stdio` is the standard MCP transport and works perfectly with all standard clients (Claude Desktop, Claude Code, Cursor). `streamable-http` and `sse` are also available if you prefer connecting via HTTP without using the `mcp` CLI wrapper.
 
@@ -97,3 +122,4 @@ Alternatively, use `ssh_open_cfg` with `known_hosts` pointing to a file you mana
 ```bash
 ssh-keyscan host >> ~/.ssh/known_hosts
 ```
+

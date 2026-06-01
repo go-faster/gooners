@@ -85,4 +85,7 @@ skills/
 ## README
 
 - Keep `README.md` up to date whenever a tool or skill is added, removed, or renamed.
+- Don't forget to update `README.md` in subdirectories (like `cmd/ssh-mcp/README.md`) when making changes to tools or skills.
+- Update `CLAUDE.md` with any new instructions or guidelines for AI coding assistants.
 - Tools go in the **Tools** table; skills go in the **Skills** table.
+- Keep the **Tools** and **Skills** tables accurate and comprehensive.
