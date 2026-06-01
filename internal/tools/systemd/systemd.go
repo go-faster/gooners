@@ -69,7 +69,7 @@ func statusHandler(p *session.Pool) server.ToolHandlerFunc {
 		if id == "" || unit == "" {
 			return mcp.NewToolResultError("session_id and unit are required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -89,7 +89,7 @@ func listUnitsHandler(p *session.Pool) server.ToolHandlerFunc {
 		if id == "" {
 			return mcp.NewToolResultError("session_id is required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -116,7 +116,7 @@ func mutatingHandler(p *session.Pool, action string) server.ToolHandlerFunc {
 		if id == "" || unit == "" {
 			return mcp.NewToolResultError("session_id and unit are required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -136,7 +136,7 @@ func journalHandler(p *session.Pool) server.ToolHandlerFunc {
 		if id == "" {
 			return mcp.NewToolResultError("session_id is required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

@@ -37,7 +37,7 @@ func lsblkHandler(p *session.Pool) server.ToolHandlerFunc {
 		if id == "" {
 			return mcp.NewToolResultError("session_id is required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -60,7 +60,7 @@ func mountsHandler(p *session.Pool) server.ToolHandlerFunc {
 		if id == "" {
 			return mcp.NewToolResultError("session_id is required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -83,7 +83,7 @@ func dfHandler(p *session.Pool) server.ToolHandlerFunc {
 		if id == "" {
 			return mcp.NewToolResultError("session_id is required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

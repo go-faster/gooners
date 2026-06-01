@@ -17,7 +17,7 @@ type dummyPool struct {
 	client *ssh.Client
 }
 
-func (p *dummyPool) Get(id string) (*ssh.Client, error) {
+func (p *dummyPool) Get(ctx context.Context, id string) (*ssh.Client, error) {
 	return p.client, nil
 }
 

@@ -41,7 +41,7 @@ func withinDir(root, path string) (string, error) {
 }
 
 type SessionProvider interface {
-	Get(id string) (*ssh.Client, error)
+	Get(ctx context.Context, id string) (*ssh.Client, error)
 }
 
 func Register(s *server.MCPServer, p SessionProvider, uploadRoot string) {
@@ -109,7 +109,7 @@ func lsHandler(p SessionProvider) server.ToolHandlerFunc {
 		if id == "" || path == "" {
 			return mcp.NewToolResultError("session_id and path are required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -137,7 +137,7 @@ func catHandler(p SessionProvider) server.ToolHandlerFunc {
 		if id == "" || path == "" {
 			return mcp.NewToolResultError("session_id and path are required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -163,7 +163,7 @@ func grepHandler(p SessionProvider) server.ToolHandlerFunc {
 		if id == "" || pattern == "" || path == "" {
 			return mcp.NewToolResultError("session_id, pattern and path are required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -195,7 +195,7 @@ func findHandler(p SessionProvider) server.ToolHandlerFunc {
 		if id == "" || path == "" {
 			return mcp.NewToolResultError("session_id and path are required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -225,7 +225,7 @@ func statHandler(p SessionProvider) server.ToolHandlerFunc {
 		if id == "" || path == "" {
 			return mcp.NewToolResultError("session_id and path are required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -247,7 +247,7 @@ func writeFileHandler(p SessionProvider) server.ToolHandlerFunc {
 		if id == "" || path == "" {
 			return mcp.NewToolResultError("session_id and path are required"), nil
 		}
-		
+
 		timeoutSec := req.GetFloat("timeout_s", 0)
 		if timeoutSec > 0 {
 			var cancel context.CancelFunc
@@ -255,11 +255,11 @@ func writeFileHandler(p SessionProvider) server.ToolHandlerFunc {
 			defer cancel()
 		}
 
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		
+
 		type sftpResult struct {
 			client *sftp.Client
 			err    error
@@ -332,7 +332,7 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) server.ToolHandlerF
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}

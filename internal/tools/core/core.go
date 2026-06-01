@@ -10,7 +10,6 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/go-faster/gooners/internal/session"
-	"github.com/go-faster/gooners/internal/sshutil"
 )
 
 func Register(s *server.MCPServer, p *session.Pool) {
@@ -69,12 +68,12 @@ func Register(s *server.MCPServer, p *session.Pool) {
 }
 
 func openHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		machine := req.GetString("machine", "")
 		if machine == "" {
 			return mcp.NewToolResultError("machine is required"), nil
 		}
-		id, err := p.Open(machine)
+		id, err := p.Open(ctx, machine)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -84,7 +83,7 @@ func openHandler(p *session.Pool) server.ToolHandlerFunc {
 }
 
 func openCfgHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		cfg := session.Config{
 			Machine:    req.GetString("machine", ""),
 			User:       req.GetString("user", ""),
@@ -101,7 +100,7 @@ func openCfgHandler(p *session.Pool) server.ToolHandlerFunc {
 		if cfg.Machine == "" {
 			return mcp.NewToolResultError("machine is required"), nil
 		}
-		id, err := p.OpenCfg(cfg)
+		id, err := p.OpenCfg(ctx, cfg)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -111,20 +110,23 @@ func openCfgHandler(p *session.Pool) server.ToolHandlerFunc {
 }
 
 func closeHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		id := req.GetString("session_id", "")
 		if id == "" {
 			return mcp.NewToolResultError("session_id is required"), nil
 		}
-		_ = p.Close(id)
+		_ = p.Close(ctx, id)
 		b, _ := json.Marshal(map[string]bool{"ok": true})
 		return mcp.NewToolResultText(string(b)), nil
 	}
 }
 
 func listHandler(p *session.Pool) server.ToolHandlerFunc {
-	return func(_ context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		list := p.List()
+	return func(ctx context.Context, _ mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		list, err := p.List(ctx)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
 		b, _ := json.Marshal(list)
 		return mcp.NewToolResultText(string(b)), nil
 	}
@@ -138,30 +140,21 @@ func execHandler(p *session.Pool, sudo bool) server.ToolHandlerFunc {
 		if id == "" || cmd == "" {
 			return mcp.NewToolResultError("session_id and command are required"), nil
 		}
-		client, err := p.Get(id)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		full := cmd
-		if cwd != "" {
-			full = "cd " + sshutil.Quote(cwd) + " && " + cmd
-		}
-		if sudo {
-			full = "sudo -n -- sh -c " + sshutil.Quote(full)
-		}
 		t := req.GetFloat("timeout_s", 0)
 		c := ctx
 		if t > 0 {
 			var cancel context.CancelFunc
-			c, cancel = context.WithTimeout(ctx, time.Duration(t * float64(time.Second)))
+			c, cancel = context.WithTimeout(ctx, time.Duration(t*float64(time.Second)))
 			defer cancel()
 		}
-		res, err := sshutil.Run(c, client, full)
-		if err != nil {
-			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
-		}
-		return mcp.NewToolResultText(res.Text()), nil
+
+		res := p.Exec(c, session.ExecRequest{
+			SessionID: id,
+			Command:   cmd,
+			Cwd:       cwd,
+			Sudo:      sudo,
+		})
+		return execResult(res)
 	}
 }
 
@@ -173,33 +166,41 @@ func onceHandler(p *session.Pool) server.ToolHandlerFunc {
 		if machine == "" || cmd == "" {
 			return mcp.NewToolResultError("machine and command are required"), nil
 		}
-		id, err := p.Open(machine)
+		id, err := p.Open(ctx, machine)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
-		defer p.Close(id) //nolint:errcheck // close in defer for once handler, error not actionable
-		client, err := p.Get(id)
-		if err != nil {
-			return mcp.NewToolResultError(err.Error()), nil
-		}
-		full := cmd
-		if cwd != "" {
-			full = "cd " + sshutil.Quote(cwd) + " && " + cmd
-		}
+		defer p.Close(ctx, id) //nolint:errcheck // close in defer for once handler, error not actionable
+
 		t := req.GetFloat("timeout_s", 0)
 		c := ctx
 		if t > 0 {
 			var cancel context.CancelFunc
-			c, cancel = context.WithTimeout(ctx, time.Duration(t * float64(time.Second)))
+			c, cancel = context.WithTimeout(ctx, time.Duration(t*float64(time.Second)))
 			defer cancel()
 		}
-		res, err := sshutil.Run(c, client, full)
-		if err != nil {
-			res.Error = err.Error()
-			return mcp.NewToolResultError(res.Text()), nil
-		}
-		return mcp.NewToolResultText(res.Text()), nil
+
+		res := p.Exec(c, session.ExecRequest{
+			SessionID: id,
+			Command:   cmd,
+			Cwd:       cwd,
+		})
+		return execResult(res)
 	}
+}
+
+func execResult(res session.ExecResponse) (*mcp.CallToolResult, error) {
+	obj := map[string]interface{}{"stdout": res.Stdout, "stderr": res.Stderr}
+	if res.ExitCode != 0 {
+		obj["exit_code"] = res.ExitCode
+	}
+	if res.Err != nil {
+		obj["error"] = res.Err.Error()
+		b, _ := json.Marshal(obj)
+		return mcp.NewToolResultError(string(b)), nil
+	}
+	b, _ := json.Marshal(obj)
+	return mcp.NewToolResultText(string(b)), nil
 }
 
 func listMachinesHandler() server.ToolHandlerFunc {

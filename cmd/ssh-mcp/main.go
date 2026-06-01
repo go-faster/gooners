@@ -2,6 +2,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -72,8 +73,11 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	pool := session.NewPool()
-	defer pool.Shutdown()
+	go pool.Run(ctx)
 
 	s := server.NewMCPServer("ssh-mcp", "0.1.0")
 	core.Register(s, pool)

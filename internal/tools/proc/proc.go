@@ -89,7 +89,7 @@ func listHandler(p session.Provider) server.ToolHandlerFunc {
 		if id == "" {
 			return mcp.NewToolResultError("session_id is required"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -122,7 +122,7 @@ func infoHandler(p session.Provider) server.ToolHandlerFunc {
 		if !validPID(pid) {
 			return mcp.NewToolResultError("pid must be a positive integer"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -152,7 +152,7 @@ func lsofHandler(p session.Provider) server.ToolHandlerFunc {
 		if !validPID(pid) {
 			return mcp.NewToolResultError("pid must be a positive integer"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
@@ -183,7 +183,7 @@ func killHandler(p session.Provider) server.ToolHandlerFunc {
 		if sig == "" {
 			return mcp.NewToolResultError("unknown signal; use a number or one of: TERM KILL HUP INT QUIT USR1 USR2 STOP CONT ABRT"), nil
 		}
-		client, err := p.Get(id)
+		client, err := p.Get(ctx, id)
 		if err != nil {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
