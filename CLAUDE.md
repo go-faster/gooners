@@ -38,7 +38,7 @@ internal/
   session/            ← SSH session pool & async upload tracking
   sshutil/            ← SSH config / known-hosts helpers
   tools/              ← MCP tool registrations
-    core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec
+    core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec, ssh_ping
     disk/             ← disk_df, disk_lsblk, disk_mounts
     fs/               ← ls, cat, find, grep, stat, du, truncate, upload_file, write_file
     proc/             ← proc_list, proc_info, proc_lsof, proc_kill

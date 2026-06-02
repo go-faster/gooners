@@ -69,9 +69,10 @@ type Provider interface {
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error)
 	Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error)
 	DownloadStatus(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error)
-	Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error)
-	RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
+	Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error)
+	RunWithOptions(ctx context.Context, sessionID, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
 	CommandTimeout() time.Duration
+	Ping(ctx context.Context, id string) (time.Duration, error)
 }
 
 // Pool manages SSH sessions.
@@ -106,11 +107,36 @@ func (p *Pool) CommandTimeout() time.Duration {
 	return p.commandTimeout
 }
 
-func (p *Pool) Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error) {
+func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
+	client, err := p.Get(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+
+	start := time.Now()
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+		errCh <- err
+	}()
+
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case err := <-errCh:
+		if err != nil {
+			_ = p.Close(ctx, id)
+			return 0, err
+		}
+		return time.Since(start), nil
+	}
+}
+
+func (p *Pool) Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error) {
 	return p.RunWithOptions(ctx, sessionID, cmd, sshutil.RunOptions{Timeout: p.CommandTimeout()})
 }
 
-func (p *Pool) RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error) {
+func (p *Pool) RunWithOptions(ctx context.Context, sessionID, cmd string, opts sshutil.RunOptions) (sshutil.Result, error) {
 	client, err := p.Get(ctx, sessionID)
 	if err != nil {
 		return sshutil.Result{}, err
@@ -157,8 +183,26 @@ func (p *Pool) RunLoop(ctx context.Context) {
 
 			// Watch the connection and remove the session if it drops or fails.
 			go func(sessionID string, c *ssh.Client) {
-				_ = c.Wait()
-				_ = p.Close(context.Background(), sessionID)
+				errCh := make(chan error, 1)
+				go func() {
+					errCh <- c.Wait()
+				}()
+
+				ticker := time.NewTicker(15 * time.Second)
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-errCh:
+						_ = p.Close(context.Background(), sessionID)
+						return
+					case <-ticker.C:
+						if _, _, err := c.SendRequest("keepalive@openssh.com", true, nil); err != nil {
+							_ = c.Close()
+							return
+						}
+					}
+				}
 			}(id, res.client)
 
 		case req := <-p.reqCh:

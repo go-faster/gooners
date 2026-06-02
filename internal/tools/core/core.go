@@ -62,6 +62,11 @@ func Register(s *mcp.Server, p *session.Pool, opts RegisterOptions) {
 		Name:        "ssh_once_exec",
 		Description: "Open a temporary SSH session, run one command, then close it.",
 	}, onceHandler(p))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "ssh_ping",
+		Description: "Check if an SSH session is alive by sending a keepalive ping.",
+	}, pingHandler(p))
 }
 
 type openParams struct {
@@ -254,4 +259,28 @@ func execResult(res session.ExecResponse) (*mcp.CallToolResult, any, error) {
 func mustJSON(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+type pingParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session to ping"`
+}
+
+func pingHandler(p *session.Pool) mcp.ToolHandlerFor[pingParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args pingParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" {
+			return nil, nil, fmt.Errorf("session_id is required")
+		}
+
+		pingCtx, cancel := context.WithTimeout(ctx, p.CommandTimeout())
+		defer cancel()
+
+		dur, err := p.Ping(pingCtx, args.SessionID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("ping failed: %w", err)
+		}
+		return nil, map[string]string{
+			"status": "ok",
+			"time":   dur.String(),
+		}, nil
+	}
 }

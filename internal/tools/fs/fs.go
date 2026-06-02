@@ -48,7 +48,6 @@ type SessionProvider interface {
 	DownloadStatus(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
 	Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error)
 	RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
-	CommandTimeout() time.Duration
 }
 
 func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
