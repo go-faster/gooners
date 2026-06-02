@@ -94,3 +94,34 @@ type UploadStatusResponse struct {
 	Done          bool
 	Err           error
 }
+
+type DownloadRequest struct {
+	SessionID  string
+	LocalPath  string
+	RemotePath string
+	resp       chan<- DownloadResponse
+}
+
+func (DownloadRequest) isRequest() {}
+
+type DownloadResponse struct {
+	DownloadID string
+	Err        error
+}
+
+type DownloadStatusRequest struct {
+	SessionID  string
+	DownloadID string
+	resp       chan<- DownloadStatusResponse
+}
+
+func (DownloadStatusRequest) isRequest() {}
+
+type DownloadStatusResponse struct {
+	DownloadID      string
+	BytesDownloaded int64
+	TotalBytes      int64
+	Percent         float64
+	Done            bool
+	Err             error
+}

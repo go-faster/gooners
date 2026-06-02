@@ -11,7 +11,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// ContainerOpts configures NewSudoTestContainer behaviour.
+// ContainerOpts configures NewSudoTestContainer behavior.
 type ContainerOpts struct {
 	// SudoRequirePassword strips NOPASSWD from sudoers so that sudo prompts for
 	// the user's password. Default (false) keeps the image's passwordless sudo,

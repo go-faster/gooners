@@ -211,23 +211,6 @@ func callRawTolerant(t *testing.T, cs *mcp.ClientSession, name string, args map[
 	return tc.Text
 }
 
-// parsePSAuxPID extracts the PID (field 1) from a line in "ps aux" output
-// that contains the given substring. Format: "USER PID %CPU %MEM ... COMMAND".
-// This is intentionally a small test helper; real parsing lives in the proc tool.
-func parsePSAuxPID(psOutput, contains string) string {
-	for line := range strings.SplitSeq(psOutput, "\n") {
-		if !strings.Contains(line, contains) {
-			continue
-		}
-
-		fields := strings.Fields(line)
-		if len(fields) > 1 {
-			return fields[1]
-		}
-	}
-	return ""
-}
-
 func TestE2E_Core_OpenListClose(t *testing.T) {
 	env := setupMCPEnv(t)
 	sid := env.open(t)

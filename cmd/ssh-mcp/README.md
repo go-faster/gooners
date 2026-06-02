@@ -5,7 +5,7 @@ An MCP server that exposes SSH and SFTP operations as tools for AI agents. Desig
 ## Security notes
 
 - **Known hosts**: host key verification is enforced against `~/.ssh/known_hosts` by default. Populate it before connecting or pass an explicit `known_hosts` path via `ssh_open_cfg`. Passing `"insecure"` disables verification entirely — avoid this.
-- **Upload root**: `upload_file` only reads files within the directory where the server process was started. Paths outside that directory are rejected.
+- **Upload root**: `upload_file` and `download_file` only access files within the directory where the server process was started. Paths outside that directory are rejected.
 - **Ambient credentials**: `ssh_open` and `ssh_once_exec` use your SSH agent and `~/.ssh` key files automatically — the same keys your shell would use.
 - **Execution**: `ssh_exec` and `ssh_sudo_exec` run arbitrary shell commands with the privileges of the SSH user. Only connect to hosts you trust.
 
@@ -105,7 +105,7 @@ claude mcp add ssh /path/to/ssh-mcp
 
 > **Note**: The stdio transport is compatible with all modern clients including Claude Code and Claude Desktop.
 
-The server's **working directory at launch** becomes the upload root for `upload_file`.
+The server's **working directory at launch** becomes the upload root for `upload_file` and `download_file`.
 
 ## Known hosts setup
 

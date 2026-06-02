@@ -25,7 +25,9 @@ type Session struct {
 	Machine   string
 	CreatedAt time.Time
 	client    *ssh.Client
+	// TODO: completed jobs are never evicted from these maps, which is a known leak
 	uploads   map[string]*UploadJob
+	downloads map[string]*DownloadJob
 }
 
 type UploadJob struct {
@@ -40,6 +42,18 @@ type UploadJob struct {
 	cancel        context.CancelFunc
 }
 
+type DownloadJob struct {
+	ID              string
+	LocalPath       string
+	RemotePath      string
+	TotalBytes      int64
+	BytesDownloaded int64
+	Done            bool
+	Err             error
+	mu              sync.Mutex
+	cancel          context.CancelFunc
+}
+
 type SessionInfo struct {
 	ID        string    `json:"id"`
 	Machine   string    `json:"machine"`
@@ -51,6 +65,8 @@ type Provider interface {
 	SFTP(ctx context.Context, id string) (*sftp.Client, error)
 	Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error)
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error)
+	Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error)
+	DownloadStatus(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error)
 }
 
 // Pool manages SSH sessions.
@@ -98,6 +114,7 @@ func (p *Pool) Run(ctx context.Context) {
 				CreatedAt: time.Now(),
 				client:    res.client,
 				uploads:   make(map[string]*UploadJob),
+				downloads: make(map[string]*DownloadJob),
 			}
 			sessions[id] = sess
 			slog.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
@@ -136,6 +153,9 @@ func (p *Pool) Run(ctx context.Context) {
 				s, ok := sessions[r.ID]
 				if ok {
 					for _, job := range s.uploads {
+						job.cancel()
+					}
+					for _, job := range s.downloads {
 						job.cancel()
 					}
 					_ = s.client.Close()
@@ -180,9 +200,11 @@ func (p *Pool) Run(ctx context.Context) {
 					continue
 				}
 				job.mu.Lock()
-				percent := float64(100)
+				percent := float64(0)
 				if job.TotalBytes > 0 {
 					percent = (float64(job.BytesUploaded) / float64(job.TotalBytes)) * 100
+				} else if job.Done {
+					percent = 100
 				}
 				r.resp <- UploadStatusResponse{
 					UploadID:      job.ID,
@@ -191,6 +213,52 @@ func (p *Pool) Run(ctx context.Context) {
 					Percent:       percent,
 					Done:          job.Done,
 					Err:           job.Err,
+				}
+				job.mu.Unlock()
+
+			case DownloadRequest:
+				s, ok := sessions[r.SessionID]
+				if !ok {
+					r.resp <- DownloadResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
+					continue
+				}
+				downloadID := fmt.Sprintf("download-%d", time.Now().UnixNano())
+				dCtx, dCancel := context.WithCancel(ctx)
+				job := &DownloadJob{
+					ID:         downloadID,
+					LocalPath:  r.LocalPath,
+					RemotePath: r.RemotePath,
+					cancel:     dCancel,
+				}
+				s.downloads[downloadID] = job
+				go runDownload(dCtx, s.client, job)
+				r.resp <- DownloadResponse{DownloadID: downloadID}
+
+			case DownloadStatusRequest:
+				s, ok := sessions[r.SessionID]
+				if !ok {
+					r.resp <- DownloadStatusResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
+					continue
+				}
+				job, ok := s.downloads[r.DownloadID]
+				if !ok {
+					r.resp <- DownloadStatusResponse{Err: fmt.Errorf("download not found: %s", r.DownloadID)}
+					continue
+				}
+				job.mu.Lock()
+				percent := float64(0)
+				if job.TotalBytes > 0 {
+					percent = (float64(job.BytesDownloaded) / float64(job.TotalBytes)) * 100
+				} else if job.Done {
+					percent = 100
+				}
+				r.resp <- DownloadStatusResponse{
+					DownloadID:      job.ID,
+					BytesDownloaded: job.BytesDownloaded,
+					TotalBytes:      job.TotalBytes,
+					Percent:         percent,
+					Done:            job.Done,
+					Err:             job.Err,
 				}
 				job.mu.Unlock()
 
@@ -502,6 +570,36 @@ func (p *Pool) UploadStatus(ctx context.Context, sessionID, uploadID string) (Up
 	}
 }
 
+func (p *Pool) Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error) {
+	respCh := make(chan DownloadResponse, 1)
+	select {
+	case p.reqCh <- DownloadRequest{SessionID: sessionID, RemotePath: remotePath, LocalPath: localPath, resp: respCh}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	select {
+	case resp := <-respCh:
+		return resp.DownloadID, resp.Err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (p *Pool) DownloadStatus(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error) {
+	respCh := make(chan DownloadStatusResponse, 1)
+	select {
+	case p.reqCh <- DownloadStatusRequest{SessionID: sessionID, DownloadID: downloadID, resp: respCh}:
+	case <-ctx.Done():
+		return DownloadStatusResponse{}, ctx.Err()
+	}
+	select {
+	case resp := <-respCh:
+		return resp, resp.Err
+	case <-ctx.Done():
+		return DownloadStatusResponse{}, ctx.Err()
+	}
+}
+
 func generateSessionID(machine string, sessions map[string]*Session) string {
 	slug := machineSlug(machine)
 	for range 100 {
@@ -632,6 +730,89 @@ func runUpload(ctx context.Context, client *ssh.Client, job *UploadJob) {
 
 		pr := &poolProgressReader{r: src, ctx: ctx, job: job}
 		if _, err := io.Copy(dst, pr); err != nil {
+			return err
+		}
+
+		return nil
+	}(); err != nil {
+		job.mu.Lock()
+		job.Err = err
+		job.mu.Unlock()
+		return
+	}
+}
+
+type poolDownloadProgressReader struct {
+	r   io.Reader
+	ctx context.Context
+	job *DownloadJob
+}
+
+func (pr *poolDownloadProgressReader) Read(p []byte) (int, error) {
+	if err := pr.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := pr.r.Read(p)
+	pr.job.mu.Lock()
+	pr.job.BytesDownloaded += int64(n)
+	pr.job.mu.Unlock()
+	return n, err
+}
+
+func runDownload(ctx context.Context, client *ssh.Client, job *DownloadJob) {
+	defer func() {
+		job.mu.Lock()
+		job.Done = true
+		job.mu.Unlock()
+	}()
+
+	if err := func() error {
+		sftpClient, err := sftp.NewClient(client)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = sftpClient.Close()
+		}()
+
+		src, err := sftpClient.Open(job.RemotePath)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = src.Close()
+		}()
+
+		stat, err := src.Stat()
+		if err != nil {
+			return err
+		}
+
+		job.mu.Lock()
+		job.TotalBytes = stat.Size()
+		job.mu.Unlock()
+
+		tmpPath := job.LocalPath + ".tmp"
+		//nolint:gosec // LocalPath is validated to be within the allowed directory by withinDir
+		dst, err := os.Create(tmpPath)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			_ = dst.Close()
+			_ = os.Remove(tmpPath) // cleans up partial file if not renamed
+		}()
+
+		pr := &poolDownloadProgressReader{r: src, ctx: ctx, job: job}
+		if _, err := io.Copy(dst, pr); err != nil {
+			return err
+		}
+
+		if err := dst.Close(); err != nil {
+			return err
+		}
+
+		if err := os.Rename(tmpPath, job.LocalPath); err != nil {
 			return err
 		}
 

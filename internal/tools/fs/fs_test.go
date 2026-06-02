@@ -50,6 +50,24 @@ func (p *dummyPool) UploadStatus(ctx context.Context, sessionID, uploadID string
 	}, nil
 }
 
+func (p *dummyPool) Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error) {
+	data, err := os.ReadFile(remotePath)
+	if err == nil {
+		_ = os.WriteFile(localPath, data, 0o644)
+	}
+	return "download-123", nil
+}
+
+func (p *dummyPool) DownloadStatus(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error) {
+	return session.DownloadStatusResponse{
+		DownloadID:      downloadID,
+		BytesDownloaded: 100,
+		TotalBytes:      100,
+		Percent:         100,
+		Done:            true,
+	}, nil
+}
+
 func parseResult(t *testing.T, res *mcp.CallToolResult) map[string]any {
 	t.Helper()
 	require.False(t, res.IsError, "unexpected error result: %v", res)
@@ -377,6 +395,83 @@ func TestUploadStatusHandler(t *testing.T) {
 	data := parseResult(t, res)
 	require.Equal(t, true, data["ok"])
 	require.Equal(t, "upload-123", data["upload_id"])
+	require.Equal(t, float64(100), data["percent"])
+	require.Equal(t, true, data["done"])
+}
+
+func TestDownloadFileHandler(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		return "", 0
+	})
+	defer cleanup()
+
+	tmpRoot := t.TempDir()
+	handler := downloadFileHandler(&dummyPool{client: client}, tmpRoot)
+
+	remotePath := filepath.Join(t.TempDir(), "remote.txt")
+	require.NoError(t, os.WriteFile(remotePath, []byte("remote content"), 0o644))
+
+	localPath := filepath.Join(tmpRoot, "local.txt")
+
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, downloadFileParams{
+		SessionID:  "test_id",
+		LocalPath:  localPath,
+		RemotePath: remotePath,
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "unexpected error: %v", res)
+
+	data := parseResult(t, res)
+	require.Equal(t, true, data["ok"])
+	require.Equal(t, "download-123", data["download_id"])
+
+	content, err := os.ReadFile(localPath)
+	require.NoError(t, err)
+	require.Equal(t, "remote content", string(content))
+}
+
+func TestDownloadFileHandler_Security(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		return "", 0
+	})
+	defer cleanup()
+
+	tmpRoot := t.TempDir()
+	handler := downloadFileHandler(&dummyPool{client: client}, tmpRoot)
+
+	// Try to download OUTSIDE the allowed root
+	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
+	remotePath := filepath.Join(t.TempDir(), "remote.txt")
+
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, downloadFileParams{
+		SessionID:  "test_id",
+		LocalPath:  outsideFile,
+		RemotePath: remotePath,
+	})
+	require.Error(t, err, "expected error due to security bounds check")
+	require.Nil(t, res)
+}
+
+func TestDownloadStatusHandler(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		return "", 0
+	})
+	defer cleanup()
+
+	handler := downloadStatusHandler(&dummyPool{client: client})
+
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, downloadStatusParams{
+		SessionID:  "test_id",
+		DownloadID: "download-123",
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError, "unexpected error: %v", res)
+
+	data := parseResult(t, res)
+	require.Equal(t, true, data["ok"])
+	require.Equal(t, "download-123", data["download_id"])
+	require.Equal(t, float64(100), data["bytes_downloaded"])
+	require.Equal(t, float64(100), data["total_bytes"])
 	require.Equal(t, float64(100), data["percent"])
 	require.Equal(t, true, data["done"])
 }

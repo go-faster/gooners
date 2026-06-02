@@ -44,6 +44,8 @@ type SessionProvider interface {
 	SFTP(ctx context.Context, id string) (*sftp.Client, error)
 	Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error)
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
+	Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error)
+	DownloadStatus(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
 }
 
 func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
@@ -55,8 +57,10 @@ func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
 	mcp.AddTool(s, &mcp.Tool{Name: "du", Description: "Get directory or file size (disk usage)."}, duHandler(p))
 	mcp.AddTool(s, &mcp.Tool{Name: "truncate", Description: "Truncate file to given size on remote via SFTP."}, truncateHandler(p))
 	mcp.AddTool(s, &mcp.Tool{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP."}, writeFileHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
+	mcp.AddTool(s, &mcp.Tool{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Local path must be within the server's working directory. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
 	mcp.AddTool(s, &mcp.Tool{Name: "upload_status", Description: "Check the status of an asynchronous file upload."}, uploadStatusHandler(p))
+	mcp.AddTool(s, &mcp.Tool{Name: "download_file", Description: "Download a remote file asynchronously to local path via SFTP. Local path must be within the server's working directory. Returns a download_id."}, downloadFileHandler(p, uploadRoot))
+	mcp.AddTool(s, &mcp.Tool{Name: "download_status", Description: "Check the status of an asynchronous file download."}, downloadStatusHandler(p))
 }
 
 type lsParams struct {
@@ -359,10 +363,10 @@ type uploadFileParams struct {
 	SessionID  string  `json:"session_id" jsonschema:"The ID of the SSH session"`
 	LocalPath  string  `json:"local_path" jsonschema:"Local path on the MCP server to upload from"`
 	RemotePath string  `json:"remote_path" jsonschema:"Remote path to upload to"`
-	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
+	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds for queuing the request"`
 }
 
-func uploadFileHandler(p SessionProvider, uploadRoot string) mcp.ToolHandlerFor[uploadFileParams, any] {
+func uploadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[uploadFileParams, any] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadFileParams) (*mcp.CallToolResult, any, error) {
 		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
 			return nil, nil, fmt.Errorf("session_id, local_path and remote_path are required")
@@ -373,7 +377,7 @@ func uploadFileHandler(p SessionProvider, uploadRoot string) mcp.ToolHandlerFor[
 		}
 		uploadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		safePath, err := withinDir(uploadRoot, args.LocalPath)
+		safePath, err := withinDir(workDir, args.LocalPath)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -408,6 +412,68 @@ func uploadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[uploadStatusParam
 			"total_bytes":    status.TotalBytes,
 			"percent":        status.Percent,
 			"done":           status.Done,
+		}
+		if status.Err != nil {
+			res["error"] = status.Err.Error()
+			res["ok"] = false
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(res)}}}, nil, nil
+	}
+}
+
+type downloadFileParams struct {
+	SessionID  string  `json:"session_id" jsonschema:"The ID of the SSH session"`
+	RemotePath string  `json:"remote_path" jsonschema:"Remote path to download from"`
+	LocalPath  string  `json:"local_path" jsonschema:"Local path on the MCP server to download to"`
+	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds for queuing the request"`
+}
+
+func downloadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[downloadFileParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadFileParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
+			return nil, nil, fmt.Errorf("session_id, local_path and remote_path are required")
+		}
+		timeout := 60.0
+		if args.TimeoutSec > 0 {
+			timeout = args.TimeoutSec
+		}
+		downloadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		defer cancel()
+		safePath, err := withinDir(workDir, args.LocalPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		downloadID, err := p.Download(downloadCtx, args.SessionID, args.RemotePath, safePath)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(map[string]any{"ok": true, "download_id": downloadID})}},
+		}, nil, nil
+	}
+}
+
+type downloadStatusParams struct {
+	SessionID  string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	DownloadID string `json:"download_id" jsonschema:"The download ID returned by download_file"`
+}
+
+func downloadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[downloadStatusParams, any] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadStatusParams) (*mcp.CallToolResult, any, error) {
+		if args.SessionID == "" || args.DownloadID == "" {
+			return nil, nil, fmt.Errorf("session_id and download_id are required")
+		}
+		status, err := p.DownloadStatus(ctx, args.SessionID, args.DownloadID)
+		if err != nil {
+			return nil, nil, err
+		}
+		res := map[string]any{
+			"ok":               true,
+			"download_id":      status.DownloadID,
+			"bytes_downloaded": status.BytesDownloaded,
+			"total_bytes":      status.TotalBytes,
+			"percent":          status.Percent,
+			"done":             status.Done,
 		}
 		if status.Err != nil {
 			res["error"] = status.Err.Error()
