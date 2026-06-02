@@ -28,15 +28,11 @@ func netAddrsHandler(p *session.Pool) mcp.ToolHandlerFor[sysSessionParams, any] 
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "ip addr show"
 		if args.Iface != "" {
 			cmd += " dev " + sshutil.Quote(args.Iface)
 		}
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -52,12 +48,8 @@ func osInfoHandler(p *session.Pool) mcp.ToolHandlerFor[sysSessionParams, any] {
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "hostname; echo '---'; uname -a; echo '---'; cat /etc/os-release 2>/dev/null || cat /etc/redhat-release 2>/dev/null || echo 'os-release: not found'"
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -73,11 +65,7 @@ func uptimeHandler(p *session.Pool) mcp.ToolHandlerFor[sysSessionParams, any] {
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
-		res, err := sshutil.Run(ctx, client, "uptime", sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, "uptime")
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -93,11 +81,7 @@ func memHandler(p *session.Pool) mcp.ToolHandlerFor[sysSessionParams, any] {
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
-		res, err := sshutil.Run(ctx, client, "free -h", sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, "free -h")
 		if err != nil {
 			res.Error = err.Error()
 		}

@@ -55,6 +55,7 @@ Notes:
 - `-addr <host:port>` — listen address for HTTP transports (`streamable-http`, `sse`). Default `:8080`
 - `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file in append mode.
 - `-disable-sudo` — do not register the `ssh_sudo_exec` tool. Useful when deploying to untrusted contexts to reduce the capability surface.
+- `-command-timeout <duration>` — default command timeout (default: `10s`).
 
 ### Sudo password sources
 

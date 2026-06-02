@@ -72,10 +72,6 @@ func listHandler(p session.Provider) mcp.ToolHandlerFor[procListParams, any] {
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "ps aux"
 		if args.User != "" {
 			cmd = "ps -u " + sshutil.Quote(args.User) + " aux"
@@ -86,7 +82,7 @@ func listHandler(p session.Provider) mcp.ToolHandlerFor[procListParams, any] {
 		if args.MaxLines > 0 {
 			cmd += fmt.Sprintf(" | head -n %d", int64(args.MaxLines))
 		}
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -110,10 +106,6 @@ func infoHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
 		if !validPID(args.PID) {
 			return nil, nil, fmt.Errorf("pid must be a positive integer")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := fmt.Sprintf(
 			"echo '=== status ===' && cat /proc/%s/status 2>/dev/null && "+
 				"echo '=== cmdline ===' && tr '\\0' ' ' < /proc/%s/cmdline 2>/dev/null && echo && "+
@@ -121,7 +113,7 @@ func infoHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
 				"echo '=== cwd ===' && readlink /proc/%s/cwd 2>/dev/null",
 			args.PID, args.PID, args.PID, args.PID,
 		)
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -140,12 +132,8 @@ func lsofHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
 		if !validPID(args.PID) {
 			return nil, nil, fmt.Errorf("pid must be a positive integer")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := fmt.Sprintf("lsof -p %s 2>/dev/null || ls -la /proc/%s/fd 2>/dev/null", args.PID, args.PID)
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -174,12 +162,8 @@ func killHandler(p session.Provider) mcp.ToolHandlerFor[killParams, any] {
 		if sig == "" {
 			return nil, nil, fmt.Errorf("unknown signal; use a number or one of: TERM KILL HUP INT QUIT USR1 USR2 STOP CONT ABRT")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := fmt.Sprintf("sudo -n kill -%s %s", sig, args.PID)
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}

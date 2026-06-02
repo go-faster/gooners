@@ -18,6 +18,8 @@ import (
 	"github.com/kballard/go-shellquote"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/go-faster/gooners/internal/sshutil"
 )
 
 type Session struct {
@@ -67,23 +69,56 @@ type Provider interface {
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error)
 	Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error)
 	DownloadStatus(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error)
+	Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error)
+	RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
+	CommandTimeout() time.Duration
 }
 
 // Pool manages SSH sessions.
-// Note: You must call Run(ctx) on the Pool before using it, otherwise
+// Note: You must call RunLoop(ctx) on the Pool before using it, otherwise
 // methods like Open, Close, and Exec will deadlock waiting for the event loop.
 // The event loop and all managed sessions are terminated when ctx is canceled.
 type Pool struct {
-	reqCh chan Request
+	reqCh          chan Request
+	commandTimeout time.Duration
 }
 
-func NewPool() *Pool {
-	return &Pool{
-		reqCh: make(chan Request),
+// PoolOptions contains configuration for a new Pool.
+type PoolOptions struct {
+	CommandTimeout time.Duration
+}
+
+func (opts *PoolOptions) setDefaults() {
+	if opts.CommandTimeout <= 0 {
+		opts.CommandTimeout = 10 * time.Second
 	}
 }
 
-func (p *Pool) Run(ctx context.Context) {
+func NewPool(opts PoolOptions) *Pool {
+	opts.setDefaults()
+	return &Pool{
+		reqCh:          make(chan Request),
+		commandTimeout: opts.CommandTimeout,
+	}
+}
+
+func (p *Pool) CommandTimeout() time.Duration {
+	return p.commandTimeout
+}
+
+func (p *Pool) Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error) {
+	return p.RunWithOptions(ctx, sessionID, cmd, sshutil.RunOptions{Timeout: p.CommandTimeout()})
+}
+
+func (p *Pool) RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error) {
+	client, err := p.Get(ctx, sessionID)
+	if err != nil {
+		return sshutil.Result{}, err
+	}
+	return sshutil.Run(ctx, client, cmd, opts)
+}
+
+func (p *Pool) RunLoop(ctx context.Context) {
 	sessions := make(map[string]*Session)
 
 	type dialResult struct {

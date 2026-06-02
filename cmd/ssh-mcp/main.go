@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -58,6 +59,7 @@ func main() {
 	sudoPasswordFile := flag.String("sudo-password-file", "", "file containing the sudo password (re-read on each use)")
 	sudoPasswordEnv := flag.String("sudo-password-env", "", "env var containing the sudo password")
 	sudoPasswordCmd := flag.String("sudo-password-cmd", "", "command whose stdout is used as the sudo password (result is cached)")
+	commandTimeout := flag.Duration("command-timeout", 10*time.Second, "default command timeout")
 	flag.Parse()
 
 	if *logFile != "" {
@@ -82,8 +84,8 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := session.NewPool()
-	go pool.Run(ctx)
+	pool := session.NewPool(session.PoolOptions{CommandTimeout: *commandTimeout})
+	go pool.RunLoop(ctx)
 
 	var sudoPasswd core.SudoPasswordProvider
 	switch {

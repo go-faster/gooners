@@ -46,6 +46,9 @@ type SessionProvider interface {
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
 	Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error)
 	DownloadStatus(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
+	Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error)
+	RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
+	CommandTimeout() time.Duration
 }
 
 func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
@@ -75,10 +78,6 @@ func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, any] {
 		if args.SessionID == "" || args.Path == "" {
 			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "ls"
 		if args.Long {
 			cmd += " -l"
@@ -88,7 +87,7 @@ func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, any] {
 		}
 		cmd += " " + sshutil.Quote(args.Path)
 
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -110,16 +109,12 @@ func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, any] {
 		if args.SessionID == "" || args.Path == "" {
 			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		maxBytes := args.MaxBytes
 		if maxBytes <= 0 || maxBytes > maxCatBytes {
 			maxBytes = maxCatBytes
 		}
 		cmd := fmt.Sprintf("head -c %d %s", int64(maxBytes), sshutil.Quote(args.Path))
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -144,10 +139,6 @@ func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, any] {
 		if args.SessionID == "" || args.Pattern == "" || args.Path == "" {
 			return nil, nil, fmt.Errorf("session_id, pattern and path are required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "grep"
 		if args.Recursive {
 			cmd += " -r"
@@ -159,7 +150,7 @@ func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, any] {
 			cmd += fmt.Sprintf(" -m %d", int64(args.MaxLines))
 		}
 		cmd += " " + sshutil.Quote(args.Pattern) + " " + sshutil.Quote(args.Path)
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -183,10 +174,6 @@ func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, any] {
 		if args.SessionID == "" || args.Path == "" {
 			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "find " + sshutil.Quote(args.Path)
 		if args.Name != "" {
 			cmd += " -name " + sshutil.Quote(args.Name)
@@ -197,7 +184,7 @@ func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, any] {
 		if args.MaxDepth > 0 {
 			cmd += fmt.Sprintf(" -maxdepth %d", int64(args.MaxDepth))
 		}
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -218,12 +205,8 @@ func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, any] {
 		if args.SessionID == "" || args.Path == "" {
 			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "stat " + sshutil.Quote(args.Path)
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -248,10 +231,6 @@ func duHandler(p SessionProvider) mcp.ToolHandlerFor[duParams, any] {
 		if args.SessionID == "" || args.Path == "" {
 			return nil, nil, fmt.Errorf("session_id and path are required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "du"
 		if args.Human {
 			cmd += " -h"
@@ -266,7 +245,7 @@ func duHandler(p SessionProvider) mcp.ToolHandlerFor[duParams, any] {
 			cmd += fmt.Sprintf(" -d %d", int64(args.MaxDepth))
 		}
 		cmd += " " + sshutil.Quote(args.Path)
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}

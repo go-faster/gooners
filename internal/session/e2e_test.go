@@ -20,10 +20,10 @@ func TestSudoExec(t *testing.T) {
 	}
 	t.Cleanup(cleanup)
 
-	p := NewPool()
+	p := NewPool(PoolOptions{CommandTimeout: 0})
 	ctx := t.Context()
 
-	go p.Run(ctx)
+	go p.RunLoop(ctx)
 
 	id, err := p.OpenCfg(ctx, Config{
 		Machine:    addr,

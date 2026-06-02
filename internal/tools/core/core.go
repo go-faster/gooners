@@ -179,11 +179,11 @@ func execHandler(p *session.Pool, sudo bool, sudoPasswd SudoPasswordProvider) mc
 			}
 			sudoPwd = pwd
 		}
-		timeout := 60
+		timeout := p.CommandTimeout()
 		if args.TimeoutSec > 0 {
-			timeout = args.TimeoutSec
+			timeout = time.Duration(args.TimeoutSec) * time.Second
 		}
-		execCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		res := p.Exec(execCtx, session.ExecRequest{
 			SessionID:    args.SessionID,
@@ -213,11 +213,11 @@ func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, any] {
 		if len(args.Command) > 50000 {
 			return nil, nil, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
 		}
-		timeout := 60
+		timeout := p.CommandTimeout()
 		if args.TimeoutSec > 0 {
-			timeout = args.TimeoutSec
+			timeout = time.Duration(args.TimeoutSec) * time.Second
 		}
-		onceCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+		onceCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
 		id, err := p.Open(onceCtx, args.Machine)

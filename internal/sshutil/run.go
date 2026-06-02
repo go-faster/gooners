@@ -13,13 +13,17 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// DefaultTimeout is the default command execution timeout.
+// Defaults to 10 seconds.
+const DefaultTimeout = 10 * time.Second
+
 type RunOptions struct {
 	Timeout time.Duration
 }
 
 func (opts *RunOptions) setDefaults() {
 	if opts.Timeout == 0 {
-		opts.Timeout = time.Minute
+		opts.Timeout = DefaultTimeout
 	}
 }
 

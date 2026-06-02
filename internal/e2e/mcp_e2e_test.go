@@ -63,8 +63,8 @@ func getSharedEnv(t *testing.T) *testEnv {
 		}
 		// The container lives until the test process exits (no t.Cleanup in Once).
 
-		p := session.NewPool()
-		go p.Run(ctx)
+		p := session.NewPool(session.PoolOptions{CommandTimeout: 0})
+		go p.RunLoop(ctx)
 
 		// Small delay so the pool goroutine is scheduled before first open.
 		// The channel-based design means the first RPC would block anyway,

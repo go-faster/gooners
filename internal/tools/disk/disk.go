@@ -29,15 +29,11 @@ func lsblkHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID"
 		if args.Device != "" {
 			cmd += " " + sshutil.Quote(args.Device)
 		}
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -53,15 +49,11 @@ func mountsHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "cat /proc/mounts"
 		if args.FSType != "" {
 			cmd += " | awk '$3 == " + sshutil.Quote(args.FSType) + "'"
 		}
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -77,15 +69,11 @@ func dfHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "df -h"
 		if args.Path != "" {
 			cmd += " " + sshutil.Quote(args.Path)
 		}
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}

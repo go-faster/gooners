@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pkg/sftp"
@@ -15,14 +16,27 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/go-faster/gooners/internal/session"
+	"github.com/go-faster/gooners/internal/sshutil"
 )
 
 type dummyPool struct {
 	client *ssh.Client
 }
 
+func (p *dummyPool) CommandTimeout() time.Duration {
+	return 10 * time.Second
+}
+
 func (p *dummyPool) Get(ctx context.Context, id string) (*ssh.Client, error) {
 	return p.client, nil
+}
+
+func (p *dummyPool) Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error) {
+	return sshutil.Run(ctx, p.client, cmd, sshutil.RunOptions{Timeout: p.CommandTimeout()})
+}
+
+func (p *dummyPool) RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error) {
+	return sshutil.Run(ctx, p.client, cmd, opts)
 }
 
 func (p *dummyPool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {

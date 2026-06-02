@@ -31,12 +31,8 @@ func statusHandler(p *session.Pool) mcp.ToolHandlerFor[systemdBaseParams, any] {
 		if args.SessionID == "" || args.Unit == "" {
 			return nil, nil, fmt.Errorf("session_id and unit are required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "systemctl status " + sshutil.Quote(args.Unit)
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -58,10 +54,6 @@ func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, any] 
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "systemctl list-units"
 		if args.State != "" {
 			cmd += " --state=" + sshutil.Quote(args.State)
@@ -69,7 +61,7 @@ func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, any] 
 		if args.Type != "" {
 			cmd += " --type=" + sshutil.Quote(args.Type)
 		}
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -85,12 +77,8 @@ func mutatingHandler(p *session.Pool, action string) mcp.ToolHandlerFor[systemdB
 		if args.SessionID == "" || args.Unit == "" {
 			return nil, nil, fmt.Errorf("session_id and unit are required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		cmd := "sudo -n systemctl " + action + " " + sshutil.Quote(args.Unit)
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
@@ -116,10 +104,6 @@ func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, any] {
 		if args.SessionID == "" {
 			return nil, nil, fmt.Errorf("session_id is required")
 		}
-		client, err := p.Get(ctx, args.SessionID)
-		if err != nil {
-			return nil, nil, err
-		}
 		lines := args.Lines
 		if lines <= 0 || lines > 10_000 {
 			lines = 100
@@ -140,7 +124,7 @@ func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, any] {
 		if args.Priority != "" {
 			cmd += " -p " + sshutil.Quote(args.Priority)
 		}
-		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
+		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
