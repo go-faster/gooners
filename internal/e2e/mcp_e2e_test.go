@@ -358,23 +358,85 @@ func TestE2E_FS_UploadAndStatus(t *testing.T) {
 	require.NotEmpty(t, upid)
 
 	// poll status until done (real upload is async)
-	var done bool
-	for range 50 {
-		st := callJSON(t, env.CS, "upload_status", map[string]any{
-			"session_id": sid,
-			"upload_id":  upid,
-		})
-		if d, _ := st["done"].(bool); d {
-			done = true
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	require.True(t, done, "upload should complete")
+	require.Eventually(t,
+		func() bool {
+			st := callJSON(t, env.CS, "upload_status", map[string]any{
+				"session_id": sid,
+				"upload_id":  upid,
+			})
+			d, _ := st["done"].(bool)
+			return d
+		},
+		5*time.Second,
+		50*time.Millisecond,
+		"upload should complete",
+	)
 
 	// verify file landed
 	cat := callRaw(t, env.CS, "cat", map[string]any{"session_id": sid, "path": remote})
 	require.Contains(t, cat, "upload content")
+}
+
+func TestE2E_FS_UploadDownloadCompare(t *testing.T) {
+	env := setupMCPEnv(t)
+	sid := env.open(t)
+
+	// create local file inside upload root (the one registered for security)
+	localUp := filepath.Join(env.UploadRoot, "gooners-upload-src-compare.txt")
+	content := []byte("upload download compare test content 1234567890")
+	require.NoError(t, os.WriteFile(localUp, content, 0o644))
+
+	remote := "/tmp/gooners-compare.txt"
+
+	up := callJSON(t, env.CS, "upload_file", map[string]any{
+		"session_id":  sid,
+		"local_path":  localUp,
+		"remote_path": remote,
+	})
+	upid, _ := up["upload_id"].(string)
+	require.NotEmpty(t, upid)
+
+	require.Eventually(t,
+		func() bool {
+			st := callJSON(t, env.CS, "upload_status", map[string]any{
+				"session_id": sid,
+				"upload_id":  upid,
+			})
+			d, _ := st["done"].(bool)
+			return d
+		},
+		5*time.Second,
+		50*time.Millisecond,
+		"upload should complete",
+	)
+
+	localDown := filepath.Join(env.UploadRoot, "gooners-download-dst.txt")
+
+	down := callJSON(t, env.CS, "download_file", map[string]any{
+		"session_id":  sid,
+		"remote_path": remote,
+		"local_path":  localDown,
+	})
+	downid, _ := down["download_id"].(string)
+	require.NotEmpty(t, downid)
+
+	require.Eventually(t,
+		func() bool {
+			st := callJSON(t, env.CS, "download_status", map[string]any{
+				"session_id":  sid,
+				"download_id": downid,
+			})
+			d, _ := st["done"].(bool)
+			return d
+		},
+		5*time.Second,
+		50*time.Millisecond,
+		"download should complete",
+	)
+
+	downloaded, err := os.ReadFile(localDown)
+	require.NoError(t, err)
+	require.Equal(t, content, downloaded)
 }
 
 func TestE2E_Proc_ListInfoKill(t *testing.T) {
