@@ -1,59 +1,12 @@
 package session
 
 import (
-	"context"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
-	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/go-faster/gooners/internal/e2e"
 )
-
-func newSudoTestContainer(t *testing.T) (addr, user, password string) {
-	t.Helper()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	req := testcontainers.ContainerRequest{
-		Image: "lscr.io/linuxserver/openssh-server:latest",
-		Env: map[string]string{
-			"USER_NAME":       "test",
-			"PASSWORD_ACCESS": "true",
-			"USER_PASSWORD":   "secret",
-			"SUDO_ACCESS":     "true",
-		},
-		ExposedPorts: []string{"2222/tcp"},
-		WaitingFor:   wait.ForListeningPort("2222/tcp").WithStartupTimeout(90 * time.Second),
-	}
-
-	ctr, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
-	})
-	if err != nil {
-		// Common when running in environments without Docker (CI without daemon, etc.)
-		t.Skipf("skipping sudo integration test: could not start container: %v", err)
-	}
-
-	t.Cleanup(func() {
-		_ = ctr.Terminate(context.Background())
-	})
-
-	host, err := ctr.Host(ctx)
-	require.NoError(t, err)
-
-	port, err := ctr.MappedPort(ctx, "2222/tcp")
-	require.NoError(t, err)
-
-	addr = fmt.Sprintf("%s:%s", host, port.Port())
-	user = "test"
-	password = "secret"
-
-	return addr, user, password
-}
 
 func TestSudoExec(t *testing.T) {
 	if testing.Short() {
@@ -61,7 +14,11 @@ func TestSudoExec(t *testing.T) {
 		return
 	}
 
-	addr, user, password := newSudoTestContainer(t)
+	addr, user, password, cleanup, err := e2e.NewSudoTestContainer(t.Context())
+	if err != nil {
+		t.Skipf("skipping sudo integration test: could not start container: %v", err)
+	}
+	t.Cleanup(cleanup)
 
 	p := NewPool()
 	ctx := t.Context()

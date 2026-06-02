@@ -178,6 +178,9 @@ func killHandler(p session.Provider) mcp.ToolHandlerFor[killParams, any] {
 			res.Error = err.Error()
 			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
+		if res.ExitCode != 0 {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
+		}
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
 	}
 }
