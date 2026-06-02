@@ -6,7 +6,7 @@ MCP (Model Context Protocol) servers, AI tools, and agent skills built on go-fas
 
 | Tool | Description |
 |------|-------------|
-| [ssh-mcp](cmd/ssh-mcp) | MCP server exposing SSH, SFTP, and other operations as agent tools |
+| [ssh-mcp](cmd/ssh-mcp) | MCP server exposing SSH, SFTP, and other operations as agent tools (Docker support included) |
 
 ## Skills
 

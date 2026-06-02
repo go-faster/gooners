@@ -15,6 +15,40 @@ An MCP server that exposes SSH and SFTP operations as tools for AI agents. Desig
 go build ./cmd/ssh-mcp
 ```
 
+## Docker
+
+Pre-built or build yourself:
+
+```bash
+docker build -t ssh-mcp .
+```
+
+Run (stdio, for local MCP clients that support Docker stdio):
+
+```bash
+docker run --rm -i \
+  -v "$HOME/.ssh:/home/mcp/.ssh:ro" \
+  -v "$(pwd):/work" -w /work \
+  ssh-mcp
+```
+
+Run with streamable-http (recommended for Docker; exposes on host port 8080):
+
+```bash
+docker run --rm -p 8080:8080 \
+  -v "$HOME/.ssh:/home/mcp/.ssh:ro" \
+  -v "$(pwd):/work" -w /work \
+  ssh-mcp -transport streamable-http -addr :8080
+```
+
+Then point your client at `http://localhost:8080/mcp`.
+
+Notes:
+- Mount your `~/.ssh` read-only so `ssh_open` / `ssh_once_exec` can use your keys and `~/.ssh/config`.
+- The container working directory (`/work` above) becomes the upload root for `upload_file` / `download_file`.
+- For sudo password from Docker secret: `-sudo-password-file /run/secrets/sudo_pass` (mount secret or use `--secret` with BuildKit).
+- Non-root user `mcp` (uid 100) inside container.
+
 ## Flags
 
 - `-transport <stdio|streamable-http|sse>` — protocol to use (default: `stdio`)

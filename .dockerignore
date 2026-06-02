@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+ssh-mcp
+*.exe
+
+# Tests & scripts
+*_test.go
+internal/e2e/
+go.test.sh
+go.coverage.sh
+
+# Docs & metadata
+*.md
+LICENSE
+CLAUDE.md
+AGENTS.md
+
+# CI / linters / editor
+.github/
+.golangci.yml
+.claude/
+.cursor/
+.vscode/
+.idea/
+
+# Docker (avoid copying itself into context)
+Dockerfile*
+.dockerignore
+
+# Misc
+wrapper.sh
