@@ -3,8 +3,11 @@ package session
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
+	gosshconfig "github.com/kevinburke/ssh_config"
 	"github.com/stretchr/testify/require"
 
 	"github.com/go-faster/gooners/internal/sshutil"
@@ -124,4 +127,40 @@ func TestConfig_Dial_SCP_ProxyJump(t *testing.T) {
 	cfg.ProxyJump = jump.addr
 
 	runSCPTest(t, cfg, "scp proxyjump test content")
+}
+
+func TestConfig_DynamicReload(t *testing.T) {
+	tmpDir := t.TempDir()
+	confPath := filepath.Join(tmpDir, "ssh_config")
+
+	err := os.WriteFile(confPath, []byte("Host test-dyn\n  HostName 1.2.3.4\n  Port 2222\n  User foo\n"), 0o600)
+	require.NoError(t, err)
+
+	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
+	cfg.ConfigFinder(func() string {
+		return confPath
+	})
+
+	c := Config{Machine: "test-dyn"}
+	cc, tcpAddr, sshAddr, err := c.clientConfig(cfg)
+	require.NoError(t, err)
+	require.Equal(t, "1.2.3.4:2222", tcpAddr)
+	require.Equal(t, "test-dyn:2222", sshAddr)
+	require.Equal(t, "foo", cc.User)
+
+	// Now modify the file
+	err = os.WriteFile(confPath, []byte("Host test-dyn\n  HostName 5.6.7.8\n  Port 4444\n  User bar\n"), 0o600)
+	require.NoError(t, err)
+
+	// A new clientConfig call with a new UserSettings instance should parse the updated file!
+	cfg2 := &gosshconfig.UserSettings{IgnoreErrors: false}
+	cfg2.ConfigFinder(func() string {
+		return confPath
+	})
+
+	cc2, tcpAddr2, sshAddr2, err := c.clientConfig(cfg2)
+	require.NoError(t, err)
+	require.Equal(t, "5.6.7.8:4444", tcpAddr2)
+	require.Equal(t, "test-dyn:4444", sshAddr2)
+	require.Equal(t, "bar", cc2.User)
 }
