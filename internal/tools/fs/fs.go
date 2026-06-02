@@ -87,13 +87,10 @@ func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
-				IsError: true,
-			}, nil, nil
 		}
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
 		}, nil, nil
 	}
 }
@@ -121,9 +118,11 @@ func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -159,9 +158,11 @@ func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -195,9 +196,11 @@ func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -219,9 +222,11 @@ func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -260,9 +265,11 @@ func duHandler(p SessionProvider) mcp.ToolHandlerFor[duParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 

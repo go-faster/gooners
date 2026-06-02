@@ -244,13 +244,10 @@ func execResult(res session.ExecResponse) (*mcp.CallToolResult, any, error) {
 	}
 	if res.Err != nil {
 		obj["error"] = res.Err.Error()
-		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(obj)}},
-			IsError: true,
-		}, nil, nil
 	}
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(obj)}},
+		IsError: res.Err != nil,
 	}, nil, nil
 }
 

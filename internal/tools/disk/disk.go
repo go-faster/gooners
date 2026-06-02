@@ -40,9 +40,11 @@ func lsblkHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -62,9 +64,11 @@ func mountsHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -84,8 +88,10 @@ func dfHandler(p *session.Pool) mcp.ToolHandlerFor[diskSessionParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }

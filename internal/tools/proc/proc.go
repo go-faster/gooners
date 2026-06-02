@@ -89,9 +89,11 @@ func listHandler(p session.Provider) mcp.ToolHandlerFor[procListParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -122,9 +124,11 @@ func infoHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -144,9 +148,11 @@ func lsofHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -176,11 +182,10 @@ func killHandler(p session.Provider) mcp.ToolHandlerFor[killParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		if res.ExitCode != 0 {
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
-		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil || res.ExitCode != 0,
+		}, nil, nil
 	}
 }

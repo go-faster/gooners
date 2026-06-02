@@ -39,9 +39,11 @@ func netAddrsHandler(p *session.Pool) mcp.ToolHandlerFor[sysSessionParams, any] 
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -58,9 +60,11 @@ func osInfoHandler(p *session.Pool) mcp.ToolHandlerFor[sysSessionParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -76,9 +80,11 @@ func uptimeHandler(p *session.Pool) mcp.ToolHandlerFor[sysSessionParams, any] {
 		res, err := sshutil.Run(ctx, client, "uptime", sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -94,8 +100,10 @@ func memHandler(p *session.Pool) mcp.ToolHandlerFor[sysSessionParams, any] {
 		res, err := sshutil.Run(ctx, client, "free -h", sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }

@@ -39,9 +39,11 @@ func statusHandler(p *session.Pool) mcp.ToolHandlerFor[systemdBaseParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -70,9 +72,11 @@ func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, any] 
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -89,9 +93,11 @@ func mutatingHandler(p *session.Pool, action string) mcp.ToolHandlerFor[systemdB
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
 
@@ -137,8 +143,10 @@ func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, any] {
 		res, err := sshutil.Run(ctx, client, cmd, sshutil.RunOptions{})
 		if err != nil {
 			res.Error = err.Error()
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}, IsError: true}, nil, nil
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			IsError: err != nil,
+		}, nil, nil
 	}
 }
