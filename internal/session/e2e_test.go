@@ -14,7 +14,7 @@ func TestSudoExec(t *testing.T) {
 		return
 	}
 
-	addr, user, password, cleanup, err := e2e.NewSudoTestContainer(t.Context())
+	addr, user, password, cleanup, err := e2e.NewSudoTestContainer(t.Context(), e2e.ContainerOpts{SudoRequirePassword: true})
 	if err != nil {
 		t.Skipf("skipping sudo integration test: could not start container: %v", err)
 	}
@@ -46,13 +46,12 @@ func TestSudoExec(t *testing.T) {
 	require.Equal(t, 0, res.ExitCode)
 	require.Equal(t, "root\n", res.Stdout)
 
-	// Execute with missing sudo password should fail
+	// Wrong password must fail — container is started with SudoRequirePassword.
 	resFail := p.Exec(ctx, ExecRequest{
 		SessionID:    id,
 		Command:      "whoami",
 		Sudo:         true,
 		SudoPassword: "wrong_password",
 	})
-
 	require.NotEqual(t, 0, resFail.ExitCode)
 }

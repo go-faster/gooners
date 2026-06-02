@@ -56,7 +56,7 @@ func getSharedEnv(t *testing.T) *testEnv {
 		// We keep the context alive for the lifetime of the shared pool/server.
 		ctx := context.Background()
 
-		addr, user, password, ctrCleanup, err := e2e.NewSudoTestContainer(ctx)
+		addr, user, password, ctrCleanup, err := e2e.NewSudoTestContainer(ctx, e2e.ContainerOpts{SudoRequirePassword: false})
 		if err != nil {
 			sharedEnvErr = err
 			return

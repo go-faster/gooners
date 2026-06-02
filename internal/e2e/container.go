@@ -11,10 +11,18 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+// ContainerOpts configures NewSudoTestContainer behaviour.
+type ContainerOpts struct {
+	// SudoRequirePassword strips NOPASSWD from sudoers so that sudo prompts for
+	// the user's password. Default (false) keeps the image's passwordless sudo,
+	// which is required by tools like proc_kill that use "sudo -n".
+	SudoRequirePassword bool
+}
+
 // NewSudoTestContainer starts a linuxserver/openssh-server container with sudo access
 // configured for user "test" / password "secret".
-func NewSudoTestContainer(ctx context.Context) (addr, user, password string, cleanup func(), err error) {
-	ctx, cancel := context.WithTimeout(ctx, 180*time.Second)
+func NewSudoTestContainer(ctx context.Context, opts ContainerOpts) (addr, user, password string, cleanup func(), err error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	req := testcontainers.ContainerRequest{
@@ -26,7 +34,7 @@ func NewSudoTestContainer(ctx context.Context) (addr, user, password string, cle
 			"SUDO_ACCESS":     "true",
 		},
 		ExposedPorts: []string{"2222/tcp"},
-		WaitingFor:   wait.ForListeningPort("2222/tcp").WithStartupTimeout(120 * time.Second),
+		WaitingFor:   wait.ForListeningPort("2222/tcp").WithStartupTimeout(2 * time.Minute),
 	}
 
 	genReq := testcontainers.GenericContainerRequest{
@@ -38,10 +46,12 @@ func NewSudoTestContainer(ctx context.Context) (addr, user, password string, cle
 	// These are used by various ssh-mcp tools (lsof, ip, lsblk, ps, free, etc).
 	// Use sh -c to allow || true so a missing package doesn't fail the entire test startup
 	// (some images or apk may vary); tests will still fail later with clear errors if cmds missing.
-	installCmd := testcontainers.NewRawCommand([]string{
-		"/bin/sh", "-c",
-		"apk --no-cache add lsof iproute2 util-linux procps-ng sudo || true; echo 'test ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers || true",
-	})
+	installScript := "apk --no-cache add lsof iproute2 util-linux procps-ng sudo || true; echo 'test ALL=(ALL) NOPASSWD: ALL' >> /etc/sudoers || true"
+	if opts.SudoRequirePassword {
+		// Remove NOPASSWD from every sudoers file so sudo prompts for a password.
+		installScript += "; find /etc/sudoers.d/ -type f -exec sed -i 's/ NOPASSWD:/ /g' {} + 2>/dev/null; sed -i 's/ NOPASSWD:/ /g' /etc/sudoers 2>/dev/null || true"
+	}
+	installCmd := testcontainers.NewRawCommand([]string{"/bin/sh", "-c", installScript})
 	if err := testcontainers.WithAfterReadyCommand(installCmd)(&genReq); err != nil {
 		return "", "", "", nil, fmt.Errorf("configuring after-ready install: %w", err)
 	}
