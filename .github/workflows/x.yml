@@ -11,11 +11,23 @@ on:
 jobs:
   test:
     uses: go-faster/x/.github/workflows/test.yml@main
+    with:
+      enable-386: false
+      enable-arm64: false
+      # submodules: true
+      go: stable
   cover:
     uses: go-faster/x/.github/workflows/cover.yml@main
+    with:
+      # submodules: true
+      go: stable
   lint:
     uses: go-faster/x/.github/workflows/lint.yml@main
+    with:
+      go: stable
   commit:
     uses: go-faster/x/.github/workflows/commit.yml@main
   codeql:
     uses: go-faster/x/.github/workflows/codeql.yml@main
+    with:
+      go: stable
