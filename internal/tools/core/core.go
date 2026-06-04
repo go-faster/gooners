@@ -148,14 +148,14 @@ func listHandler(p *session.Pool) mcp.ToolHandlerFor[struct{}, any] {
 		if err != nil {
 			return nil, nil, err
 		}
-		return nil, list, nil
+		return nil, map[string]any{"sessions": list}, nil
 	}
 }
 
 func listMachinesHandler() mcp.ToolHandlerFor[struct{}, any] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 		machines := session.ListMachines()
-		return nil, machines, nil
+		return nil, map[string]any{"machines": machines}, nil
 	}
 }
 
