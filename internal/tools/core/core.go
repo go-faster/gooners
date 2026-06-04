@@ -52,19 +52,19 @@ func Register(s *mcp.Server, p *session.Pool, opts RegisterOptions) {
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_exec",
-		Description: "Execute a command on an open SSH session.",
+		Description: "Execute a command on an open SSH session. Prefer specialized tools (cat, grep, find, ls, stat, du, proc_list, etc.) over this when they cover the task.",
 	}, execHandler(p, false, nil))
 
 	if !opts.DisableSudo {
 		mcputil.Register(s, mcputil.ToolDef{
 			Name:        "ssh_sudo_exec",
-			Description: "Execute a command with sudo on an open SSH session. If sudo requires a password, pass it via sudo_password or configure a server-level source (-sudo-password-file/-env/-cmd). Otherwise uses sudo -n.",
+			Description: "Execute a command with sudo on an open SSH session. Prefer specialized tools when they cover the task; use this only when elevated privileges are required. If sudo requires a password, pass it via sudo_password or configure a server-level source (-sudo-password-file/-env/-cmd). Otherwise uses sudo -n.",
 		}, execHandler(p, true, opts.SudoPassword))
 	}
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_once_exec",
-		Description: "Open a temporary SSH session, run one command, then close it.",
+		Description: "Open a temporary SSH session, run one command, then close it. Prefer specialized tools (cat, grep, find, ls, stat, du, proc_list, etc.) over this when they cover the task.",
 	}, onceHandler(p))
 
 	mcputil.Register(s, mcputil.ToolDef{
