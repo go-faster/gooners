@@ -431,6 +431,11 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 		return
 	case res := <-sessCh:
 		if res.err != nil {
+			if errors.Is(res.err, io.EOF) {
+				res.err = fmt.Errorf("SSH session disconnected (EOF)")
+			} else {
+				res.err = fmt.Errorf("creating session: %w", res.err)
+			}
 			r.resp <- ExecResponse{Err: res.err}
 			return
 		}
@@ -514,7 +519,11 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 					"stderr_len", len(res.Stderr),
 				)
 			} else {
-				res.Err = err
+				if errors.Is(err, io.EOF) {
+					res.Err = fmt.Errorf("SSH session disconnected (EOF)")
+				} else {
+					res.Err = err
+				}
 				slog.DebugContext(ctx, "ssh run error", "err", err, "duration", dur)
 			}
 		} else {
