@@ -15,6 +15,7 @@ Agent skills (slash commands) that can be installed into AI coding assistants.
 | Skill | Description |
 |-------|-------------|
 | [jx](skills/jx/SKILL.md) | Correct, high-performance JSON encoding/decoding with `github.com/go-faster/jx` |
+| [golang-refactor-tools](skills/golang-refactor-tools/SKILL.md) | Mechanical Go rewrites with `gofmt -r`, `gopatch`, `rsc.io/rf`, and `eg` |
 
 ## 🚀 Installing skills
 
