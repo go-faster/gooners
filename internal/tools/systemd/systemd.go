@@ -9,16 +9,17 @@ import (
 
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
+	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
 func Register(s *mcp.Server, p *session.Pool) {
-	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_status", Description: "Show status of a systemd unit."}, statusHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_list_units", Description: "List systemd units."}, listUnitsHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_start", Description: "Start a systemd unit (uses sudo -n)."}, mutatingHandler(p, "start"))
-	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_stop", Description: "Stop a systemd unit (uses sudo -n)."}, mutatingHandler(p, "stop"))
-	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_restart", Description: "Restart a systemd unit (uses sudo -n)."}, mutatingHandler(p, "restart"))
-	mcp.AddTool(s, &mcp.Tool{Name: "systemctl_reload", Description: "Reload a systemd unit (uses sudo -n)."}, mutatingHandler(p, "reload"))
-	mcp.AddTool(s, &mcp.Tool{Name: "journald_tail", Description: "Query recent journal entries."}, journalHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "systemctl_status", Description: "Show status of a systemd unit.", Flags: mcputil.ReadOnly}, statusHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "systemctl_list_units", Description: "List systemd units.", Flags: mcputil.ReadOnly}, listUnitsHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "systemctl_start", Description: "Start a systemd unit (uses sudo -n)."}, mutatingHandler(p, "start"))
+	mcputil.Register(s, mcputil.ToolDef{Name: "systemctl_stop", Description: "Stop a systemd unit (uses sudo -n).", Flags: mcputil.Destructive}, mutatingHandler(p, "stop"))
+	mcputil.Register(s, mcputil.ToolDef{Name: "systemctl_restart", Description: "Restart a systemd unit (uses sudo -n).", Flags: mcputil.Destructive}, mutatingHandler(p, "restart"))
+	mcputil.Register(s, mcputil.ToolDef{Name: "systemctl_reload", Description: "Reload a systemd unit (uses sudo -n)."}, mutatingHandler(p, "reload"))
+	mcputil.Register(s, mcputil.ToolDef{Name: "journald_tail", Description: "Query recent journal entries.", Flags: mcputil.ReadOnly}, journalHandler(p))
 }
 
 type systemdBaseParams struct {
@@ -26,20 +27,26 @@ type systemdBaseParams struct {
 	Unit      string `json:"unit" jsonschema:"Name of the systemd unit (e.g. nginx.service)"`
 }
 
-func statusHandler(p *session.Pool) mcp.ToolHandlerFor[systemdBaseParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args systemdBaseParams) (*mcp.CallToolResult, any, error) {
+func statusHandler(p *session.Pool) mcp.ToolHandlerFor[systemdBaseParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args systemdBaseParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Unit == "" {
-			return nil, nil, fmt.Errorf("session_id and unit are required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and unit are required")
 		}
 		cmd := "systemctl status " + sshutil.Quote(args.Unit)
 		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
@@ -49,10 +56,10 @@ type listUnitsParams struct {
 	Type      string `json:"type,omitempty" jsonschema:"Filter by unit type (e.g. service, timer)"`
 }
 
-func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args listUnitsParams) (*mcp.CallToolResult, any, error) {
+func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args listUnitsParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" {
-			return nil, nil, fmt.Errorf("session_id is required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")
 		}
 		cmd := "systemctl list-units"
 		if args.State != "" {
@@ -65,27 +72,39 @@ func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, any] 
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
-func mutatingHandler(p *session.Pool, action string) mcp.ToolHandlerFor[systemdBaseParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args systemdBaseParams) (*mcp.CallToolResult, any, error) {
+func mutatingHandler(p *session.Pool, action string) mcp.ToolHandlerFor[systemdBaseParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args systemdBaseParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Unit == "" {
-			return nil, nil, fmt.Errorf("session_id and unit are required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and unit are required")
 		}
 		cmd := "sudo -n systemctl " + action + " " + sshutil.Quote(args.Unit)
 		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
@@ -99,10 +118,10 @@ type journalParams struct {
 	Priority  string  `json:"priority,omitempty" jsonschema:"Filter by priority (e.g. err, warning)"`
 }
 
-func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args journalParams) (*mcp.CallToolResult, any, error) {
+func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args journalParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" {
-			return nil, nil, fmt.Errorf("session_id is required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")
 		}
 		lines := args.Lines
 		if lines <= 0 || lines > 10_000 {
@@ -128,9 +147,15 @@ func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, any] {
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }

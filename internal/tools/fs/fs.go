@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
+	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
 const (
@@ -51,18 +52,18 @@ type SessionProvider interface {
 }
 
 func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
-	mcp.AddTool(s, &mcp.Tool{Name: "ls", Description: "List directory contents on remote machine."}, lsHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "cat", Description: "Read file contents (truncated) from remote."}, catHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "grep", Description: "Search file contents on remote."}, grepHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "find", Description: "Find files/directories on remote."}, findHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "stat", Description: "Stat a path on remote."}, statHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "du", Description: "Get directory or file size (disk usage)."}, duHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "truncate", Description: "Truncate file to given size on remote via SFTP."}, truncateHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP."}, writeFileHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Local path must be within the server's working directory. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
-	mcp.AddTool(s, &mcp.Tool{Name: "upload_status", Description: "Check the status of an asynchronous file upload."}, uploadStatusHandler(p))
-	mcp.AddTool(s, &mcp.Tool{Name: "download_file", Description: "Download a remote file asynchronously to local path via SFTP. Local path must be within the server's working directory. Returns a download_id."}, downloadFileHandler(p, uploadRoot))
-	mcp.AddTool(s, &mcp.Tool{Name: "download_status", Description: "Check the status of an asynchronous file download."}, downloadStatusHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "ls", Description: "List directory contents on remote machine.", Flags: mcputil.ReadOnly}, lsHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "cat", Description: "Read file contents (truncated) from remote.", Flags: mcputil.ReadOnly}, catHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "grep", Description: "Search file contents on remote.", Flags: mcputil.ReadOnly}, grepHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "find", Description: "Find files/directories on remote.", Flags: mcputil.ReadOnly}, findHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "stat", Description: "Stat a path on remote.", Flags: mcputil.ReadOnly}, statHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "du", Description: "Get directory or file size (disk usage).", Flags: mcputil.ReadOnly}, duHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "truncate", Description: "Truncate file to given size on remote via SFTP.", Flags: mcputil.Destructive}, truncateHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP.", Flags: mcputil.Destructive}, writeFileHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Local path must be within the server's working directory. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
+	mcputil.Register(s, mcputil.ToolDef{Name: "upload_status", Description: "Check the status of an asynchronous file upload.", Flags: mcputil.ReadOnly}, uploadStatusHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "download_file", Description: "Download a remote file asynchronously to local path via SFTP. Local path must be within the server's working directory. Returns a download_id."}, downloadFileHandler(p, uploadRoot))
+	mcputil.Register(s, mcputil.ToolDef{Name: "download_status", Description: "Check the status of an asynchronous file download.", Flags: mcputil.ReadOnly}, downloadStatusHandler(p))
 }
 
 type lsParams struct {
@@ -72,10 +73,10 @@ type lsParams struct {
 	All       bool   `json:"all,omitempty" jsonschema:"Include hidden files (like ls -a)"`
 }
 
-func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args lsParams) (*mcp.CallToolResult, any, error) {
+func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args lsParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Path == "" {
-			return nil, nil, fmt.Errorf("session_id and path are required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and path are required")
 		}
 		cmd := "ls"
 		if args.Long {
@@ -90,10 +91,16 @@ func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, any] {
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
@@ -103,10 +110,10 @@ type catParams struct {
 	MaxBytes  float64 `json:"max_bytes,omitempty" jsonschema:"Maximum number of bytes to return"`
 }
 
-func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args catParams) (*mcp.CallToolResult, any, error) {
+func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args catParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Path == "" {
-			return nil, nil, fmt.Errorf("session_id and path are required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and path are required")
 		}
 		maxBytes := args.MaxBytes
 		if maxBytes <= 0 || maxBytes > maxCatBytes {
@@ -117,10 +124,16 @@ func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, any] {
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
@@ -133,10 +146,10 @@ type grepParams struct {
 	MaxLines        float64 `json:"max_lines,omitempty" jsonschema:"Maximum matching lines to return"`
 }
 
-func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args grepParams) (*mcp.CallToolResult, any, error) {
+func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args grepParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Pattern == "" || args.Path == "" {
-			return nil, nil, fmt.Errorf("session_id, pattern and path are required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id, pattern and path are required")
 		}
 		cmd := "grep"
 		if args.Recursive {
@@ -153,10 +166,16 @@ func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, any] {
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
@@ -168,10 +187,10 @@ type findParams struct {
 	MaxDepth  float64 `json:"max_depth,omitempty" jsonschema:"Maximum depth of directories to search"`
 }
 
-func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args findParams) (*mcp.CallToolResult, any, error) {
+func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args findParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Path == "" {
-			return nil, nil, fmt.Errorf("session_id and path are required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and path are required")
 		}
 		cmd := "find " + sshutil.Quote(args.Path)
 		if args.Name != "" {
@@ -187,10 +206,16 @@ func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, any] {
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
@@ -199,20 +224,26 @@ type statParams struct {
 	Path      string `json:"path" jsonschema:"File or directory path to stat"`
 }
 
-func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args statParams) (*mcp.CallToolResult, any, error) {
+func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args statParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Path == "" {
-			return nil, nil, fmt.Errorf("session_id and path are required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and path are required")
 		}
 		cmd := "stat " + sshutil.Quote(args.Path)
 		res, err := p.Run(ctx, args.SessionID, cmd)
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
@@ -225,10 +256,10 @@ type duParams struct {
 	All       bool    `json:"all,omitempty" jsonschema:"Include individual files (du -a)"`
 }
 
-func duHandler(p SessionProvider) mcp.ToolHandlerFor[duParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args duParams) (*mcp.CallToolResult, any, error) {
+func duHandler(p SessionProvider) mcp.ToolHandlerFor[duParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args duParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Path == "" {
-			return nil, nil, fmt.Errorf("session_id and path are required")
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and path are required")
 		}
 		cmd := "du"
 		if args.Human {
@@ -248,10 +279,16 @@ func duHandler(p SessionProvider) mcp.ToolHandlerFor[duParams, any] {
 		if err != nil {
 			res.Error = err.Error()
 		}
-		return &mcp.CallToolResult{
+		cr := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
-		}, nil, nil
+		}
+		return cr, mcputil.CommandResult{
+			Stdout:   res.Stdout,
+			Stderr:   res.Stderr,
+			ExitCode: res.ExitCode,
+			Error:    res.Error,
+		}, nil
 	}
 }
 
@@ -261,13 +298,13 @@ type truncateParams struct {
 	Size      float64 `json:"size" jsonschema:"New size in bytes (0 to empty file)"`
 }
 
-func truncateHandler(p SessionProvider) mcp.ToolHandlerFor[truncateParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args truncateParams) (*mcp.CallToolResult, any, error) {
+func truncateHandler(p SessionProvider) mcp.ToolHandlerFor[truncateParams, mcputil.SuccessResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args truncateParams) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
 		if args.SessionID == "" || args.Path == "" {
-			return nil, nil, fmt.Errorf("session_id and path are required")
+			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id and path are required")
 		}
 		if args.Size < 0 {
-			return nil, nil, fmt.Errorf("size must be >= 0")
+			return nil, mcputil.SuccessResult{}, fmt.Errorf("size must be >= 0")
 		}
 
 		timeout := 60.0
@@ -276,14 +313,17 @@ func truncateHandler(p SessionProvider) mcp.ToolHandlerFor[truncateParams, any] 
 
 		sftpClient, err := p.SFTP(truncCtx, args.SessionID)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.SuccessResult{}, err
 		}
 		defer func() { _ = sftpClient.Close() }()
 		if err := sftpClient.Truncate(args.Path, int64(args.Size)); err != nil {
-			return nil, nil, err
+			return nil, mcputil.SuccessResult{}, err
 		}
 
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mustJSONOk()}}}, nil, nil
+		out := mcputil.SuccessResult{OK: true}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(out)}},
+		}, out, nil
 	}
 }
 
@@ -295,10 +335,10 @@ type writeFileParams struct {
 	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
 }
 
-func writeFileHandler(p SessionProvider) mcp.ToolHandlerFor[writeFileParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args writeFileParams) (*mcp.CallToolResult, any, error) {
+func writeFileHandler(p SessionProvider) mcp.ToolHandlerFor[writeFileParams, mcputil.SuccessResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args writeFileParams) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
 		if args.SessionID == "" || args.Path == "" || args.Content == "" {
-			return nil, nil, fmt.Errorf("session_id and path are required")
+			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id and path are required")
 		}
 		timeout := 60.0
 		if args.TimeoutSec > 0 {
@@ -309,7 +349,7 @@ func writeFileHandler(p SessionProvider) mcp.ToolHandlerFor[writeFileParams, any
 
 		sftpClient, err := p.SFTP(writeCtx, args.SessionID)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.SuccessResult{}, err
 		}
 		defer func() { _ = sftpClient.Close() }()
 
@@ -323,17 +363,20 @@ func writeFileHandler(p SessionProvider) mcp.ToolHandlerFor[writeFileParams, any
 
 		f, err := sftpClient.Create(args.Path)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.SuccessResult{}, err
 		}
 		defer func() { _ = f.Close() }()
 		if _, err := f.Write([]byte(args.Content)); err != nil {
-			return nil, nil, err
+			return nil, mcputil.SuccessResult{}, err
 		}
 		if err := f.Chmod(mode); err != nil {
-			return nil, nil, err
+			return nil, mcputil.SuccessResult{}, err
 		}
 
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mustJSONOk()}}}, nil, nil
+		out := mcputil.SuccessResult{OK: true}
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(out)}},
+		}, out, nil
 	}
 }
 
@@ -344,10 +387,10 @@ type uploadFileParams struct {
 	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds for queuing the request"`
 }
 
-func uploadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[uploadFileParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadFileParams) (*mcp.CallToolResult, any, error) {
+func uploadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[uploadFileParams, mcputil.UploadResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadFileParams) (*mcp.CallToolResult, mcputil.UploadResult, error) {
 		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
-			return nil, nil, fmt.Errorf("session_id, local_path and remote_path are required")
+			return nil, mcputil.UploadResult{}, fmt.Errorf("session_id, local_path and remote_path are required")
 		}
 		timeout := 60.0
 		if args.TimeoutSec > 0 {
@@ -357,15 +400,16 @@ func uploadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[upl
 		defer cancel()
 		safePath, err := withinDir(workDir, args.LocalPath)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.UploadResult{}, err
 		}
 		uploadID, err := p.Upload(uploadCtx, args.SessionID, safePath, args.RemotePath)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.UploadResult{}, err
 		}
+		out := mcputil.UploadResult{OK: true, UploadID: uploadID}
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(map[string]any{"ok": true, "upload_id": uploadID})}},
-		}, nil, nil
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(out)}},
+		}, out, nil
 	}
 }
 
@@ -374,29 +418,36 @@ type uploadStatusParams struct {
 	UploadID  string `json:"upload_id" jsonschema:"The upload ID returned by upload_file"`
 }
 
-func uploadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[uploadStatusParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadStatusParams) (*mcp.CallToolResult, any, error) {
+func uploadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[uploadStatusParams, mcputil.UploadStatusResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadStatusParams) (*mcp.CallToolResult, mcputil.UploadStatusResult, error) {
 		if args.SessionID == "" || args.UploadID == "" {
-			return nil, nil, fmt.Errorf("session_id and upload_id are required")
+			return nil, mcputil.UploadStatusResult{}, fmt.Errorf("session_id and upload_id are required")
 		}
 		status, err := p.UploadStatus(ctx, args.SessionID, args.UploadID)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.UploadStatusResult{}, err
 		}
-		res := map[string]any{
-			"ok":             true,
-			"upload_id":      status.UploadID,
-			"bytes_uploaded": status.BytesUploaded,
-			"total_bytes":    status.TotalBytes,
-			"percent":        status.Percent,
-			"done":           status.Done,
+		sr := mcputil.UploadStatusResult{
+			OK:            true,
+			UploadID:      status.UploadID,
+			BytesUploaded: status.BytesUploaded,
+			TotalBytes:    status.TotalBytes,
+			Percent:       status.Percent,
+			Done:          status.Done,
 		}
 		if status.Err != nil {
-			res["error"] = status.Err.Error()
-			res["ok"] = false
+			sr.Error = status.Err.Error()
+			sr.OK = false
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(res)}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(sr)}},
+		}, sr, nil
 	}
+}
+
+func mustJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 type downloadFileParams struct {
@@ -406,10 +457,10 @@ type downloadFileParams struct {
 	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds for queuing the request"`
 }
 
-func downloadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[downloadFileParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadFileParams) (*mcp.CallToolResult, any, error) {
+func downloadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[downloadFileParams, mcputil.DownloadResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadFileParams) (*mcp.CallToolResult, mcputil.DownloadResult, error) {
 		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
-			return nil, nil, fmt.Errorf("session_id, local_path and remote_path are required")
+			return nil, mcputil.DownloadResult{}, fmt.Errorf("session_id, local_path and remote_path are required")
 		}
 		timeout := 60.0
 		if args.TimeoutSec > 0 {
@@ -419,15 +470,16 @@ func downloadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[d
 		defer cancel()
 		safePath, err := withinDir(workDir, args.LocalPath)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.DownloadResult{}, err
 		}
 		downloadID, err := p.Download(downloadCtx, args.SessionID, args.RemotePath, safePath)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.DownloadResult{}, err
 		}
+		out := mcputil.DownloadResult{OK: true, DownloadID: downloadID}
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(map[string]any{"ok": true, "download_id": downloadID})}},
-		}, nil, nil
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(out)}},
+		}, out, nil
 	}
 }
 
@@ -436,37 +488,29 @@ type downloadStatusParams struct {
 	DownloadID string `json:"download_id" jsonschema:"The download ID returned by download_file"`
 }
 
-func downloadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[downloadStatusParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadStatusParams) (*mcp.CallToolResult, any, error) {
+func downloadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[downloadStatusParams, mcputil.DownloadStatusResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadStatusParams) (*mcp.CallToolResult, mcputil.DownloadStatusResult, error) {
 		if args.SessionID == "" || args.DownloadID == "" {
-			return nil, nil, fmt.Errorf("session_id and download_id are required")
+			return nil, mcputil.DownloadStatusResult{}, fmt.Errorf("session_id and download_id are required")
 		}
 		status, err := p.DownloadStatus(ctx, args.SessionID, args.DownloadID)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.DownloadStatusResult{}, err
 		}
-		res := map[string]any{
-			"ok":               true,
-			"download_id":      status.DownloadID,
-			"bytes_downloaded": status.BytesDownloaded,
-			"total_bytes":      status.TotalBytes,
-			"percent":          status.Percent,
-			"done":             status.Done,
+		sr := mcputil.DownloadStatusResult{
+			OK:              true,
+			DownloadID:      status.DownloadID,
+			BytesDownloaded: status.BytesDownloaded,
+			TotalBytes:      status.TotalBytes,
+			Percent:         status.Percent,
+			Done:            status.Done,
 		}
 		if status.Err != nil {
-			res["error"] = status.Err.Error()
-			res["ok"] = false
+			sr.Error = status.Err.Error()
+			sr.OK = false
 		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(res)}}}, nil, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(sr)}},
+		}, sr, nil
 	}
-}
-
-func mustJSON(v any) string {
-	b, _ := json.Marshal(v)
-	return string(b)
-}
-
-func mustJSONOk() string {
-	b, _ := json.Marshal(map[string]bool{"ok": true})
-	return string(b)
 }

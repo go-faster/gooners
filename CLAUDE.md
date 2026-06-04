@@ -80,6 +80,7 @@ skills/
 ## Go Standards
 
 - Use `golangci-lint fmt ./...` for formatting (not `gofmt` or `goimports` directly).
+- We use golangci-lint v2; do **not ever** `go install` golangci-lint (or any variant) — assume the binary is already available in $PATH (via nix, system package, or dev env).
 - Avoid loading generated files into context; use search tools or gopls instead.
 
 ## README

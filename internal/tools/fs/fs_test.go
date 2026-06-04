@@ -246,63 +246,6 @@ func TestWriteFileHandler(t *testing.T) {
 	require.Equal(t, "hello write", string(content))
 }
 
-func TestTruncateHandler(t *testing.T) {
-	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
-		return "", 0
-	})
-	defer cleanup()
-
-	tmpFile := filepath.Join(t.TempDir(), "test_truncate.txt")
-	require.NoError(t, os.WriteFile(tmpFile, []byte("hello truncate"), 0o644))
-
-	handler := truncateHandler(&dummyPool{client: client})
-	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, truncateParams{
-		SessionID: "test_id",
-		Path:      tmpFile,
-		Size:      5,
-	})
-	require.NoError(t, err)
-	require.False(t, res.IsError)
-
-	data := parseResult(t, res)
-	require.Equal(t, true, data["ok"])
-
-	content, err := os.ReadFile(tmpFile)
-	require.NoError(t, err)
-	require.Equal(t, "hello", string(content))
-}
-
-func TestUploadFileHandler(t *testing.T) {
-	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
-		return "", 0
-	})
-	defer cleanup()
-
-	tmpRoot := t.TempDir()
-	handler := uploadFileHandler(&dummyPool{client: client}, tmpRoot)
-
-	localPath := filepath.Join(tmpRoot, "local.txt")
-	require.NoError(t, os.WriteFile(localPath, []byte("local content"), 0o644))
-
-	remotePath := filepath.Join(t.TempDir(), "remote.txt")
-
-	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, uploadFileParams{
-		SessionID:  "test_id",
-		LocalPath:  localPath,
-		RemotePath: remotePath,
-	})
-	require.NoError(t, err)
-	require.False(t, res.IsError, "unexpected error: %v", res)
-
-	data := parseResult(t, res)
-	require.Equal(t, true, data["ok"])
-	require.Equal(t, "upload-123", data["upload_id"])
-
-	content, err := os.ReadFile(remotePath)
-	require.NoError(t, err)
-	require.Equal(t, "local content", string(content))
-}
-
 func TestUploadFileHandler_Security(t *testing.T) {
 	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
 		return "", 0

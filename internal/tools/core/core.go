@@ -10,6 +10,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/session"
+	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
 type RegisterOptions struct {
@@ -21,51 +22,55 @@ type RegisterOptions struct {
 }
 
 func Register(s *mcp.Server, p *session.Pool, opts RegisterOptions) {
-	mcp.AddTool(s, &mcp.Tool{
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_open",
 		Description: "Open SSH connection using defaults from ~/.ssh/config and keys.",
 	}, openHandler(p))
 
-	mcp.AddTool(s, &mcp.Tool{
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_open_cfg",
 		Description: "Open SSH connection with explicit parameters.",
 	}, openCfgHandler(p))
 
-	mcp.AddTool(s, &mcp.Tool{
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_close",
 		Description: "Close an open SSH session.",
+		Flags:       mcputil.Destructive,
 	}, closeHandler(p))
 
-	mcp.AddTool(s, &mcp.Tool{
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_list",
 		Description: "List all currently open SSH sessions.",
+		Flags:       mcputil.ReadOnly,
 	}, listHandler(p))
 
-	mcp.AddTool(s, &mcp.Tool{
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_list_machines",
 		Description: "List known machines from ~/.ssh/config (and Includes). Returns only connection name and username.",
+		Flags:       mcputil.ReadOnly,
 	}, listMachinesHandler())
 
-	mcp.AddTool(s, &mcp.Tool{
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_exec",
 		Description: "Execute a command on an open SSH session.",
 	}, execHandler(p, false, nil))
 
 	if !opts.DisableSudo {
-		mcp.AddTool(s, &mcp.Tool{
+		mcputil.Register(s, mcputil.ToolDef{
 			Name:        "ssh_sudo_exec",
 			Description: "Execute a command with sudo on an open SSH session. If sudo requires a password, pass it via sudo_password or configure a server-level source (-sudo-password-file/-env/-cmd). Otherwise uses sudo -n.",
 		}, execHandler(p, true, opts.SudoPassword))
 	}
 
-	mcp.AddTool(s, &mcp.Tool{
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_once_exec",
 		Description: "Open a temporary SSH session, run one command, then close it.",
 	}, onceHandler(p))
 
-	mcp.AddTool(s, &mcp.Tool{
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_ping",
 		Description: "Check if an SSH session is alive by sending a keepalive ping.",
+		Flags:       mcputil.ReadOnly,
 	}, pingHandler(p))
 }
 
@@ -73,10 +78,10 @@ type openParams struct {
 	Machine string `json:"machine" jsonschema:"host, user@host, host:port etc."`
 }
 
-func openHandler(p *session.Pool) mcp.ToolHandlerFor[openParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args openParams) (*mcp.CallToolResult, any, error) {
+func openHandler(p *session.Pool) mcp.ToolHandlerFor[openParams, mcputil.SessionResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args openParams) (*mcp.CallToolResult, mcputil.SessionResult, error) {
 		if args.Machine == "" {
-			return nil, nil, fmt.Errorf("machine is required")
+			return nil, mcputil.SessionResult{}, fmt.Errorf("machine is required")
 		}
 
 		openCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -84,9 +89,9 @@ func openHandler(p *session.Pool) mcp.ToolHandlerFor[openParams, any] {
 
 		id, err := p.Open(openCtx, args.Machine)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.SessionResult{}, err
 		}
-		return nil, map[string]string{"session_id": id}, nil
+		return nil, mcputil.SessionResult{SessionID: id}, nil
 	}
 }
 
@@ -100,10 +105,10 @@ type openCfgParams struct {
 	KnownHosts string `json:"known_hosts,omitempty" jsonschema:"Path to known_hosts file"`
 }
 
-func openCfgHandler(p *session.Pool) mcp.ToolHandlerFor[openCfgParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args openCfgParams) (*mcp.CallToolResult, any, error) {
+func openCfgHandler(p *session.Pool) mcp.ToolHandlerFor[openCfgParams, mcputil.SessionResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args openCfgParams) (*mcp.CallToolResult, mcputil.SessionResult, error) {
 		if args.Machine == "" {
-			return nil, nil, fmt.Errorf("machine is required")
+			return nil, mcputil.SessionResult{}, fmt.Errorf("machine is required")
 		}
 		cfg := session.Config{
 			Machine:    args.Machine,
@@ -122,9 +127,9 @@ func openCfgHandler(p *session.Pool) mcp.ToolHandlerFor[openCfgParams, any] {
 		defer cancel()
 		id, err := p.OpenCfg(openCtx, cfg)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.SessionResult{}, err
 		}
-		return nil, map[string]string{"session_id": id}, nil
+		return nil, mcputil.SessionResult{SessionID: id}, nil
 	}
 }
 
@@ -132,30 +137,30 @@ type closeParams struct {
 	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session to close"`
 }
 
-func closeHandler(p *session.Pool) mcp.ToolHandlerFor[closeParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args closeParams) (*mcp.CallToolResult, any, error) {
+func closeHandler(p *session.Pool) mcp.ToolHandlerFor[closeParams, mcputil.SuccessResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args closeParams) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
 		if args.SessionID == "" {
-			return nil, nil, fmt.Errorf("session_id is required")
+			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id is required")
 		}
 		_ = p.Close(ctx, args.SessionID)
-		return nil, map[string]bool{"ok": true}, nil
+		return nil, mcputil.SuccessResult{OK: true}, nil
 	}
 }
 
-func listHandler(p *session.Pool) mcp.ToolHandlerFor[struct{}, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+func listHandler(p *session.Pool) mcp.ToolHandlerFor[struct{}, mcputil.SessionsResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, mcputil.SessionsResult, error) {
 		list, err := p.List(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.SessionsResult{}, err
 		}
-		return nil, map[string]any{"sessions": list}, nil
+		return nil, mcputil.SessionsResult{Sessions: list}, nil
 	}
 }
 
-func listMachinesHandler() mcp.ToolHandlerFor[struct{}, any] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+func listMachinesHandler() mcp.ToolHandlerFor[struct{}, mcputil.MachinesResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, mcputil.MachinesResult, error) {
 		machines := session.ListMachines()
-		return nil, map[string]any{"machines": machines}, nil
+		return nil, mcputil.MachinesResult{Machines: machines}, nil
 	}
 }
 
@@ -168,19 +173,19 @@ type execParams struct {
 	SudoPassword string `json:"sudo_password,omitempty" jsonschema:"Sudo password if required"`
 }
 
-func execHandler(p *session.Pool, sudo bool, sudoPasswd SudoPasswordProvider) mcp.ToolHandlerFor[execParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args execParams) (*mcp.CallToolResult, any, error) {
+func execHandler(p *session.Pool, sudo bool, sudoPasswd SudoPasswordProvider) mcp.ToolHandlerFor[execParams, mcputil.ExecResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args execParams) (*mcp.CallToolResult, mcputil.ExecResult, error) {
 		if args.SessionID == "" || args.Command == "" {
-			return nil, nil, fmt.Errorf("session_id and command are required")
+			return nil, mcputil.ExecResult{}, fmt.Errorf("session_id and command are required")
 		}
 		if len(args.Command) > 50000 {
-			return nil, nil, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
+			return nil, mcputil.ExecResult{}, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
 		}
 		sudoPwd := args.SudoPassword
 		if sudoPwd == "" && sudo && sudoPasswd != nil {
 			pwd, err := sudoPasswd.Password(ctx)
 			if err != nil {
-				return nil, nil, fmt.Errorf("resolving sudo password: %w", err)
+				return nil, mcputil.ExecResult{}, fmt.Errorf("resolving sudo password: %w", err)
 			}
 			sudoPwd = pwd
 		}
@@ -210,13 +215,13 @@ type onceParams struct {
 	TimeoutSec  int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
 }
 
-func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args onceParams) (*mcp.CallToolResult, any, error) {
+func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, mcputil.ExecResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args onceParams) (*mcp.CallToolResult, mcputil.ExecResult, error) {
 		if args.Machine == "" || args.Command == "" {
-			return nil, nil, fmt.Errorf("machine and command are required")
+			return nil, mcputil.ExecResult{}, fmt.Errorf("machine and command are required")
 		}
 		if len(args.Command) > 50000 {
-			return nil, nil, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
+			return nil, mcputil.ExecResult{}, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
 		}
 		timeout := p.CommandTimeout()
 		if args.TimeoutSec > 0 {
@@ -227,7 +232,7 @@ func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, any] {
 
 		id, err := p.Open(onceCtx, args.Machine)
 		if err != nil {
-			return nil, nil, err
+			return nil, mcputil.ExecResult{}, err
 		}
 		defer func() { _ = p.Close(ctx, id) }() // Use parent context for closing
 
@@ -242,18 +247,21 @@ func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, any] {
 }
 
 //nolint:unparam // satisfies mcp.ToolHandlerFor signature pattern even if unused
-func execResult(res session.ExecResponse) (*mcp.CallToolResult, any, error) {
-	obj := map[string]any{"stdout": res.Stdout, "stderr": res.Stderr}
+func execResult(res session.ExecResponse) (*mcp.CallToolResult, mcputil.ExecResult, error) {
+	e := mcputil.ExecResult{
+		Stdout: res.Stdout,
+		Stderr: res.Stderr,
+	}
 	if res.ExitCode != 0 {
-		obj["exit_code"] = res.ExitCode
+		e.ExitCode = res.ExitCode
 	}
 	if res.Err != nil {
-		obj["error"] = res.Err.Error()
+		e.Error = res.Err.Error()
 	}
 	return &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(obj)}},
+		Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(e)}},
 		IsError: res.Err != nil,
-	}, nil, nil
+	}, e, nil
 }
 
 func mustJSON(v any) string {
@@ -265,10 +273,10 @@ type pingParams struct {
 	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session to ping"`
 }
 
-func pingHandler(p *session.Pool) mcp.ToolHandlerFor[pingParams, any] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args pingParams) (*mcp.CallToolResult, any, error) {
+func pingHandler(p *session.Pool) mcp.ToolHandlerFor[pingParams, mcputil.PingResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args pingParams) (*mcp.CallToolResult, mcputil.PingResult, error) {
 		if args.SessionID == "" {
-			return nil, nil, fmt.Errorf("session_id is required")
+			return nil, mcputil.PingResult{}, fmt.Errorf("session_id is required")
 		}
 
 		pingCtx, cancel := context.WithTimeout(ctx, p.CommandTimeout())
@@ -276,11 +284,11 @@ func pingHandler(p *session.Pool) mcp.ToolHandlerFor[pingParams, any] {
 
 		dur, err := p.Ping(pingCtx, args.SessionID)
 		if err != nil {
-			return nil, nil, fmt.Errorf("ping failed: %w", err)
+			return nil, mcputil.PingResult{}, fmt.Errorf("ping failed: %w", err)
 		}
-		return nil, map[string]string{
-			"status": "ok",
-			"time":   dur.String(),
+		return nil, mcputil.PingResult{
+			Status: "ok",
+			Time:   dur.String(),
 		}, nil
 	}
 }
