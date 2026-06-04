@@ -58,7 +58,7 @@ func netAddrsHandler(p Runner) mcp.ToolHandlerFor[netAddrsParams, mcputil.Comman
 			cmd += " dev " + sshutil.Quote(args.Iface)
 		}
 		res, err := p.Run(ctx, args.SessionID, cmd)
-		if err != nil {
+		if err == nil && res.ExitCode != 0 {
 			cmd = "ip addr show"
 			if args.Iface != "" {
 				cmd += " dev " + sshutil.Quote(args.Iface)

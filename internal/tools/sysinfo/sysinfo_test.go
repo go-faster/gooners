@@ -26,7 +26,7 @@ func TestNetAddrsHandler_Fallback(t *testing.T) {
 				return sshutil.Result{
 					Stdout:   "illegal option -j\n",
 					ExitCode: 1,
-				}, fmt.Errorf("command failed")
+				}, nil
 			}
 			if cmd == "ip addr show" {
 				return sshutil.Result{
