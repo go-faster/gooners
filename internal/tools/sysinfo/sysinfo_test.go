@@ -15,7 +15,7 @@ type mockRunner struct {
 	runFunc func(cmd string) (sshutil.Result, error)
 }
 
-func (m *mockRunner) Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error) {
+func (m *mockRunner) Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error) {
 	return m.runFunc(cmd)
 }
 

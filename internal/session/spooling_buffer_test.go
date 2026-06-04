@@ -10,7 +10,7 @@ import (
 func TestSpoolingBuffer(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 
-	t.Run("within threshold", func(t *testing.T) {
+	t.Run("WithinThreshold", func(t *testing.T) {
 		buf := NewSpoolingBuffer("test-sess-1", 10)
 		require.NotEmpty(t, buf.SpoolID())
 		require.False(t, buf.Spilled())
@@ -27,7 +27,7 @@ func TestSpoolingBuffer(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("spill over", func(t *testing.T) {
+	t.Run("SpillOver", func(t *testing.T) {
 		buf := NewSpoolingBuffer("test-sess-2", 10)
 		require.False(t, buf.Spilled())
 
@@ -61,7 +61,7 @@ func TestSpoolingBuffer(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("fail fast", func(t *testing.T) {
+	t.Run("FailFast", func(t *testing.T) {
 		buf := NewSpoolingBuffer("test-sess-3", 10)
 		// We set error early to simulate failure
 		buf.err = os.ErrPermission

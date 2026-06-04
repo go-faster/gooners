@@ -34,6 +34,9 @@ type Session struct {
 	uploads   map[string]*UploadJob
 	downloads map[string]*DownloadJob
 	spools    map[string]string // spoolID -> localFilePath
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 type UploadJob struct {
@@ -64,7 +67,7 @@ type SessionInfo struct {
 	ID        string    `json:"id"`
 	Machine   string    `json:"machine"`
 	CreatedAt time.Time `json:"created_at"`
-	LastPing  time.Time `json:"last_ping,omitempty"`
+	LastPing  time.Time `json:"last_ping,omitzero"`
 	// Status is "connected" if a keepalive succeeded within the last 30s, "new" if no ping yet, "stale" otherwise.
 	Status string `json:"status"`
 }
@@ -188,6 +191,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 			}
 
 			id := generateSessionID(res.req.Config.Machine, sessions)
+			sCtx, sCancel := context.WithCancel(ctx)
 			sess := &Session{
 				ID:        id,
 				Machine:   res.req.Config.Machine,
@@ -196,6 +200,8 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				uploads:   make(map[string]*UploadJob),
 				downloads: make(map[string]*DownloadJob),
 				spools:    make(map[string]string),
+				ctx:       sCtx,
+				cancel:    sCancel,
 			}
 			sessions[id] = sess
 			slog.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
@@ -213,8 +219,10 @@ func (p *Pool) RunLoop(ctx context.Context) {
 
 				for {
 					select {
+					case <-s.ctx.Done():
+						return
 					case <-errCh:
-						_ = p.Close(context.Background(), sessionID)
+						_ = p.Close(ctx, sessionID)
 						return
 					case <-ticker.C:
 						if _, _, err := c.SendRequest("keepalive@openssh.com", true, nil); err != nil {
@@ -252,6 +260,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 			case CloseRequest:
 				s, ok := sessions[r.ID]
 				if ok {
+					s.cancel()
 					for _, job := range s.uploads {
 						job.cancel()
 					}
@@ -294,7 +303,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 					continue
 				}
 				uploadID := fmt.Sprintf("upload-%d", time.Now().UnixNano())
-				uCtx, uCancel := context.WithCancel(ctx)
+				uCtx, uCancel := context.WithCancel(s.ctx)
 				job := &UploadJob{
 					ID:         uploadID,
 					LocalPath:  r.LocalPath,
@@ -340,7 +349,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 					continue
 				}
 				downloadID := fmt.Sprintf("download-%d", time.Now().UnixNano())
-				dCtx, dCancel := context.WithCancel(ctx)
+				dCtx, dCancel := context.WithCancel(s.ctx)
 				job := &DownloadJob{
 					ID:         downloadID,
 					LocalPath:  r.LocalPath,
@@ -424,7 +433,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				}
 
 				// Run in background so we don't block the event loop
-				go p.executeCommand(ctx, s.client, r)
+				go p.executeCommand(s.ctx, s.client, r)
 			}
 		}
 	}
@@ -469,6 +478,10 @@ func (b *SpoolingBuffer) Write(p []byte) (n int, err error) {
 	b.size += int64(n)
 
 	if b.spilled {
+		if b.file == nil {
+			b.err = fmt.Errorf("spooling buffer closed")
+			return 0, b.err
+		}
 		var nw int
 		nw, err = b.file.Write(p)
 		if err != nil {
@@ -699,25 +712,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			StdoutSpoolID: mapSpoolID(stdout),
 			StderrSpoolID: mapSpoolID(stderr),
 		}
-		go func() {
-			abortSess, err := client.NewSession()
-			if err == nil {
-				abortCmd := "timeout 3s pkill -f " + shellquote.Join(regexp.QuoteMeta(cmdText)) + " 2>/dev/null || true"
-				_ = abortSess.Run(abortCmd)
-				_ = abortSess.Close()
-			}
-			_ = sess.Signal(ssh.SIGKILL)
-			_ = sess.Close()
-			<-done
-			_ = stdout.Close()
-			_ = stderr.Close()
-			if stdout.Spilled() {
-				_ = p.RegisterSpool(context.Background(), r.SessionID, stdout.SpoolID(), stdout.FilePath())
-			}
-			if stderr.Spilled() {
-				_ = p.RegisterSpool(context.Background(), r.SessionID, stderr.SpoolID(), stderr.FilePath())
-			}
-		}()
+		go p.cleanupExec(ctx, client, sess, r, cmdText, done, stdout, stderr)
 		return
 	case <-ctx.Done():
 		out, errOut := stdout.String(), stderr.String()
@@ -736,25 +731,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			StderrSpoolID: mapSpoolID(stderr),
 			Err:           ctx.Err(),
 		}
-		go func() {
-			abortSess, err := client.NewSession()
-			if err == nil {
-				abortCmd := "timeout 3s pkill -f " + shellquote.Join(regexp.QuoteMeta(cmdText)) + " 2>/dev/null || true"
-				_ = abortSess.Run(abortCmd)
-				_ = abortSess.Close()
-			}
-			_ = sess.Signal(ssh.SIGKILL)
-			_ = sess.Close()
-			<-done
-			_ = stdout.Close()
-			_ = stderr.Close()
-			if stdout.Spilled() {
-				_ = p.RegisterSpool(context.Background(), r.SessionID, stdout.SpoolID(), stdout.FilePath())
-			}
-			if stderr.Spilled() {
-				_ = p.RegisterSpool(context.Background(), r.SessionID, stderr.SpoolID(), stderr.FilePath())
-			}
-		}()
+		go p.cleanupExec(context.Background(), client, sess, r, cmdText, done, stdout, stderr)
 		return
 	case err := <-done:
 		_ = sess.Close()
@@ -762,10 +739,10 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 		_ = stderr.Close()
 
 		if stdout.Spilled() {
-			_ = p.RegisterSpool(context.Background(), r.SessionID, stdout.SpoolID(), stdout.FilePath())
+			_ = p.RegisterSpool(ctx, r.SessionID, stdout.SpoolID(), stdout.FilePath())
 		}
 		if stderr.Spilled() {
-			_ = p.RegisterSpool(context.Background(), r.SessionID, stderr.SpoolID(), stderr.FilePath())
+			_ = p.RegisterSpool(ctx, r.SessionID, stderr.SpoolID(), stderr.FilePath())
 		}
 
 		res := ExecResponse{
@@ -803,6 +780,46 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			)
 		}
 		r.resp <- res
+	}
+}
+
+func (p *Pool) cleanupExec(spoolCtx context.Context, client *ssh.Client, sess *ssh.Session, r ExecRequest, cmdText string, done <-chan error, stdout, stderr *SpoolingBuffer) {
+	killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer killCancel()
+
+	type abortRes struct{}
+	abortDone := make(chan abortRes, 1)
+	go func() {
+		abortSess, err := client.NewSession()
+		if err == nil {
+			abortCmd := "timeout 3s pkill -f " + shellquote.Join(regexp.QuoteMeta(cmdText)) + " 2>/dev/null || true"
+			_ = abortSess.Run(abortCmd)
+			_ = abortSess.Close()
+		}
+		abortDone <- abortRes{}
+	}()
+
+	select {
+	case <-killCtx.Done():
+		_ = client.Close()
+	case <-abortDone:
+	}
+
+	_ = sess.Signal(ssh.SIGKILL)
+	_ = sess.Close()
+
+	select {
+	case <-killCtx.Done():
+	case <-done:
+	}
+
+	_ = stdout.Close()
+	_ = stderr.Close()
+	if stdout.Spilled() {
+		_ = p.RegisterSpool(spoolCtx, r.SessionID, stdout.SpoolID(), stdout.FilePath())
+	}
+	if stderr.Spilled() {
+		_ = p.RegisterSpool(spoolCtx, r.SessionID, stderr.SpoolID(), stderr.FilePath())
 	}
 }
 
@@ -910,7 +927,7 @@ func (p *Pool) DownloadStatus(ctx context.Context, sessionID, downloadID string)
 }
 
 // send dispatches req to the pool's request channel and waits for a response.
-// Returns (zero, false) if ctx is cancelled during send or receive.
+// Returns (zero, false) if ctx is canceled during send or receive.
 func send[Resp any](ctx context.Context, ch chan<- Request, req Request, respCh <-chan Resp) (Resp, bool) {
 	select {
 	case ch <- req:
