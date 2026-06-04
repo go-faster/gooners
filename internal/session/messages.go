@@ -58,10 +58,14 @@ type ExecRequest struct {
 func (ExecRequest) isRequest() {}
 
 type ExecResponse struct {
-	Stdout   string
-	Stderr   string
-	ExitCode int
-	Err      error
+	Stdout        string
+	Stderr        string
+	StdoutSize    int64
+	StderrSize    int64
+	StdoutSpoolID string
+	StderrSpoolID string
+	ExitCode      int
+	Err           error
 }
 
 type UploadRequest struct {
@@ -125,3 +129,33 @@ type DownloadStatusResponse struct {
 	Done            bool
 	Err             error
 }
+
+type RegisterSpoolRequest struct {
+	SessionID string
+	SpoolID   string
+	Path      string
+	resp      chan<- error
+}
+
+func (RegisterSpoolRequest) isRequest() {}
+
+type GetSpoolRequest struct {
+	SessionID string
+	SpoolID   string
+	resp      chan<- GetSpoolResponse
+}
+
+func (GetSpoolRequest) isRequest() {}
+
+type GetSpoolResponse struct {
+	Path string
+	Err  error
+}
+
+type DeleteSpoolRequest struct {
+	SessionID string
+	SpoolID   string
+	resp      chan<- error
+}
+
+func (DeleteSpoolRequest) isRequest() {}

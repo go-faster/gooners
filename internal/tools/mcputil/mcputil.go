@@ -73,10 +73,15 @@ type MachinesResult struct {
 
 // ExecResult for exec commands that return stdout etc. Matches the shape used in core.
 type ExecResult struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Stdout        string `json:"stdout"`
+	Stderr        string `json:"stderr"`
+	StdoutSize    int64  `json:"stdout_size,omitempty"`
+	StderrSize    int64  `json:"stderr_size,omitempty"`
+	StdoutSpoolID string `json:"stdout_spool_id,omitempty"`
+	StderrSpoolID string `json:"stderr_spool_id,omitempty"`
+	Message       string `json:"message,omitempty"`
+	ExitCode      int    `json:"exit_code,omitempty"`
+	Error         string `json:"error,omitempty"`
 }
 
 // CommandResult for tools that run a command and return its output (disk, fs, proc, sysinfo, systemd).

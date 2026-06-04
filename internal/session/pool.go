@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"math/big"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ type Session struct {
 	// TODO: completed jobs are never evicted from these maps, which is a known leak
 	uploads   map[string]*UploadJob
 	downloads map[string]*DownloadJob
+	spools    map[string]string // spoolID -> localFilePath
 }
 
 type UploadJob struct {
@@ -82,16 +84,21 @@ type Provider interface {
 type Pool struct {
 	reqCh          chan Request
 	commandTimeout time.Duration
+	maxOutputBytes int64
 }
 
 // PoolOptions contains configuration for a new Pool.
 type PoolOptions struct {
 	CommandTimeout time.Duration
+	MaxOutputBytes int64
 }
 
 func (opts *PoolOptions) setDefaults() {
 	if opts.CommandTimeout <= 0 {
 		opts.CommandTimeout = 10 * time.Second
+	}
+	if opts.MaxOutputBytes <= 0 {
+		opts.MaxOutputBytes = 8192 // default 8KB
 	}
 }
 
@@ -100,6 +107,7 @@ func NewPool(opts PoolOptions) *Pool {
 	return &Pool{
 		reqCh:          make(chan Request),
 		commandTimeout: opts.CommandTimeout,
+		maxOutputBytes: opts.MaxOutputBytes,
 	}
 }
 
@@ -158,6 +166,12 @@ func (p *Pool) RunLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			for _, s := range sessions {
+				for _, path := range s.spools {
+					_ = os.Remove(path)
+				}
+				sessionDir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", s.ID)
+				_ = os.RemoveAll(sessionDir)
+
 				_ = s.client.Close()
 				slog.Debug("ssh session closed (shutdown)", "id", s.ID, "machine", s.Machine)
 			}
@@ -176,6 +190,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				client:    res.client,
 				uploads:   make(map[string]*UploadJob),
 				downloads: make(map[string]*DownloadJob),
+				spools:    make(map[string]string),
 			}
 			sessions[id] = sess
 			slog.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
@@ -237,6 +252,12 @@ func (p *Pool) RunLoop(ctx context.Context) {
 					for _, job := range s.downloads {
 						job.cancel()
 					}
+					for _, path := range s.spools {
+						_ = os.Remove(path)
+					}
+					sessionDir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", r.ID)
+					_ = os.RemoveAll(sessionDir)
+
 					_ = s.client.Close()
 					delete(sessions, r.ID)
 					slog.Debug("ssh session closed", "id", r.ID, "machine", s.Machine)
@@ -341,6 +362,43 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				}
 				job.mu.Unlock()
 
+			case RegisterSpoolRequest:
+				s, ok := sessions[r.SessionID]
+				if !ok {
+					r.resp <- fmt.Errorf("session not found: %s", r.SessionID)
+					continue
+				}
+				s.spools[r.SpoolID] = r.Path
+				r.resp <- nil
+
+			case GetSpoolRequest:
+				s, ok := sessions[r.SessionID]
+				if !ok {
+					r.resp <- GetSpoolResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
+					continue
+				}
+				path, ok := s.spools[r.SpoolID]
+				if !ok {
+					r.resp <- GetSpoolResponse{Err: fmt.Errorf("spool ID not found: %s", r.SpoolID)}
+					continue
+				}
+				r.resp <- GetSpoolResponse{Path: path}
+
+			case DeleteSpoolRequest:
+				s, ok := sessions[r.SessionID]
+				if !ok {
+					r.resp <- fmt.Errorf("session not found: %s", r.SessionID)
+					continue
+				}
+				path, ok := s.spools[r.SpoolID]
+				if !ok {
+					r.resp <- fmt.Errorf("spool ID not found: %s", r.SpoolID)
+					continue
+				}
+				_ = os.Remove(path)
+				delete(s.spools, r.SpoolID)
+				r.resp <- nil
+
 			case ExecRequest:
 				s, ok := sessions[r.SessionID]
 				if !ok {
@@ -355,21 +413,192 @@ func (p *Pool) RunLoop(ctx context.Context) {
 	}
 }
 
-type safeBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
+type SpoolingBuffer struct {
+	mu        sync.Mutex
+	sessionID string
+	spoolID   string
+	threshold int64
+	buf       bytes.Buffer
+	file      *os.File
+	filePath  string
+	size      int64
+	spilled   bool
+	err       error
 }
 
-func (b *safeBuffer) Write(p []byte) (n int, err error) {
+func NewSpoolingBuffer(sessionID string, threshold int64) *SpoolingBuffer {
+	return &SpoolingBuffer{
+		sessionID: sessionID,
+		spoolID:   generateSpoolID(),
+		threshold: threshold,
+	}
+}
+
+func generateSpoolID() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%x", b)
+}
+
+func (b *SpoolingBuffer) Write(p []byte) (n int, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+
+	if b.err != nil {
+		return 0, b.err
+	}
+
+	n = len(p)
+	b.size += int64(n)
+
+	if b.spilled {
+		var nw int
+		nw, err = b.file.Write(p)
+		if err != nil {
+			b.err = err
+			return nw, err
+		}
+		return n, nil
+	}
+
+	if b.size > b.threshold {
+		dir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", b.sessionID)
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			b.err = fmt.Errorf("creating session spool directory: %w", err)
+			return 0, b.err
+		}
+
+		path := filepath.Join(dir, b.spoolID+".out")
+		//nolint:gosec // path is dynamically generated securely
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		if err != nil {
+			b.err = fmt.Errorf("creating spool file: %w", err)
+			return 0, b.err
+		}
+		b.file = f
+		b.filePath = path
+		b.spilled = true
+
+		if b.buf.Len() > 0 {
+			if _, err := b.file.Write(b.buf.Bytes()); err != nil {
+				_ = b.file.Close()
+				b.file = nil
+				b.err = fmt.Errorf("writing buffer to spool file: %w", err)
+				return 0, b.err
+			}
+		}
+
+		var nw int
+		nw, err = b.file.Write(p)
+		if err != nil {
+			_ = b.file.Close()
+			b.file = nil
+			b.err = fmt.Errorf("writing to spool file: %w", err)
+			return nw, err
+		}
+		return n, nil
+	}
+
+	_, err = b.buf.Write(p)
+	if err != nil {
+		b.err = err
+		return 0, err
+	}
+	return n, nil
 }
 
-func (b *safeBuffer) String() string {
+func (b *SpoolingBuffer) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.file != nil {
+		err := b.file.Close()
+		b.file = nil
+		return err
+	}
+	return nil
+}
+
+func (b *SpoolingBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func (b *SpoolingBuffer) Spilled() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.spilled
+}
+
+func (b *SpoolingBuffer) SpoolID() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.spoolID
+}
+
+func (b *SpoolingBuffer) FilePath() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.filePath
+}
+
+func (b *SpoolingBuffer) Size() int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.size
+}
+
+func mapSpoolID(b *SpoolingBuffer) string {
+	if b.Spilled() {
+		return b.SpoolID()
+	}
+	return ""
+}
+
+func (p *Pool) GetSpool(ctx context.Context, sessionID, spoolID string) (string, error) {
+	respCh := make(chan GetSpoolResponse, 1)
+	select {
+	case p.reqCh <- GetSpoolRequest{SessionID: sessionID, SpoolID: spoolID, resp: respCh}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	select {
+	case resp := <-respCh:
+		return resp.Path, resp.Err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (p *Pool) DeleteSpool(ctx context.Context, sessionID, spoolID string) error {
+	respCh := make(chan error, 1)
+	select {
+	case p.reqCh <- DeleteSpoolRequest{SessionID: sessionID, SpoolID: spoolID, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (p *Pool) RegisterSpool(ctx context.Context, sessionID, spoolID, path string) error {
+	respCh := make(chan error, 1)
+	select {
+	case p.reqCh <- RegisterSpoolRequest{SessionID: sessionID, SpoolID: spoolID, Path: path, resp: respCh}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case err := <-respCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecRequest) {
@@ -442,9 +671,10 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 		sess = res.sess
 	}
 
-	var stdout, stderr safeBuffer
-	sess.Stdout = &stdout
-	sess.Stderr = &stderr
+	stdout := NewSpoolingBuffer(r.SessionID, p.maxOutputBytes)
+	stderr := NewSpoolingBuffer(r.SessionID, p.maxOutputBytes)
+	sess.Stdout = stdout
+	sess.Stderr = stderr
 	if r.Sudo && r.SudoPassword != "" {
 		sess.Stdin = strings.NewReader(r.SudoPassword + "\n")
 	}
@@ -463,8 +693,12 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			"stderr_len", len(errOut),
 		)
 		r.resp <- ExecResponse{
-			Stdout: out,
-			Stderr: errOut,
+			Stdout:        out,
+			Stderr:        errOut,
+			StdoutSize:    stdout.Size(),
+			StderrSize:    stderr.Size(),
+			StdoutSpoolID: mapSpoolID(stdout),
+			StderrSpoolID: mapSpoolID(stderr),
 		}
 		go func() {
 			abortSess, err := client.NewSession()
@@ -475,6 +709,15 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			}
 			_ = sess.Signal(ssh.SIGKILL)
 			_ = sess.Close()
+			<-done
+			_ = stdout.Close()
+			_ = stderr.Close()
+			if stdout.Spilled() {
+				_ = p.RegisterSpool(context.Background(), r.SessionID, stdout.SpoolID(), stdout.FilePath())
+			}
+			if stderr.Spilled() {
+				_ = p.RegisterSpool(context.Background(), r.SessionID, stderr.SpoolID(), stderr.FilePath())
+			}
 		}()
 		return
 	case <-ctx.Done():
@@ -486,9 +729,13 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			"stderr_len", len(errOut),
 		)
 		r.resp <- ExecResponse{
-			Stdout: out,
-			Stderr: errOut,
-			Err:    ctx.Err(),
+			Stdout:        out,
+			Stderr:        errOut,
+			StdoutSize:    stdout.Size(),
+			StderrSize:    stderr.Size(),
+			StdoutSpoolID: mapSpoolID(stdout),
+			StderrSpoolID: mapSpoolID(stderr),
+			Err:           ctx.Err(),
 		}
 		go func() {
 			abortSess, err := client.NewSession()
@@ -499,13 +746,36 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			}
 			_ = sess.Signal(ssh.SIGKILL)
 			_ = sess.Close()
+			<-done
+			_ = stdout.Close()
+			_ = stderr.Close()
+			if stdout.Spilled() {
+				_ = p.RegisterSpool(context.Background(), r.SessionID, stdout.SpoolID(), stdout.FilePath())
+			}
+			if stderr.Spilled() {
+				_ = p.RegisterSpool(context.Background(), r.SessionID, stderr.SpoolID(), stderr.FilePath())
+			}
 		}()
 		return
 	case err := <-done:
 		_ = sess.Close()
+		_ = stdout.Close()
+		_ = stderr.Close()
+
+		if stdout.Spilled() {
+			_ = p.RegisterSpool(context.Background(), r.SessionID, stdout.SpoolID(), stdout.FilePath())
+		}
+		if stderr.Spilled() {
+			_ = p.RegisterSpool(context.Background(), r.SessionID, stderr.SpoolID(), stderr.FilePath())
+		}
+
 		res := ExecResponse{
-			Stdout: stdout.String(),
-			Stderr: stderr.String(),
+			Stdout:        stdout.String(),
+			Stderr:        stderr.String(),
+			StdoutSize:    stdout.Size(),
+			StderrSize:    stderr.Size(),
+			StdoutSpoolID: mapSpoolID(stdout),
+			StderrSpoolID: mapSpoolID(stderr),
 		}
 		dur := time.Since(start)
 		if err != nil {

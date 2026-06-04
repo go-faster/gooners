@@ -60,6 +60,8 @@ func dialInsecure(addr string) Config {
 }
 
 // runCmd runs a single command on a just-dialed connection and returns stdout.
+//
+//nolint:unparam // cmd is always testCmd in existing tests
 func runCmd(t *testing.T, cfg Config, cmd string) string {
 	t.Helper()
 	client, err := cfg.dial()

@@ -2,9 +2,15 @@
 package core
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -72,6 +78,17 @@ func Register(s *mcp.Server, p *session.Pool, opts RegisterOptions) {
 		Description: "Check if an SSH session is alive by sending a keepalive ping.",
 		Flags:       mcputil.ReadOnly,
 	}, pingHandler(p))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "ssh_read_output",
+		Description: "Read the content of a truncated execution output spool file.",
+		Flags:       mcputil.ReadOnly,
+	}, readOutputHandler(p))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "ssh_save_output",
+		Description: "Move/save a truncated execution output spool file to a persistent local file path. Note: this consumes and invalidates the spool ID.",
+	}, saveOutputHandler(p))
 }
 
 type openParams struct {
@@ -249,8 +266,15 @@ func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, mcputil.ExecRes
 //nolint:unparam // satisfies mcp.ToolHandlerFor signature pattern even if unused
 func execResult(res session.ExecResponse) (*mcp.CallToolResult, mcputil.ExecResult, error) {
 	e := mcputil.ExecResult{
-		Stdout: res.Stdout,
-		Stderr: res.Stderr,
+		Stdout:        res.Stdout,
+		Stderr:        res.Stderr,
+		StdoutSize:    res.StdoutSize,
+		StderrSize:    res.StderrSize,
+		StdoutSpoolID: res.StdoutSpoolID,
+		StderrSpoolID: res.StderrSpoolID,
+	}
+	if res.StdoutSpoolID != "" || res.StderrSpoolID != "" {
+		e.Message = "Some output streams were truncated. Use specialized tools like ssh_read_output or ssh_save_output to access the full content."
 	}
 	if res.ExitCode != 0 {
 		e.ExitCode = res.ExitCode
@@ -291,4 +315,204 @@ func pingHandler(p *session.Pool) mcp.ToolHandlerFor[pingParams, mcputil.PingRes
 			Time:   dur.String(),
 		}, nil
 	}
+}
+
+type readOutputParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	SpoolID   string `json:"spool_id" jsonschema:"The opaque spool ID of the truncated output"`
+	Lines     int    `json:"lines,omitempty" jsonschema:"Number of lines to read (default 100, max 500)"`
+	FromEnd   bool   `json:"from_end,omitempty" jsonschema:"Read from the end of the file (tail behavior) instead of the beginning"`
+}
+
+func readOutputHandler(p *session.Pool) mcp.ToolHandlerFor[readOutputParams, mcputil.CommandResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args readOutputParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
+		if args.SessionID == "" || args.SpoolID == "" {
+			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and spool_id are required")
+		}
+		lines := args.Lines
+		if lines <= 0 {
+			lines = 100
+		}
+		if lines > 500 {
+			lines = 500
+		}
+
+		path, err := p.GetSpool(ctx, args.SessionID, args.SpoolID)
+		if err != nil {
+			return nil, mcputil.CommandResult{}, err
+		}
+
+		var content string
+		if args.FromEnd {
+			content, err = readTail(path, lines, 16384)
+		} else {
+			content, err = readHead(path, lines, 16384)
+		}
+		if err != nil {
+			return nil, mcputil.CommandResult{}, fmt.Errorf("reading spool output: %w", err)
+		}
+
+		return nil, mcputil.CommandResult{Text: content}, nil
+	}
+}
+
+type saveOutputParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	SpoolID   string `json:"spool_id" jsonschema:"The opaque spool ID to save"`
+	LocalPath string `json:"local_path" jsonschema:"The destination local file path to save the spool output to"`
+}
+
+func saveOutputHandler(p *session.Pool) mcp.ToolHandlerFor[saveOutputParams, mcputil.SuccessResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args saveOutputParams) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
+		if args.SessionID == "" || args.SpoolID == "" || args.LocalPath == "" {
+			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id, spool_id, and local_path are required")
+		}
+
+		path, err := p.GetSpool(ctx, args.SessionID, args.SpoolID)
+		if err != nil {
+			return nil, mcputil.SuccessResult{}, err
+		}
+
+		if err := renameOrCopy(path, args.LocalPath); err != nil {
+			return nil, mcputil.SuccessResult{}, fmt.Errorf("saving spool output: %w", err)
+		}
+
+		_ = p.DeleteSpool(ctx, args.SessionID, args.SpoolID)
+
+		return nil, mcputil.SuccessResult{OK: true}, nil
+	}
+}
+
+func readHead(path string, maxLines int, maxBytes int64) (string, error) {
+	//nolint:gosec // path is validated by spool registry
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	var buf bytes.Buffer
+	reader := io.LimitReader(f, maxBytes)
+	r := bufio.NewReader(reader)
+	lineCount := 0
+	truncated := false
+	for lineCount < maxLines {
+		line, err := r.ReadString('\n')
+		if line != "" {
+			buf.WriteString(line)
+			lineCount++
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return "", err
+		}
+	}
+
+	if lineCount == maxLines {
+		// Check if there is more data
+		_, err := r.ReadByte()
+		if err == nil {
+			truncated = true
+		} else if !errors.Is(err, io.EOF) {
+			return "", err
+		}
+	}
+
+	var dummy [1]byte
+	n, _ := f.Read(dummy[:])
+	if n > 0 {
+		truncated = true
+	}
+
+	out := buf.String()
+	if truncated {
+		out += "\n... [Output truncated due to size/line limit] ..."
+	}
+	return out, nil
+}
+
+func readTail(path string, maxLines int, maxBytes int64) (string, error) {
+	//nolint:gosec // path is validated by spool registry
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+
+	size := stat.Size()
+	offset := int64(0)
+	truncated := false
+	if size > maxBytes {
+		offset = size - maxBytes
+		truncated = true
+	}
+
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return "", err
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", err
+	}
+
+	lines := bytes.Split(data, []byte("\n"))
+	if len(lines) > 0 && len(lines[len(lines)-1]) == 0 {
+		lines = lines[:len(lines)-1]
+	}
+	if offset > 0 && len(lines) > 0 && len(lines[0]) == 0 {
+		lines = lines[1:]
+	}
+
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+		truncated = true
+	}
+
+	outBytes := bytes.Join(lines, []byte("\n"))
+	out := string(outBytes)
+	if truncated {
+		out = "... [Output truncated due to size/line limit] ...\n" + out
+	}
+	return out, nil
+}
+
+func renameOrCopy(src, dst string) error {
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+
+	//nolint:gosec // src is validated by spool registry
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+
+	//nolint:gosec // user destination path
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = out.Close() }()
+
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+
+	_ = in.Close()
+	return os.Remove(src)
 }
