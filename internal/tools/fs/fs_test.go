@@ -77,6 +77,15 @@ func (p *dummyPool) DownloadStatus(ctx context.Context, sessionID, downloadID st
 	}, nil
 }
 
+func extractText(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	require.False(t, res.IsError, "unexpected error result: %v", res)
+	require.Len(t, res.Content, 1)
+	text, ok := res.Content[0].(*mcp.TextContent)
+	require.True(t, ok, "expected *TextContent, got %T", res.Content[0])
+	return text.Text
+}
+
 func parseResult(t *testing.T, res *mcp.CallToolResult) map[string]any {
 	t.Helper()
 	require.False(t, res.IsError, "unexpected error result: %v", res)
@@ -106,8 +115,7 @@ func TestLSHandler(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	data := parseResult(t, res)
-	require.Equal(t, "total 0\n", data["stdout"])
+	require.Equal(t, "total 0\n", extractText(t, res))
 }
 
 func TestCatHandler(t *testing.T) {
@@ -126,8 +134,7 @@ func TestCatHandler(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	data := parseResult(t, res)
-	require.Equal(t, "hello world", data["stdout"])
+	require.Equal(t, "hello world", extractText(t, res))
 }
 
 func TestGrepHandler(t *testing.T) {
@@ -150,8 +157,7 @@ func TestGrepHandler(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	data := parseResult(t, res)
-	require.Equal(t, "found", data["stdout"])
+	require.Equal(t, "found", extractText(t, res))
 }
 
 func TestFindHandler(t *testing.T) {
@@ -173,8 +179,7 @@ func TestFindHandler(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	data := parseResult(t, res)
-	require.Equal(t, "/foo/bar.txt", data["stdout"])
+	require.Equal(t, "/foo/bar.txt", extractText(t, res))
 }
 
 func TestStatHandler(t *testing.T) {
@@ -193,8 +198,7 @@ func TestStatHandler(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	data := parseResult(t, res)
-	require.Equal(t, "stat info", data["stdout"])
+	require.Equal(t, "stat info", extractText(t, res))
 }
 
 func TestDUHandler(t *testing.T) {
@@ -216,8 +220,7 @@ func TestDUHandler(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	data := parseResult(t, res)
-	require.Equal(t, "4.0K\t/foo bar\n", data["stdout"])
+	require.Equal(t, "4.0K\t/foo bar\n", extractText(t, res))
 }
 
 func TestWriteFileHandler(t *testing.T) {

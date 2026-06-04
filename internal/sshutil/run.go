@@ -4,8 +4,9 @@ package sshutil
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -152,8 +153,17 @@ func Run(ctx context.Context, client *ssh.Client, command string, opts RunOption
 }
 
 func (r Result) Text() string {
-	b, _ := json.Marshal(r)
-	return string(b)
+	if r.Error != "" {
+		return "error: " + r.Error
+	}
+	if r.ExitCode != 0 {
+		out := strings.TrimSpace(r.Stdout + r.Stderr)
+		if out == "" {
+			return fmt.Sprintf("exited with code %d", r.ExitCode)
+		}
+		return out
+	}
+	return r.Stdout
 }
 
 // Quote returns a shell-escaped version of s, safe to use as a single argument

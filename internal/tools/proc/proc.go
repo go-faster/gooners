@@ -91,12 +91,7 @@ func listHandler(p session.Provider) mcp.ToolHandlerFor[procListParams, mcputil.
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -128,12 +123,7 @@ func infoHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, mcputil.C
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -154,12 +144,7 @@ func lsofHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, mcputil.C
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -190,11 +175,6 @@ func killHandler(p session.Provider) mcp.ToolHandlerFor[killParams, mcputil.Comm
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil || res.ExitCode != 0,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }

@@ -62,12 +62,7 @@ func lsblkHandler(p *session.Pool) mcp.ToolHandlerFor[lsblkParams, mcputil.Comma
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -88,12 +83,7 @@ func mountsHandler(p *session.Pool) mcp.ToolHandlerFor[mountsParams, mcputil.Com
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -114,11 +104,6 @@ func dfHandler(p *session.Pool) mcp.ToolHandlerFor[dfParams, mcputil.CommandResu
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }

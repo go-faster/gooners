@@ -45,12 +45,7 @@ func netAddrsHandler(p *session.Pool) mcp.ToolHandlerFor[netAddrsParams, mcputil
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -68,12 +63,7 @@ func osInfoHandler(p *session.Pool) mcp.ToolHandlerFor[sessionParam, mcputil.Com
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -90,12 +80,7 @@ func uptimeHandler(p *session.Pool) mcp.ToolHandlerFor[sessionParam, mcputil.Com
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -112,11 +97,6 @@ func memHandler(p *session.Pool) mcp.ToolHandlerFor[sessionParam, mcputil.Comman
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }

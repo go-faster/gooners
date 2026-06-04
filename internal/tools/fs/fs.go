@@ -95,12 +95,7 @@ func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, mcputil.CommandRe
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -128,12 +123,7 @@ func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, mcputil.Command
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -170,12 +160,7 @@ func grepHandler(p SessionProvider) mcp.ToolHandlerFor[grepParams, mcputil.Comma
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -210,12 +195,7 @@ func findHandler(p SessionProvider) mcp.ToolHandlerFor[findParams, mcputil.Comma
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -238,12 +218,7 @@ func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, mcputil.Comma
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -283,12 +258,7 @@ func duHandler(p SessionProvider) mcp.ToolHandlerFor[duParams, mcputil.CommandRe
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 

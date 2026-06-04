@@ -41,12 +41,7 @@ func statusHandler(p *session.Pool) mcp.ToolHandlerFor[systemdBaseParams, mcputi
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -76,12 +71,7 @@ func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, mcput
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -99,12 +89,7 @@ func mutatingHandler(p *session.Pool, action string) mcp.ToolHandlerFor[systemdB
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }
 
@@ -151,11 +136,6 @@ func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, mcputil.C
 			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{
-			Stdout:   res.Stdout,
-			Stderr:   res.Stderr,
-			ExitCode: res.ExitCode,
-			Error:    res.Error,
-		}, nil
+		return cr, mcputil.CommandResult{Text: res.Text()}, nil
 	}
 }

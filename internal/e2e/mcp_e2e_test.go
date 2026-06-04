@@ -471,7 +471,7 @@ func TestE2E_Proc_ListInfoKill(t *testing.T) {
 	_ = lsof
 
 	// Kill it.
-	callJSON(t, env.CS, "proc_kill", map[string]any{"session_id": sid, "pid": sleepPID, "signal": "TERM"})
+	callRaw(t, env.CS, "proc_kill", map[string]any{"session_id": sid, "pid": sleepPID, "signal": "TERM"})
 
 	// should be gone soon (poll instead of fixed sleep to avoid flakiness)
 	require.Eventually(t,

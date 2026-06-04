@@ -81,10 +81,7 @@ type ExecResult struct {
 
 // CommandResult for tools that run a command and return its output (disk, fs, proc, sysinfo, systemd).
 type CommandResult struct {
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	ExitCode int    `json:"exit_code,omitempty"`
-	Error    string `json:"error,omitempty"`
+	Text string `json:"text"`
 }
 
 // UploadResult for upload start.
