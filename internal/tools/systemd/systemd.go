@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/go-faster/jx"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/session"
@@ -56,7 +57,7 @@ func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, mcput
 		if args.SessionID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")
 		}
-		cmd := "systemctl list-units"
+		cmd := "systemctl list-units --output=json"
 		if args.State != "" {
 			cmd += " --state=" + sshutil.Quote(args.State)
 		}
@@ -112,7 +113,7 @@ func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, mcputil.C
 		if lines <= 0 || lines > 10_000 {
 			lines = 100
 		}
-		cmd := fmt.Sprintf("journalctl --no-pager -n %d", int64(lines))
+		cmd := fmt.Sprintf("journalctl -o json --no-pager -n %d", int64(lines))
 		if args.Unit != "" {
 			cmd += " -u " + sshutil.Quote(args.Unit)
 		}
@@ -132,10 +133,32 @@ func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, mcputil.C
 		if err != nil {
 			res.Error = err.Error()
 		}
+
+		w := jx.GetWriter()
+		defer jx.PutWriter(w)
+
+		w.ArrStart()
+		dec := jx.DecodeStr(res.Text())
+		first := true
+		for dec.Next() != jx.Invalid {
+			raw, err := dec.Raw()
+			if err != nil {
+				break
+			}
+			if !first {
+				w.Comma()
+			}
+			first = false
+			w.Raw(raw)
+		}
+		w.ArrEnd()
+
+		text := string(w.Buf)
+
 		cr := &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+			Content: []mcp.Content{&mcp.TextContent{Text: text}},
 			IsError: err != nil,
 		}
-		return cr, mcputil.CommandResult{Text: res.Text()}, nil
+		return cr, mcputil.CommandResult{Text: text}, nil
 	}
 }

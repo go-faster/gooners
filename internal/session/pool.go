@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kballard/go-shellquote"
@@ -28,6 +29,7 @@ type Session struct {
 	Machine   string
 	CreatedAt time.Time
 	client    *ssh.Client
+	lastPing  atomic.Int64 // unix nanoseconds of last successful keepalive; 0 = no ping yet
 	// TODO: completed jobs are never evicted from these maps, which is a known leak
 	uploads   map[string]*UploadJob
 	downloads map[string]*DownloadJob
@@ -62,6 +64,9 @@ type SessionInfo struct {
 	ID        string    `json:"id"`
 	Machine   string    `json:"machine"`
 	CreatedAt time.Time `json:"created_at"`
+	LastPing  time.Time `json:"last_ping,omitempty"`
+	// Status is "connected" if a keepalive succeeded within the last 30s, "new" if no ping yet, "stale" otherwise.
+	Status string `json:"status"`
 }
 
 type Provider interface {
@@ -197,7 +202,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 			res.req.resp <- OpenResponse{ID: id}
 
 			// Watch the connection and remove the session if it drops or fails.
-			go func(sessionID string, c *ssh.Client) {
+			go func(sessionID string, c *ssh.Client, s *Session) {
 				errCh := make(chan error, 1)
 				go func() {
 					errCh <- c.Wait()
@@ -216,9 +221,10 @@ func (p *Pool) RunLoop(ctx context.Context) {
 							_ = c.Close()
 							return
 						}
+						s.lastPing.Store(time.Now().UnixNano())
 					}
 				}
-			}(id, res.client)
+			}(id, res.client, sess)
 
 		case req := <-p.reqCh:
 			switch r := req.(type) {
@@ -266,7 +272,18 @@ func (p *Pool) RunLoop(ctx context.Context) {
 			case ListRequest:
 				out := make([]SessionInfo, 0, len(sessions))
 				for _, s := range sessions {
-					out = append(out, SessionInfo{ID: s.ID, Machine: s.Machine, CreatedAt: s.CreatedAt})
+					info := SessionInfo{ID: s.ID, Machine: s.Machine, CreatedAt: s.CreatedAt}
+					if ns := s.lastPing.Load(); ns != 0 {
+						info.LastPing = time.Unix(0, ns)
+						if time.Since(info.LastPing) < 30*time.Second {
+							info.Status = "connected"
+						} else {
+							info.Status = "stale"
+						}
+					} else {
+						info.Status = "new"
+					}
+					out = append(out, info)
 				}
 				r.resp <- out
 

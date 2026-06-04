@@ -1,4 +1,4 @@
-// Package disk registers MCP tools for disk and filesystem inspection (lsblk, mounts).
+// Package disk registers MCP tools for disk and filesystem inspection (lsblk).
 package disk
 
 import (
@@ -19,13 +19,8 @@ func Register(s *mcp.Server, p *session.Pool) {
 		Flags:       mcputil.ReadOnly,
 	}, lsblkHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{
-		Name:        "disk_mounts",
-		Description: "Show current mounts with filesystem type and options (/proc/mounts).",
-		Flags:       mcputil.ReadOnly,
-	}, mountsHandler(p))
-	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "disk_df",
-		Description: "Report disk space usage (df -h).",
+		Description: "Show file system disk space usage (df -h).",
 		Flags:       mcputil.ReadOnly,
 	}, dfHandler(p))
 }
@@ -35,22 +30,12 @@ type lsblkParams struct {
 	Device    string `json:"device,omitempty" jsonschema:"Block device name (e.g. sda)"`
 }
 
-type mountsParams struct {
-	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
-	FSType    string `json:"fstype,omitempty" jsonschema:"Filter by filesystem type"`
-}
-
-type dfParams struct {
-	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
-	Path      string `json:"path,omitempty" jsonschema:"Path to check disk usage for"`
-}
-
 func lsblkHandler(p *session.Pool) mcp.ToolHandlerFor[lsblkParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args lsblkParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")
 		}
-		cmd := "lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID"
+		cmd := "lsblk -J -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID"
 		if args.Device != "" {
 			cmd += " " + sshutil.Quote(args.Device)
 		}
@@ -66,25 +51,9 @@ func lsblkHandler(p *session.Pool) mcp.ToolHandlerFor[lsblkParams, mcputil.Comma
 	}
 }
 
-func mountsHandler(p *session.Pool) mcp.ToolHandlerFor[mountsParams, mcputil.CommandResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args mountsParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
-		if args.SessionID == "" {
-			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")
-		}
-		cmd := "cat /proc/mounts"
-		if args.FSType != "" {
-			cmd += " | awk '$3 == " + sshutil.Quote(args.FSType) + "'"
-		}
-		res, err := p.Run(ctx, args.SessionID, cmd)
-		if err != nil {
-			res.Error = err.Error()
-		}
-		cr := &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
-			IsError: err != nil,
-		}
-		return cr, mcputil.CommandResult{Text: res.Text()}, nil
-	}
+type dfParams struct {
+	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
+	Path      string `json:"path,omitempty" jsonschema:"Path to check disk usage for (e.g. /var)"`
 }
 
 func dfHandler(p *session.Pool) mcp.ToolHandlerFor[dfParams, mcputil.CommandResult] {

@@ -287,7 +287,7 @@ func TestE2E_FS_WriteCatGrepStat(t *testing.T) {
 	require.Contains(t, grep, "XYZ")
 
 	stat := callRaw(t, env.CS, "stat", map[string]any{"session_id": sid, "path": path})
-	require.Contains(t, stat, path)
+	require.Contains(t, stat, "gooners-e2e-test.txt")
 }
 
 func TestE2E_FS_LsFind(t *testing.T) {
@@ -508,9 +508,6 @@ func TestE2E_Disk_All(t *testing.T) {
 
 	df := callRaw(t, env.CS, "disk_df", map[string]any{"session_id": sid})
 	require.Contains(t, df, "/") // root fs in df
-
-	mounts := callRaw(t, env.CS, "disk_mounts", map[string]any{"session_id": sid})
-	require.Contains(t, mounts, "/") // /proc/mounts has root
 
 	lsblk := callRaw(t, env.CS, "disk_lsblk", map[string]any{"session_id": sid})
 	// lsblk may show loop/ devices; just ensure it didn't fail hard

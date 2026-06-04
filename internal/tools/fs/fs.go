@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -52,11 +53,11 @@ type SessionProvider interface {
 }
 
 func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
-	mcputil.Register(s, mcputil.ToolDef{Name: "ls", Description: "List directory contents on remote machine.", Flags: mcputil.ReadOnly}, lsHandler(p))
-	mcputil.Register(s, mcputil.ToolDef{Name: "cat", Description: "Read file contents (truncated) from remote.", Flags: mcputil.ReadOnly}, catHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "ls", Description: "List directory contents on remote machine using SFTP (returns JSON) with shell fallback.", Flags: mcputil.ReadOnly}, lsHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "cat", Description: "Read file contents (truncated) from remote using SFTP with shell fallback.", Flags: mcputil.ReadOnly}, catHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "grep", Description: "Search file contents on remote.", Flags: mcputil.ReadOnly}, grepHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "find", Description: "Find files/directories on remote.", Flags: mcputil.ReadOnly}, findHandler(p))
-	mcputil.Register(s, mcputil.ToolDef{Name: "stat", Description: "Stat a path on remote.", Flags: mcputil.ReadOnly}, statHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "stat", Description: "Stat a path on remote using SFTP (returns JSON) with shell fallback.", Flags: mcputil.ReadOnly}, statHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "du", Description: "Get directory or file size (disk usage).", Flags: mcputil.ReadOnly}, duHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "truncate", Description: "Truncate file to given size on remote via SFTP.", Flags: mcputil.Destructive}, truncateHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP.", Flags: mcputil.Destructive}, writeFileHandler(p))
@@ -66,10 +67,17 @@ func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_status", Description: "Check the status of an asynchronous file download.", Flags: mcputil.ReadOnly}, downloadStatusHandler(p))
 }
 
+type fileInfo struct {
+	Name    string      `json:"name"`
+	Size    int64       `json:"size"`
+	Mode    os.FileMode `json:"mode"`
+	ModTime time.Time   `json:"mod_time"`
+	IsDir   bool        `json:"is_dir"`
+}
+
 type lsParams struct {
 	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session"`
 	Path      string `json:"path" jsonschema:"Directory path to list"`
-	Long      bool   `json:"long,omitempty" jsonschema:"Return long format (like ls -l)"`
 	All       bool   `json:"all,omitempty" jsonschema:"Include hidden files (like ls -a)"`
 }
 
@@ -78,24 +86,51 @@ func lsHandler(p SessionProvider) mcp.ToolHandlerFor[lsParams, mcputil.CommandRe
 		if args.SessionID == "" || args.Path == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and path are required")
 		}
-		cmd := "ls"
-		if args.Long {
-			cmd += " -l"
-		}
-		if args.All {
-			cmd += " -a"
-		}
-		cmd += " " + sshutil.Quote(args.Path)
 
-		res, err := p.Run(ctx, args.SessionID, cmd)
+		sftpClient, err := p.SFTP(ctx, args.SessionID)
 		if err != nil {
-			res.Error = err.Error()
+			cmd := "ls -l"
+			if args.All {
+				cmd += "a"
+			}
+			cmd += " " + sshutil.Quote(args.Path)
+			res, runErr := p.Run(ctx, args.SessionID, cmd)
+			if runErr != nil {
+				res.Error = runErr.Error()
+			}
+			cr := &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+				IsError: runErr != nil,
+			}
+			return cr, mcputil.CommandResult{Text: res.Text()}, nil
 		}
+		defer func() { _ = sftpClient.Close() }()
+
+		infos, err := sftpClient.ReadDir(args.Path)
+		if err != nil {
+			return nil, mcputil.CommandResult{}, err
+		}
+
+		var files []fileInfo
+		for _, info := range infos {
+			if !args.All && strings.HasPrefix(info.Name(), ".") {
+				continue
+			}
+			files = append(files, fileInfo{
+				Name:    info.Name(),
+				Size:    info.Size(),
+				Mode:    info.Mode(),
+				ModTime: info.ModTime(),
+				IsDir:   info.IsDir(),
+			})
+		}
+
+		b, _ := json.MarshalIndent(files, "", "  ")
+		resText := string(b)
 		cr := &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
-			IsError: err != nil,
+			Content: []mcp.Content{&mcp.TextContent{Text: resText}},
 		}
-		return cr, mcputil.CommandResult{Text: res.Text()}, nil
+		return cr, mcputil.CommandResult{Text: resText}, nil
 	}
 }
 
@@ -114,16 +149,38 @@ func catHandler(p SessionProvider) mcp.ToolHandlerFor[catParams, mcputil.Command
 		if maxBytes <= 0 || maxBytes > maxCatBytes {
 			maxBytes = maxCatBytes
 		}
-		cmd := fmt.Sprintf("head -c %d %s", int64(maxBytes), sshutil.Quote(args.Path))
-		res, err := p.Run(ctx, args.SessionID, cmd)
+
+		sftpClient, err := p.SFTP(ctx, args.SessionID)
 		if err != nil {
-			res.Error = err.Error()
+			cmd := fmt.Sprintf("head -c %d %s", int64(maxBytes), sshutil.Quote(args.Path))
+			res, runErr := p.Run(ctx, args.SessionID, cmd)
+			if runErr != nil {
+				res.Error = runErr.Error()
+			}
+			cr := &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+				IsError: runErr != nil,
+			}
+			return cr, mcputil.CommandResult{Text: res.Text()}, nil
 		}
+		defer func() { _ = sftpClient.Close() }()
+
+		f, err := sftpClient.Open(args.Path)
+		if err != nil {
+			return nil, mcputil.CommandResult{}, err
+		}
+		defer func() { _ = f.Close() }()
+
+		data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)))
+		if err != nil {
+			return nil, mcputil.CommandResult{}, err
+		}
+
+		text := string(data)
 		cr := &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
-			IsError: err != nil,
+			Content: []mcp.Content{&mcp.TextContent{Text: text}},
 		}
-		return cr, mcputil.CommandResult{Text: res.Text()}, nil
+		return cr, mcputil.CommandResult{Text: text}, nil
 	}
 }
 
@@ -209,16 +266,41 @@ func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, mcputil.Comma
 		if args.SessionID == "" || args.Path == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and path are required")
 		}
-		cmd := "stat " + sshutil.Quote(args.Path)
-		res, err := p.Run(ctx, args.SessionID, cmd)
+
+		sftpClient, err := p.SFTP(ctx, args.SessionID)
 		if err != nil {
-			res.Error = err.Error()
+			cmd := "stat " + sshutil.Quote(args.Path)
+			res, runErr := p.Run(ctx, args.SessionID, cmd)
+			if runErr != nil {
+				res.Error = runErr.Error()
+			}
+			cr := &mcp.CallToolResult{
+				Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
+				IsError: runErr != nil,
+			}
+			return cr, mcputil.CommandResult{Text: res.Text()}, nil
 		}
+		defer func() { _ = sftpClient.Close() }()
+
+		info, err := sftpClient.Stat(args.Path)
+		if err != nil {
+			return nil, mcputil.CommandResult{}, err
+		}
+
+		fi := fileInfo{
+			Name:    info.Name(),
+			Size:    info.Size(),
+			Mode:    info.Mode(),
+			ModTime: info.ModTime(),
+			IsDir:   info.IsDir(),
+		}
+
+		b, _ := json.MarshalIndent(fi, "", "  ")
+		resText := string(b)
 		cr := &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: res.Text()}},
-			IsError: err != nil,
+			Content: []mcp.Content{&mcp.TextContent{Text: resText}},
 		}
-		return cr, mcputil.CommandResult{Text: res.Text()}, nil
+		return cr, mcputil.CommandResult{Text: resText}, nil
 	}
 }
 

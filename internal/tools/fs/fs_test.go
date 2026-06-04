@@ -19,7 +19,8 @@ import (
 )
 
 type dummyPool struct {
-	client *ssh.Client
+	client  *ssh.Client
+	sftpErr error
 }
 
 func (p *dummyPool) Get(ctx context.Context, id string) (*ssh.Client, error) {
@@ -35,6 +36,9 @@ func (p *dummyPool) RunWithOptions(ctx context.Context, sessionID, cmd string, o
 }
 
 func (p *dummyPool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {
+	if p.sftpErr != nil {
+		return nil, p.sftpErr
+	}
 	if p.client == nil {
 		return nil, fmt.Errorf("no client in dummy pool")
 	}
@@ -99,18 +103,38 @@ func parseResult(t *testing.T, res *mcp.CallToolResult) map[string]any {
 
 func TestLSHandler(t *testing.T) {
 	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
-		if cmd == "ls -l -a '/foo bar'" {
+		return "unexpected command", 1
+	})
+	defer cleanup()
+
+	tmpDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("hello"), 0o644))
+
+	handler := lsHandler(&dummyPool{client: client})
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, lsParams{
+		SessionID: "test_id",
+		Path:      tmpDir,
+		All:       true,
+	})
+	require.NoError(t, err)
+
+	text := extractText(t, res)
+	require.Contains(t, text, `"name": "file.txt"`)
+}
+
+func TestLSHandler_Fallback(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		if cmd == "ls -la '/foo bar'" {
 			return "total 0\n", 0
 		}
 		return "unexpected command: " + cmd, 1
 	})
 	defer cleanup()
 
-	handler := lsHandler(&dummyPool{client: client})
+	handler := lsHandler(&dummyPool{client: client, sftpErr: fmt.Errorf("sftp disabled")})
 	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, lsParams{
 		SessionID: "test_id",
 		Path:      "/foo bar",
-		Long:      true,
 		All:       true,
 	})
 	require.NoError(t, err)
@@ -120,6 +144,25 @@ func TestLSHandler(t *testing.T) {
 
 func TestCatHandler(t *testing.T) {
 	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		return "unexpected command", 1
+	})
+	defer cleanup()
+
+	tmpFile := filepath.Join(t.TempDir(), "test.txt")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("hello world"), 0o644))
+
+	handler := catHandler(&dummyPool{client: client})
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, catParams{
+		SessionID: "test_id",
+		Path:      tmpFile,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, "hello world", extractText(t, res))
+}
+
+func TestCatHandler_Fallback(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
 		if cmd == "head -c 10485760 '/foo bar.txt'" {
 			return "hello world", 0
 		}
@@ -127,7 +170,7 @@ func TestCatHandler(t *testing.T) {
 	})
 	defer cleanup()
 
-	handler := catHandler(&dummyPool{client: client})
+	handler := catHandler(&dummyPool{client: client, sftpErr: fmt.Errorf("sftp disabled")})
 	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, catParams{
 		SessionID: "test_id",
 		Path:      "/foo bar.txt",
@@ -184,6 +227,26 @@ func TestFindHandler(t *testing.T) {
 
 func TestStatHandler(t *testing.T) {
 	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		return "unexpected command", 1
+	})
+	defer cleanup()
+
+	tmpFile := filepath.Join(t.TempDir(), "test.txt")
+	require.NoError(t, os.WriteFile(tmpFile, []byte("stat info"), 0o644))
+
+	handler := statHandler(&dummyPool{client: client})
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, statParams{
+		SessionID: "test_id",
+		Path:      tmpFile,
+	})
+	require.NoError(t, err)
+
+	text := extractText(t, res)
+	require.Contains(t, text, `"name": "test.txt"`)
+}
+
+func TestStatHandler_Fallback(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
 		if cmd == "stat /foo" {
 			return "stat info", 0
 		}
@@ -191,7 +254,7 @@ func TestStatHandler(t *testing.T) {
 	})
 	defer cleanup()
 
-	handler := statHandler(&dummyPool{client: client})
+	handler := statHandler(&dummyPool{client: client, sftpErr: fmt.Errorf("sftp disabled")})
 	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, statParams{
 		SessionID: "test_id",
 		Path:      "/foo",
