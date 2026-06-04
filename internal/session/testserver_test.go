@@ -41,6 +41,33 @@ func newTestServer(t *testing.T) *testServer {
 	return s
 }
 
+func newTestServerPassword(t *testing.T, pass string) *testServer {
+	t.Helper()
+
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	signer, err := ssh.NewSignerFromKey(priv)
+	require.NoError(t, err)
+
+	cfg := &ssh.ServerConfig{
+		PasswordCallback: func(_ ssh.ConnMetadata, password []byte) (*ssh.Permissions, error) {
+			if string(password) == pass {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("wrong password")
+		},
+	}
+	cfg.AddHostKey(signer)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	s := &testServer{addr: ln.Addr().String(), hostKey: signer}
+	go s.serve(ln, cfg)
+	return s
+}
+
 func (s *testServer) serve(ln net.Listener, cfg *ssh.ServerConfig) {
 	for {
 		conn, err := ln.Accept()

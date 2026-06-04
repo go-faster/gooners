@@ -13,6 +13,46 @@ import (
 	"github.com/go-faster/gooners/internal/sshutil"
 )
 
+func TestAuthMethods_IdentitiesOnly_MissingKeyFile(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	confPath := filepath.Join(tmpDir, "ssh_config")
+	require.NoError(t, os.WriteFile(confPath, []byte(
+		"Host testhost\n"+
+			"  IdentitiesOnly yes\n"+
+			"  IdentityFile /nonexistent/key\n",
+	), 0o600))
+
+	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
+	cfg.ConfigFinder(func() string { return confPath })
+
+	_, err := authMethods(cfg, Config{Machine: "testhost"}, "testhost", "user")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no authentication methods available")
+}
+
+func TestConfig_Dial_PasswordAuth(t *testing.T) {
+	t.Parallel()
+	const pass = "hunter2"
+	srv := newTestServerPassword(t, pass)
+
+	cfg := dialInsecure(srv.addr)
+	cfg.Password = pass
+
+	require.Equal(t, testOut, runCmd(t, cfg, testCmd))
+}
+
+func TestConfig_Dial_PasswordAuth_Wrong(t *testing.T) {
+	t.Parallel()
+	srv := newTestServerPassword(t, "correct")
+
+	cfg := dialInsecure(srv.addr)
+	cfg.Password = "wrong"
+
+	_, err := cfg.dial()
+	require.Error(t, err)
+}
+
 // dialInsecure returns a Config that connects to addr without host-key
 // verification, suitable for in-process test servers.
 func dialInsecure(addr string) Config {

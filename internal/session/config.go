@@ -562,8 +562,10 @@ func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _ string) ([]ss
 	keyPaths := buildKeyPaths(cfgPaths, h, identitiesOnly)
 
 	// First pass: collect allowed public keys (for agent filtering) and file signers.
-	var allowedPubs []ssh.PublicKey
-	var fileSigners []ssh.AuthMethod
+	var (
+		allowedPubs []ssh.PublicKey
+		fileSigners []ssh.AuthMethod
+	)
 	for _, p := range keyPaths {
 		pk, signer := loadKeyFile(p, c.Password)
 		if signer != nil {
@@ -572,6 +574,13 @@ func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _ string) ([]ss
 		if pk != nil {
 			allowedPubs = append(allowedPubs, pk)
 		}
+	}
+	if identitiesOnly && len(cfgPaths) > 0 && len(allowedPubs) == 0 {
+		slog.Warn("ssh auth: IdentitiesOnly is set but none of the configured IdentityFile paths could be loaded; "+
+			"agent keys will not be offered (key may exist only in agent, not on disk)",
+			"alias", alias,
+			"identity_files", cfgPaths,
+		)
 	}
 
 	// Agent: always consulted unless socket is empty. With IdentitiesOnly, only
@@ -588,6 +597,11 @@ func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _ string) ([]ss
 	}
 
 	m = append(m, fileSigners...)
+	if len(m) == 0 {
+		return nil, fmt.Errorf("no authentication methods available for %q: "+
+			"no password set, no readable key files found, and no SSH agent keys offered "+
+			"(if IdentitiesOnly is set, ensure the IdentityFile exists on disk or remove IdentitiesOnly)", alias)
+	}
 	return m, nil
 }
 
