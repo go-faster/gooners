@@ -575,47 +575,29 @@ func mapSpoolID(b *SpoolingBuffer) string {
 
 func (p *Pool) GetSpool(ctx context.Context, sessionID, spoolID string) (string, error) {
 	respCh := make(chan GetSpoolResponse, 1)
-	select {
-	case p.reqCh <- GetSpoolRequest{SessionID: sessionID, SpoolID: spoolID, resp: respCh}:
-	case <-ctx.Done():
+	resp, ok := send(ctx, p.reqCh, GetSpoolRequest{SessionID: sessionID, SpoolID: spoolID, resp: respCh}, respCh)
+	if !ok {
 		return "", ctx.Err()
 	}
-	select {
-	case resp := <-respCh:
-		return resp.Path, resp.Err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
+	return resp.Path, resp.Err
 }
 
 func (p *Pool) DeleteSpool(ctx context.Context, sessionID, spoolID string) error {
 	respCh := make(chan error, 1)
-	select {
-	case p.reqCh <- DeleteSpoolRequest{SessionID: sessionID, SpoolID: spoolID, resp: respCh}:
-	case <-ctx.Done():
+	err, ok := send(ctx, p.reqCh, DeleteSpoolRequest{SessionID: sessionID, SpoolID: spoolID, resp: respCh}, respCh)
+	if !ok {
 		return ctx.Err()
 	}
-	select {
-	case err := <-respCh:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return err
 }
 
 func (p *Pool) RegisterSpool(ctx context.Context, sessionID, spoolID, path string) error {
 	respCh := make(chan error, 1)
-	select {
-	case p.reqCh <- RegisterSpoolRequest{SessionID: sessionID, SpoolID: spoolID, Path: path, resp: respCh}:
-	case <-ctx.Done():
+	err, ok := send(ctx, p.reqCh, RegisterSpoolRequest{SessionID: sessionID, SpoolID: spoolID, Path: path, resp: respCh}, respCh)
+	if !ok {
 		return ctx.Err()
 	}
-	select {
-	case err := <-respCh:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return err
 }
 
 func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecRequest) {
@@ -857,121 +839,91 @@ func (p *Pool) Open(ctx context.Context, machine string) (string, error) {
 
 func (p *Pool) OpenCfg(ctx context.Context, cfg Config) (string, error) {
 	respCh := make(chan OpenResponse, 1)
-	select {
-	case p.reqCh <- OpenRequest{Config: cfg, resp: respCh}:
-	case <-ctx.Done():
+	resp, ok := send(ctx, p.reqCh, OpenRequest{Config: cfg, resp: respCh}, respCh)
+	if !ok {
 		return "", ctx.Err()
 	}
-	select {
-	case resp := <-respCh:
-		return resp.ID, resp.Err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
+	return resp.ID, resp.Err
 }
 
 func (p *Pool) Close(ctx context.Context, id string) error {
 	respCh := make(chan error, 1)
-	select {
-	case p.reqCh <- CloseRequest{ID: id, resp: respCh}:
-	case <-ctx.Done():
+	err, ok := send(ctx, p.reqCh, CloseRequest{ID: id, resp: respCh}, respCh)
+	if !ok {
 		return ctx.Err()
 	}
-	select {
-	case err := <-respCh:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return err
 }
 
 func (p *Pool) Get(ctx context.Context, id string) (*ssh.Client, error) {
 	respCh := make(chan GetResponse, 1)
-	select {
-	case p.reqCh <- GetRequest{ID: id, resp: respCh}:
-	case <-ctx.Done():
+	resp, ok := send(ctx, p.reqCh, GetRequest{ID: id, resp: respCh}, respCh)
+	if !ok {
 		return nil, ctx.Err()
 	}
-	select {
-	case resp := <-respCh:
-		return resp.Client, resp.Err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return resp.Client, resp.Err
 }
 
 func (p *Pool) List(ctx context.Context) ([]SessionInfo, error) {
 	respCh := make(chan []SessionInfo, 1)
-	select {
-	case p.reqCh <- ListRequest{resp: respCh}:
-	case <-ctx.Done():
+	resp, ok := send(ctx, p.reqCh, ListRequest{resp: respCh}, respCh)
+	if !ok {
 		return nil, ctx.Err()
 	}
-	select {
-	case resp := <-respCh:
-		return resp, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
+	return resp, nil
 }
 
 func (p *Pool) Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error) {
 	respCh := make(chan UploadResponse, 1)
-	select {
-	case p.reqCh <- UploadRequest{SessionID: sessionID, LocalPath: localPath, RemotePath: remotePath, resp: respCh}:
-	case <-ctx.Done():
+	resp, ok := send(ctx, p.reqCh, UploadRequest{SessionID: sessionID, LocalPath: localPath, RemotePath: remotePath, resp: respCh}, respCh)
+	if !ok {
 		return "", ctx.Err()
 	}
-	select {
-	case resp := <-respCh:
-		return resp.UploadID, resp.Err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
+	return resp.UploadID, resp.Err
 }
 
 func (p *Pool) UploadStatus(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error) {
 	respCh := make(chan UploadStatusResponse, 1)
-	select {
-	case p.reqCh <- UploadStatusRequest{SessionID: sessionID, UploadID: uploadID, resp: respCh}:
-	case <-ctx.Done():
+	resp, ok := send(ctx, p.reqCh, UploadStatusRequest{SessionID: sessionID, UploadID: uploadID, resp: respCh}, respCh)
+	if !ok {
 		return UploadStatusResponse{}, ctx.Err()
 	}
-	select {
-	case resp := <-respCh:
-		return resp, resp.Err
-	case <-ctx.Done():
-		return UploadStatusResponse{}, ctx.Err()
-	}
+	return resp, resp.Err
 }
 
 func (p *Pool) Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error) {
 	respCh := make(chan DownloadResponse, 1)
-	select {
-	case p.reqCh <- DownloadRequest{SessionID: sessionID, RemotePath: remotePath, LocalPath: localPath, resp: respCh}:
-	case <-ctx.Done():
+	resp, ok := send(ctx, p.reqCh, DownloadRequest{SessionID: sessionID, RemotePath: remotePath, LocalPath: localPath, resp: respCh}, respCh)
+	if !ok {
 		return "", ctx.Err()
 	}
-	select {
-	case resp := <-respCh:
-		return resp.DownloadID, resp.Err
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
+	return resp.DownloadID, resp.Err
 }
 
 func (p *Pool) DownloadStatus(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error) {
 	respCh := make(chan DownloadStatusResponse, 1)
-	select {
-	case p.reqCh <- DownloadStatusRequest{SessionID: sessionID, DownloadID: downloadID, resp: respCh}:
-	case <-ctx.Done():
+	resp, ok := send(ctx, p.reqCh, DownloadStatusRequest{SessionID: sessionID, DownloadID: downloadID, resp: respCh}, respCh)
+	if !ok {
 		return DownloadStatusResponse{}, ctx.Err()
+	}
+	return resp, resp.Err
+}
+
+// send dispatches req to the pool's request channel and waits for a response.
+// Returns (zero, false) if ctx is cancelled during send or receive.
+func send[Resp any](ctx context.Context, ch chan<- Request, req Request, respCh <-chan Resp) (Resp, bool) {
+	select {
+	case ch <- req:
+	case <-ctx.Done():
+		var zero Resp
+		return zero, false
 	}
 	select {
 	case resp := <-respCh:
-		return resp, resp.Err
+		return resp, true
 	case <-ctx.Done():
-		return DownloadStatusResponse{}, ctx.Err()
+		var zero Resp
+		return zero, false
 	}
 }
 
