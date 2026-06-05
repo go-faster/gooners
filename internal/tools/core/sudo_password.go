@@ -98,24 +98,32 @@ func (p *ConfigFilePasswordProvider) Password(_ context.Context, machine string)
 }
 
 // machineKeys returns the lookup keys to try for a machine string in order of
-// specificity: exact → host:port → host. This lets a bare hostname entry in
+// specificity: exact → user@host → host:port → host. This lets a bare hostname entry in
 // the config file match any user@ prefix or non-standard port.
 //
-//	"root@192.168.1.1:222" → ["root@192.168.1.1:222", "192.168.1.1:222", "192.168.1.1"]
-//	"192.168.1.1"          → ["192.168.1.1"]
+//     "root@192.168.1.1:222" → ["root@192.168.1.1:222", "root@192.168.1.1", "192.168.1.1:222", "192.168.1.1"]
+//     "192.168.1.1"          → ["192.168.1.1"]
 func machineKeys(machine string) []string {
 	keys := []string{machine}
 
-	// Strip optional user@ prefix.
 	hostPort := machine
-	if _, after, found := strings.Cut(machine, "@"); found {
+	userPrefix := ""
+	if before, after, found := strings.Cut(machine, "@"); found {
 		hostPort = after
-		keys = append(keys, hostPort)
+		userPrefix = before + "@"
 	}
 
-	// Strip optional :port suffix.
 	if host, _, err := net.SplitHostPort(hostPort); err == nil && host != hostPort {
+		if userPrefix != "" {
+			keys = append(keys, userPrefix+host)
+		}
+		if userPrefix != "" {
+			// Add hostPort (e.g. 192.168.1.1:222) after user@host
+			keys = append(keys, hostPort)
+		}
 		keys = append(keys, host)
+	} else if userPrefix != "" {
+		keys = append(keys, hostPort)
 	}
 
 	return keys
