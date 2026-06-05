@@ -162,3 +162,15 @@ type DeleteSpoolRequest struct {
 }
 
 func (DeleteSpoolRequest) isRequest() {}
+
+type MachineRequest struct {
+	ID   string
+	resp chan<- MachineResponse
+}
+
+func (MachineRequest) isRequest() {}
+
+type MachineResponse struct {
+	Machine string
+	Err     error
+}

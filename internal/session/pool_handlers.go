@@ -302,6 +302,15 @@ func (p *Pool) handleDeleteSpool(sessions map[string]*Session, r DeleteSpoolRequ
 	r.resp <- nil
 }
 
+func (p *Pool) handleMachine(sessions map[string]*Session, r MachineRequest) {
+	s, ok := sessions[r.ID]
+	if !ok {
+		r.resp <- MachineResponse{Err: fmt.Errorf("session not found: %s", r.ID)}
+	} else {
+		r.resp <- MachineResponse{Machine: s.Machine}
+	}
+}
+
 func (p *Pool) handleExec(sessions map[string]*Session, r ExecRequest) {
 	s, ok := sessions[r.SessionID]
 	if !ok {

@@ -46,7 +46,7 @@ Then point your client at `http://localhost:8080/mcp`.
 Notes:
 - Mount your `~/.ssh` read-only so `ssh_open` / `ssh_once_exec` can use your keys and `~/.ssh/config`.
 - The container working directory (`/work` above) becomes the upload root for `upload_file` / `download_file`.
-- For sudo password from Docker secret: `-sudo-password-file /run/secrets/sudo_pass` (mount secret or use `--secret` with BuildKit).
+- For passwords from Docker secret: `-password-file /run/secrets/ssh_pass` (mount secret or use `--secret` with BuildKit). The same file is used for both SSH login and sudo.
 - Non-root user `mcp` (uid 100) inside container.
 
 ## Flags
@@ -57,29 +57,51 @@ Notes:
 - `-disable-sudo` — do not register the `ssh_sudo_exec` tool. Useful when deploying to untrusted contexts to reduce the capability surface.
 - `-command-timeout <duration>` — default command timeout (default: `10s`).
 
-### Sudo password sources
+### Password sources
 
-Instead of passing `sudo_password` in every `ssh_sudo_exec` call, you can configure a server-level source. Exactly one of the following flags may be set:
+A single provider supplies passwords for both SSH login (`ssh_open`) and sudo (`ssh_sudo_exec`). Exactly one of the following flags may be set:
 
-| Flag | Source | Re-read? |
-|------|--------|----------|
-| `-sudo-password-file <path>` | Contents of a file (leading/trailing newline stripped) | Every call |
-| `-sudo-password-env <VAR>` | Value of an environment variable | Every call |
-| `-sudo-password-cmd <cmd>` | stdout of a command (e.g. `pass show host/sudo`) | Once, then cached |
+| Flag | Per-machine? | Source | Re-read? |
+|------|-------------|--------|----------|
+| `-password-env <VAR>` | No | Value of an environment variable | Every call |
+| `-password-file <path>` | No | Contents of a file (trailing newline stripped) | Every call |
+| `-password-config <path>` | Yes | `machine = password` config file (see format below) | Every call |
+| `-password-cmd <cmd>` | Yes | stdout of a command invoked with the machine name as its first argument | Cached per machine |
 
-```bash
-# From a file (e.g. Docker secret or tmpfs)
-./ssh-mcp -sudo-password-file /run/secrets/sudo_pass
+The per-call `sudo_password` field in `ssh_sudo_exec` always takes precedence over the server-level source. `ssh_open_cfg` does not consult the provider — use it when you want full explicit control over connection parameters.
 
-# From an env var
-SUDO_PASS=hunter2 ./ssh-mcp -sudo-password-env SUDO_PASS
+#### Config file format
 
-# From a credential helper
-./ssh-mcp -sudo-password-cmd "pass show myserver/sudo"
-./ssh-mcp -sudo-password-cmd "secret-tool lookup service ssh-mcp account sudo"
+```
+# ~/.ssh/passwords
+web-01 = hunter2
+db-01  = s3cr3t
 ```
 
-The per-call `sudo_password` field always takes precedence over the server-level source when both are provided.
+Lines starting with `#` and blank lines are ignored. The file is re-read on every connection or sudo call, so edits take effect immediately.
+
+#### Examples
+
+```bash
+# Global password from a file (e.g. Docker secret or tmpfs)
+./ssh-mcp -password-file /run/secrets/ssh_pass
+
+# Global password from an env var
+SSH_PASS=hunter2 ./ssh-mcp -password-env SSH_PASS
+
+# Per-machine config file
+./ssh-mcp -password-config ~/.ssh/passwords
+
+# Per-machine credential helper — machine name is passed as the first argument
+./ssh-mcp -password-cmd "pass show"
+# → runs: pass show web-01
+
+# For tools that require the machine name to be part of the path (e.g. 1Password),
+# use a wrapper script so the shell can interpolate it:
+# #!/bin/sh
+# op read "op://vault/ssh-passwords/$1/password"
+./ssh-mcp -password-cmd "/path/to/get-password.sh"
+```
 
 **Recommendation**: `stdio` is the standard MCP transport and works perfectly with all standard clients (Claude Desktop, Claude Code, Cursor). `streamable-http` and `sse` are also available if you prefer connecting via HTTP without using the `mcp` CLI wrapper.
 
@@ -127,6 +149,19 @@ Start the server:
     "ssh": {
       "command": "/path/to/ssh-mcp",
       "args": ["-log-file", "/tmp/ssh-mcp.log"]
+    }
+  }
+}
+```
+
+With per-machine passwords from a config file:
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "/path/to/ssh-mcp",
+      "args": ["-password-config", "/home/user/.ssh/passwords", "-log-file", "/tmp/ssh-mcp.log"]
     }
   }
 }

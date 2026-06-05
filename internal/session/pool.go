@@ -218,6 +218,8 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				p.handleGetSpool(sessions, r)
 			case DeleteSpoolRequest:
 				p.handleDeleteSpool(sessions, r)
+			case MachineRequest:
+				p.handleMachine(sessions, r)
 			case ExecRequest:
 				p.handleExec(sessions, r)
 			}
@@ -673,6 +675,15 @@ func (p *Pool) Get(ctx context.Context, id string) (*ssh.Client, error) {
 		return nil, ctx.Err()
 	}
 	return resp.Client, resp.Err
+}
+
+func (p *Pool) Machine(ctx context.Context, id string) (string, error) {
+	respCh := make(chan MachineResponse, 1)
+	resp, ok := send(ctx, p.reqCh, MachineRequest{ID: id, resp: respCh}, respCh)
+	if !ok {
+		return "", ctx.Err()
+	}
+	return resp.Machine, resp.Err
 }
 
 func (p *Pool) List(ctx context.Context) ([]SessionInfo, error) {

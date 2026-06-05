@@ -555,6 +555,9 @@ func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _, home string)
 	}
 
 	if c.Password != "" {
+		// KeyboardInteractive answers every challenge with the password. This covers
+		// servers that use PAM keyboard-interactive as a password fallback, but will
+		// fail if the server presents a true MFA prompt (e.g. "Verification Code:").
 		m = append(m, ssh.Password(c.Password), ssh.KeyboardInteractive(func(_, _ string, questions []string, _ []bool) ([]string, error) {
 			answers := make([]string, len(questions))
 			for i := range questions {

@@ -22,16 +22,17 @@ import (
 type RegisterOptions struct {
 	// DisableSudo prevents registration of the ssh_sudo_exec tool.
 	DisableSudo bool
-	// SudoPassword is a server-level fallback used when the per-call sudo_password
-	// field is empty. Supports file, env, and credential-command sources.
-	SudoPassword SudoPasswordProvider
+	// Passwords is a server-level provider for both SSH login passwords and sudo
+	// passwords. It is keyed by machine name and consulted when no per-call
+	// password is supplied. Supports env, file, config-file, and exec sources.
+	Passwords PasswordProvider
 }
 
 func Register(s *mcp.Server, p *session.Pool, opts RegisterOptions) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_open",
-		Description: "Open SSH connection using defaults from ~/.ssh/config and keys.",
-	}, openHandler(p))
+		Description: "Open SSH connection using defaults from ~/.ssh/config and keys. Falls back to a server-level password source if configured.",
+	}, openHandler(p, opts.Passwords))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_open_cfg",
@@ -64,8 +65,8 @@ func Register(s *mcp.Server, p *session.Pool, opts RegisterOptions) {
 	if !opts.DisableSudo {
 		mcputil.Register(s, mcputil.ToolDef{
 			Name:        "ssh_sudo_exec",
-			Description: "Execute a command with sudo on an open SSH session. Prefer specialized tools when they cover the task; use this only when elevated privileges are required. If sudo requires a password, pass it via sudo_password or configure a server-level source (-sudo-password-file/-env/-cmd). Otherwise uses sudo -n.",
-		}, execHandler(p, true, opts.SudoPassword))
+			Description: "Execute a command with sudo on an open SSH session. Prefer specialized tools when they cover the task; use this only when elevated privileges are required. If sudo requires a password, pass it via sudo_password or configure a server-level source (-password-file/-env/-config/-cmd). Otherwise uses sudo -n.",
+		}, execHandler(p, true, opts.Passwords))
 	}
 
 	mcputil.Register(s, mcputil.ToolDef{
@@ -95,7 +96,7 @@ type openParams struct {
 	Machine string `json:"machine" jsonschema:"host, user@host, host:port etc."`
 }
 
-func openHandler(p *session.Pool) mcp.ToolHandlerFor[openParams, mcputil.SessionResult] {
+func openHandler(p *session.Pool, passwords PasswordProvider) mcp.ToolHandlerFor[openParams, mcputil.SessionResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args openParams) (*mcp.CallToolResult, mcputil.SessionResult, error) {
 		if args.Machine == "" {
 			return nil, mcputil.SessionResult{}, fmt.Errorf("machine is required")
@@ -104,7 +105,21 @@ func openHandler(p *session.Pool) mcp.ToolHandlerFor[openParams, mcputil.Session
 		openCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 
-		res, err := p.Open(openCtx, args.Machine)
+		var pwd string
+		if passwords != nil {
+			var pwdErr error
+			pwd, pwdErr = passwords.Password(openCtx, args.Machine)
+			if pwdErr != nil && !errors.Is(pwdErr, ErrPasswordNotFound) {
+				return nil, mcputil.SessionResult{}, fmt.Errorf("resolving SSH password: %w", pwdErr)
+			}
+		}
+		var res session.OpenResult
+		var err error
+		if pwd != "" {
+			res, err = p.OpenCfg(openCtx, session.Config{Machine: args.Machine, Password: pwd})
+		} else {
+			res, err = p.Open(openCtx, args.Machine)
+		}
 		if err != nil {
 			return nil, mcputil.SessionResult{}, err
 		}
@@ -201,7 +216,7 @@ type execParams struct {
 	SudoPassword string `json:"sudo_password,omitempty" jsonschema:"Sudo password if required"`
 }
 
-func execHandler(p *session.Pool, sudo bool, sudoPasswd SudoPasswordProvider) mcp.ToolHandlerFor[execParams, mcputil.ExecResult] {
+func execHandler(p *session.Pool, sudo bool, passwords PasswordProvider) mcp.ToolHandlerFor[execParams, mcputil.ExecResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args execParams) (*mcp.CallToolResult, mcputil.ExecResult, error) {
 		if args.SessionID == "" || args.Command == "" {
 			return nil, mcputil.ExecResult{}, fmt.Errorf("session_id and command are required")
@@ -210,9 +225,13 @@ func execHandler(p *session.Pool, sudo bool, sudoPasswd SudoPasswordProvider) mc
 			return nil, mcputil.ExecResult{}, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
 		}
 		sudoPwd := args.SudoPassword
-		if sudoPwd == "" && sudo && sudoPasswd != nil {
-			pwd, err := sudoPasswd.Password(ctx)
+		if sudoPwd == "" && sudo && passwords != nil {
+			machine, err := p.Machine(ctx, args.SessionID)
 			if err != nil {
+				return nil, mcputil.ExecResult{}, fmt.Errorf("looking up session machine: %w", err)
+			}
+			pwd, err := passwords.Password(ctx, machine)
+			if err != nil && !errors.Is(err, ErrPasswordNotFound) {
 				return nil, mcputil.ExecResult{}, fmt.Errorf("resolving sudo password: %w", err)
 			}
 			sudoPwd = pwd

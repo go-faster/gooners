@@ -1,7 +1,9 @@
 package core
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,18 +13,24 @@ import (
 	"github.com/kballard/go-shellquote"
 )
 
-// SudoPasswordProvider resolves a sudo password from a configured source.
+// ErrPasswordNotFound is returned by PasswordProvider when no password is
+// configured for the requested machine. Callers should treat this as
+// "no password available" rather than a hard error.
+var ErrPasswordNotFound = errors.New("no password configured for machine")
+
+// PasswordProvider resolves a password for a given machine.
 // Implementations must be safe for concurrent use.
-type SudoPasswordProvider interface {
-	Password(ctx context.Context) (string, error)
+type PasswordProvider interface {
+	Password(ctx context.Context, machine string) (string, error)
 }
 
 // EnvPasswordProvider reads the password from an environment variable.
+// The machine argument is ignored; the same password is returned for all machines.
 type EnvPasswordProvider struct {
 	VarName string
 }
 
-func (p *EnvPasswordProvider) Password(_ context.Context) (string, error) {
+func (p *EnvPasswordProvider) Password(_ context.Context, _ string) (string, error) {
 	v := os.Getenv(p.VarName)
 	if v == "" {
 		return "", fmt.Errorf("env var %q is empty or unset", p.VarName)
@@ -32,51 +40,95 @@ func (p *EnvPasswordProvider) Password(_ context.Context) (string, error) {
 
 // FilePasswordProvider reads the password from a file, stripping a trailing newline.
 // The file is re-read on every call so rotation is picked up automatically.
+// The machine argument is ignored; the same password is returned for all machines.
 type FilePasswordProvider struct {
 	Path string
 }
 
-func (p *FilePasswordProvider) Password(_ context.Context) (string, error) {
+func (p *FilePasswordProvider) Password(_ context.Context, _ string) (string, error) {
 	data, err := os.ReadFile(p.Path)
 	if err != nil {
-		return "", fmt.Errorf("reading sudo password file %q: %w", p.Path, err)
+		return "", fmt.Errorf("reading password file %q: %w", p.Path, err)
 	}
 	return strings.TrimRight(string(data), "\n"), nil
 }
 
-// CommandPasswordProvider runs a shell command and uses its stdout as the password.
-// The result is cached after the first successful invocation so the command is
-// not re-executed on every sudo call.
+// ConfigFilePasswordProvider reads passwords from a key=value config file keyed by
+// machine name. Lines starting with '#' and blank lines are ignored. The file is
+// re-read on every call so edits are picked up without restarting the server.
+//
+// Format:
+//
+//	# comment
+//	web-01 = hunter2
+//	db-01  = s3cr3t
+type ConfigFilePasswordProvider struct {
+	Path string
+}
+
+func (p *ConfigFilePasswordProvider) Password(_ context.Context, machine string) (string, error) {
+	f, err := os.Open(p.Path)
+	if err != nil {
+		return "", fmt.Errorf("opening password config %q: %w", p.Path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(k) == machine {
+			return strings.TrimSpace(v), nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", fmt.Errorf("reading password config %q: %w", p.Path, err)
+	}
+	return "", fmt.Errorf("%w: %s", ErrPasswordNotFound, machine)
+}
+
+// CommandPasswordProvider runs a command with the machine name appended as the
+// first argument and uses its stdout as the password. Results are cached per
+// machine after the first successful invocation.
 type CommandPasswordProvider struct {
 	Command string
 	mu      sync.Mutex
-	cached  string
-	ok      bool
+	cache   map[string]string
 }
 
-func (p *CommandPasswordProvider) Password(_ context.Context) (string, error) {
+func (p *CommandPasswordProvider) Password(_ context.Context, machine string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.ok {
-		return p.cached, nil
+	if v, ok := p.cache[machine]; ok {
+		return v, nil
 	}
 	argv, err := shellquote.Split(p.Command)
 	if err != nil {
-		return "", fmt.Errorf("parsing sudo password command %q: %w", p.Command, err)
+		return "", fmt.Errorf("parsing password command %q: %w", p.Command, err)
 	}
 	if len(argv) == 0 {
-		return "", fmt.Errorf("sudo password command is empty")
+		return "", fmt.Errorf("password command is empty")
 	}
+	argv = append(argv, machine)
 	// Exec directly without a shell to prevent command injection.
-	// Note: shell features (pipes, redirects, variable expansion) are not supported;
+	// Shell features (pipes, redirects, variable expansion) are not supported;
 	// use a wrapper script if needed.
 	// Not using CommandContext so a canceled request context doesn't abort the
 	// credential helper and poison the cache for subsequent calls.
 	out, err := exec.Command(argv[0], argv[1:]...).Output() //nolint:gosec // G204: argv[0] is operator-supplied config, not user input
 	if err != nil {
-		return "", fmt.Errorf("sudo password command %q: %w", p.Command, err)
+		return "", fmt.Errorf("password command %q (machine %q): %w", p.Command, machine, err)
 	}
-	p.cached = strings.TrimRight(string(out), "\n")
-	p.ok = true
-	return p.cached, nil
+	pwd := strings.TrimRight(string(out), "\n")
+	if p.cache == nil {
+		p.cache = make(map[string]string)
+	}
+	p.cache[machine] = pwd
+	return pwd, nil
 }
