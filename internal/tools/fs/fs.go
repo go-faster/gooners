@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -288,7 +289,7 @@ func statHandler(p SessionProvider) mcp.ToolHandlerFor[statParams, mcputil.Comma
 		}
 
 		fi := fileInfo{
-			Name:    info.Name(),
+			Name:    path.Base(args.Path),
 			Size:    info.Size(),
 			Mode:    info.Mode(),
 			ModTime: info.ModTime(),

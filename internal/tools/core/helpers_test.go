@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -109,9 +110,11 @@ func TestRenameOrCopy(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "hello", string(data))
 
-		stat, err := os.Stat(dst)
-		require.NoError(t, err)
-		require.Equal(t, os.FileMode(0o600), stat.Mode().Perm())
+		if runtime.GOOS != "windows" {
+			stat, err := os.Stat(dst)
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o600), stat.Mode().Perm())
+		}
 	})
 
 	t.Run("copy fallback", func(t *testing.T) {
@@ -129,8 +132,10 @@ func TestRenameOrCopy(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, "hello fallback", string(data))
 
-		stat, err := os.Stat(dst)
-		require.NoError(t, err)
-		require.Equal(t, os.FileMode(0o600), stat.Mode().Perm())
+		if runtime.GOOS != "windows" {
+			stat, err := os.Stat(dst)
+			require.NoError(t, err)
+			require.Equal(t, os.FileMode(0o600), stat.Mode().Perm())
+		}
 	})
 }
