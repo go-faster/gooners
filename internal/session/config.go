@@ -532,7 +532,7 @@ func multiAddrHostKeyCallback(kh, home string, addresses ...string) ssh.HostKeyC
 	}
 }
 
-func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _ string, home string) ([]ssh.AuthMethod, error) {
+func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _, home string) ([]ssh.AuthMethod, error) {
 	if cfg == nil {
 		cfg = newSettings(home)
 	}
