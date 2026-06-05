@@ -42,6 +42,12 @@ var (
 // package (via sync.Once). This reduces wall time from ~9 container startups
 // to 1 (biggest practical improvement for the suite).
 func TestMain(m *testing.M) {
+	tmpDir, err := os.MkdirTemp("", "gooners-e2e-home-*")
+	if err != nil {
+		panic(err)
+	}
+	session.SetTestHomeDir(tmpDir)
+	defer os.RemoveAll(tmpDir)
 	os.Exit(m.Run())
 }
 

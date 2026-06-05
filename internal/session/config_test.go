@@ -14,6 +14,14 @@ import (
 	"github.com/go-faster/gooners/internal/sshutil"
 )
 
+func init() {
+	tmpDir, err := os.MkdirTemp("", "gooners-test-home-*")
+	if err != nil {
+		panic(err)
+	}
+	testHomeDir = tmpDir
+}
+
 func TestAuthMethods_IdentitiesOnly_MissingKeyFile(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()

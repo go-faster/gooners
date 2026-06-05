@@ -40,7 +40,7 @@ type Config struct {
 //     the resolved IP.
 func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfig, tcpAddr, sshAddr string, err error) {
 	if cfg == nil {
-		cfg = &gosshconfig.UserSettings{IgnoreErrors: false}
+		cfg = newSettings()
 	}
 	usr, alias, port := parseTarget(c.Machine)
 	if alias == "" {
@@ -117,7 +117,7 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 // dial opens an SSH connection to c.Machine, following ProxyJump / ProxyCommand
 // directives from ~/.ssh/config (unless overridden by Config fields).
 func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error) {
-	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
+	cfg := newSettings()
 	cc, tcpAddr, sshAddr, err := c.clientConfig(cfg)
 	if err != nil {
 		return nil, "", "", err
@@ -273,7 +273,7 @@ func (jc *jumpedConn) Close() error {
 // consecutive failures are observed (default 3, matching OpenSSH).
 func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias string) {
 	if cfg == nil {
-		cfg = &gosshconfig.UserSettings{IgnoreErrors: false}
+		cfg = newSettings()
 	}
 	intervalStr := cfg.Get(alias, "ServerAliveInterval")
 	if intervalStr == "" {
@@ -445,7 +445,31 @@ func currentUser() string {
 	return "root"
 }
 
+var (
+	testHomeDir   string
+	testAgentSock string
+)
+
+// SetTestHomeDir overrides the home directory and disables SSH agent fallback for tests.
+func SetTestHomeDir(dir string) {
+	testHomeDir = dir
+}
+
+func newSettings() *gosshconfig.UserSettings {
+	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
+	cfg.ConfigFinder(func() string {
+		return filepath.Join(homeDir(), ".ssh", "config")
+	})
+	return cfg
+}
+
 func homeDir() string {
+	if testHomeDir != "" {
+		return testHomeDir
+	}
+	if h := os.Getenv("HOME"); h != "" {
+		return h
+	}
 	if u, err := user.Current(); err == nil {
 		return u.HomeDir
 	}
@@ -521,7 +545,7 @@ func multiAddrHostKeyCallback(kh string, addresses ...string) ssh.HostKeyCallbac
 
 func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _ string) ([]ssh.AuthMethod, error) {
 	if cfg == nil {
-		cfg = &gosshconfig.UserSettings{IgnoreErrors: false}
+		cfg = newSettings()
 	}
 	var m []ssh.AuthMethod
 	h := homeDir()
@@ -640,10 +664,16 @@ func buildKeyPaths(cfgPaths []string, home string, identitiesOnly bool) []string
 // resolveAgentSock returns the SSH agent socket path for alias from ssh_config.
 func resolveAgentSock(cfg *gosshconfig.UserSettings, alias, home string) string {
 	if cfg == nil {
-		cfg = &gosshconfig.UserSettings{IgnoreErrors: false}
+		cfg = newSettings()
 	}
 	switch ia := cfg.Get(alias, "IdentityAgent"); strings.ToLower(ia) {
 	case "", "ssh_auth_sock":
+		if testAgentSock != "" {
+			return testAgentSock
+		}
+		if testHomeDir != "" {
+			return ""
+		}
 		return os.Getenv("SSH_AUTH_SOCK")
 	case "none":
 		return ""
