@@ -10,6 +10,7 @@ import (
 
 	gosshconfig "github.com/kevinburke/ssh_config"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/ssh"
 
 	"github.com/go-faster/gooners/internal/sshutil"
 )
@@ -250,4 +251,22 @@ func TestDetectPlatform(t *testing.T) {
 			require.Equal(t, tc.expected, got)
 		})
 	}
+}
+
+func TestKnownHostsAlgorithms(t *testing.T) {
+	t.Parallel()
+	srv := newTestServer(t)
+
+	// Write a known_hosts file containing only the server's ED25519 host key.
+	tmp := t.TempDir()
+	khPath := filepath.Join(tmp, "known_hosts")
+
+	line := ssh.MarshalAuthorizedKey(srv.hostKey.PublicKey())
+	// known_hosts format: "<addr> <keytype> <base64>"
+	entry := srv.addr + " " + string(line)
+	require.NoError(t, os.WriteFile(khPath, []byte(entry), 0o600))
+
+	algos := knownHostsAlgorithms(khPath, tmp, srv.addr)
+	require.NotEmpty(t, algos, "expected at least one algorithm for known host")
+	require.Contains(t, algos, srv.hostKey.PublicKey().Type())
 }

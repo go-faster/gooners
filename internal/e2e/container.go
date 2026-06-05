@@ -17,6 +17,11 @@ type ContainerOpts struct {
 	// the user's password. Default (false) keeps the image's passwordless sudo,
 	// which is required by tools like proc_kill that use "sudo -n".
 	SudoRequirePassword bool
+
+	// PreferECDSA patches sshd_config to advertise ECDSA host keys before
+	// ED25519. Use this to simulate a server whose preferred key type differs
+	// from what is stored in a client's known_hosts file.
+	PreferECDSA bool
 }
 
 // NewSudoTestContainer starts a linuxserver/openssh-server container with sudo access
@@ -50,6 +55,13 @@ func NewSudoTestContainer(ctx context.Context, opts ContainerOpts) (addr, user, 
 	if opts.SudoRequirePassword {
 		// Remove NOPASSWD from every sudoers file so sudo prompts for a password.
 		installScript += "; find /etc/sudoers.d/ -type f -exec sed -i 's/ NOPASSWD:/ /g' {} + 2>/dev/null; sed -i 's/ NOPASSWD:/ /g' /etc/sudoers 2>/dev/null || true"
+	}
+	if opts.PreferECDSA {
+		// Reorder HostKeyAlgorithms so ECDSA is advertised before ED25519.
+		// This simulates a server whose preferred key type differs from what the
+		// client has in known_hosts (the scenario that triggered the key-mismatch bug).
+		installScript += "; echo 'HostKeyAlgorithms ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-ed25519,rsa-sha2-512,rsa-sha2-256' >> /config/ssh/sshd_config" +
+			"; pkill -HUP sshd || kill -HUP $(cat /var/run/sshd.pid 2>/dev/null) || true"
 	}
 	installCmd := testcontainers.NewRawCommand([]string{"/bin/sh", "-c", installScript})
 	if err := testcontainers.WithAfterReadyCommand(installCmd)(&genReq); err != nil {

@@ -2,6 +2,8 @@ package session
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	gosshconfig "github.com/kevinburke/ssh_config"
@@ -96,10 +99,13 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 	// known_hosts is typically keyed by the user) and the resolved IP (how
 	// ssh-keyscan or direct-IP connections store entries).
 	var hkcb ssh.HostKeyCallback
+	var addrs []string
 	if host != alias {
 		hkcb = multiAddrHostKeyCallback(c.KnownHosts, home, sshAddr, tcpAddr)
+		addrs = []string{sshAddr, tcpAddr}
 	} else {
 		hkcb = hostKeyCallback(c.KnownHosts, home)
+		addrs = []string{sshAddr}
 	}
 
 	auth, err := authMethods(cfg, c, alias, usr, home)
@@ -107,12 +113,20 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 		return nil, "", "", err
 	}
 
-	return &ssh.ClientConfig{
+	cc = &ssh.ClientConfig{
 		User:            usr,
 		Auth:            auth,
 		HostKeyCallback: hkcb,
 		Timeout:         timeout,
-	}, tcpAddr, sshAddr, nil
+	}
+	// Restrict host key algorithms to those actually stored in known_hosts for
+	// this host. Without this, the server may present a key type (e.g. ECDSA)
+	// that differs from what is stored (e.g. ED25519), causing a spurious
+	// "key mismatch" error even though the correct key is in known_hosts.
+	if algos := knownHostsAlgorithms(c.KnownHosts, home, addrs...); len(algos) > 0 {
+		cc.HostKeyAlgorithms = algos
+	}
+	return cc, tcpAddr, sshAddr, nil
 }
 
 // dial opens an SSH connection to c.Machine, following ProxyJump / ProxyCommand
@@ -496,6 +510,42 @@ func hostKeyCallback(kh, home string) ssh.HostKeyCallback {
 	return cb
 }
 
+// knownHostsAlgorithms returns the host key algorithms stored in known_hosts for
+// the given addresses. It probes the callback with a throw-away key: if the host
+// is known, knownhosts returns KeyError{Want:[storedKeys]}, from which we extract
+// the key types. This mirrors what OpenSSH does to build its HostKeyAlgorithms
+// list and avoids spurious "key mismatch" errors when the server offers multiple
+// key types but only one is stored in known_hosts.
+func knownHostsAlgorithms(kh, home string, addrs ...string) []string {
+	cb := hostKeyCallback(kh, home)
+
+	// Use a fixed throw-away ed25519 key as the probe.
+	var (
+		probeKey  = throwawayPublicKey()
+		dummyAddr = &net.TCPAddr{} // non-nil to avoid panics inside knownhosts
+
+		seen  = make(map[string]struct{})
+		algos []string
+	)
+	for _, addr := range addrs {
+		err := cb(addr, dummyAddr, probeKey)
+
+		var keyErr *knownhosts.KeyError
+		if !errors.As(err, &keyErr) {
+			continue
+		}
+
+		for _, wk := range keyErr.Want {
+			t := wk.Key.Type()
+			if _, dup := seen[t]; !dup {
+				seen[t] = struct{}{}
+				algos = append(algos, t)
+			}
+		}
+	}
+	return algos
+}
+
 // multiAddrHostKeyCallback returns a HostKeyCallback that checks addresses[0]
 // (the alias) first, then falls back to addresses[1:] (resolved IPs).
 //
@@ -718,6 +768,20 @@ func filteredAgentSigners(ac agent.ExtendedAgent, allowed []ssh.PublicKey) func(
 		return out, nil
 	}
 }
+
+// throwawayPublicKey returns a stable throw-away ED25519 public key used as a
+// probe in knownHostsAlgorithms. Generated once on first use.
+var throwawayPublicKey = sync.OnceValue(func() ssh.PublicKey {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		panic("throwawayPublicKey: " + err.Error())
+	}
+	signer, err := ssh.NewSignerFromKey(priv)
+	if err != nil {
+		panic("throwawayPublicKey: " + err.Error())
+	}
+	return signer.PublicKey()
+})
 
 func tryParseWithPass(pass string, key []byte) (ssh.Signer, bool) {
 	if pass == "" {
