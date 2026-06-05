@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,7 +267,7 @@ func TestKnownHostsAlgorithms(t *testing.T) {
 	entry := srv.addr + " " + string(line)
 	require.NoError(t, os.WriteFile(khPath, []byte(entry), 0o600))
 
-	algos := knownHostsAlgorithms(khPath, tmp, srv.addr)
+	algos := knownHostsAlgorithms(khPath, tmp, []string{srv.addr}, slog.New(slog.DiscardHandler))
 	require.NotEmpty(t, algos, "expected at least one algorithm for known host")
 	require.Contains(t, algos, srv.hostKey.PublicKey().Type())
 }

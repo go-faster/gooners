@@ -107,12 +107,14 @@ type Pool struct {
 	reqCh          chan Request
 	commandTimeout time.Duration
 	maxOutputBytes int64
+	logger         *slog.Logger
 }
 
 // PoolOptions contains configuration for a new Pool.
 type PoolOptions struct {
 	CommandTimeout time.Duration
 	MaxOutputBytes int64
+	Logger         *slog.Logger
 }
 
 func (opts *PoolOptions) setDefaults() {
@@ -122,6 +124,9 @@ func (opts *PoolOptions) setDefaults() {
 	if opts.MaxOutputBytes <= 0 {
 		opts.MaxOutputBytes = 8192 // default 8KB
 	}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
 }
 
 func NewPool(opts PoolOptions) *Pool {
@@ -130,6 +135,7 @@ func NewPool(opts PoolOptions) *Pool {
 		reqCh:          make(chan Request),
 		commandTimeout: opts.CommandTimeout,
 		maxOutputBytes: opts.MaxOutputBytes,
+		logger:         opts.Logger,
 	}
 }
 
@@ -163,13 +169,19 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 }
 
 func (p *Pool) Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error) {
-	return p.RunWithOptions(ctx, sessionID, cmd, sshutil.RunOptions{Timeout: p.CommandTimeout()})
+	return p.RunWithOptions(ctx, sessionID, cmd, sshutil.RunOptions{
+		Timeout: p.CommandTimeout(),
+		Logger:  p.logger,
+	})
 }
 
 func (p *Pool) RunWithOptions(ctx context.Context, sessionID, cmd string, opts sshutil.RunOptions) (sshutil.Result, error) {
 	client, err := p.Get(ctx, sessionID)
 	if err != nil {
 		return sshutil.Result{}, err
+	}
+	if opts.Logger == nil {
+		opts.Logger = p.logger
 	}
 	return sshutil.Run(ctx, client, cmd, opts)
 }
@@ -189,7 +201,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				_ = os.RemoveAll(sessionDir)
 
 				_ = s.client.Close()
-				slog.Debug("ssh session closed (shutdown)", "id", s.ID, "machine", s.Machine)
+				p.logger.Debug("ssh session closed (shutdown)", "id", s.ID, "machine", s.Machine)
 			}
 			return
 		case res := <-dialCh:
@@ -427,7 +439,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 		}
 	}
 
-	slog.DebugContext(ctx, "ssh run start", "command", full)
+	p.logger.DebugContext(ctx, "ssh run start", "command", full)
 
 	type sessionResult struct {
 		sess *ssh.Session
@@ -442,7 +454,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 	var sess *ssh.Session
 	select {
 	case <-r.cancel:
-		slog.DebugContext(ctx, "ssh run canceled by handler during NewSession", "duration", time.Since(start))
+		p.logger.DebugContext(ctx, "ssh run canceled by handler during NewSession", "duration", time.Since(start))
 		r.resp <- ExecResponse{Err: fmt.Errorf("handler timeout during NewSession")}
 		go func() {
 			if res := <-sessCh; res.err == nil {
@@ -487,7 +499,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 	select {
 	case <-r.cancel:
 		out, errOut := stdout.String(), stderr.String()
-		slog.DebugContext(ctx, "ssh run canceled by handler",
+		p.logger.DebugContext(ctx, "ssh run canceled by handler",
 			"duration", time.Since(start),
 			"stdout_len", len(out),
 			"stderr_len", len(errOut),
@@ -504,7 +516,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 		return
 	case <-ctx.Done():
 		out, errOut := stdout.String(), stderr.String()
-		slog.DebugContext(ctx, "ssh run canceled by context",
+		p.logger.DebugContext(ctx, "ssh run canceled by context",
 			"err", ctx.Err(),
 			"duration", time.Since(start),
 			"stdout_len", len(out),
@@ -546,7 +558,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			var exitErr *ssh.ExitError
 			if errors.As(err, &exitErr) {
 				res.ExitCode = exitErr.ExitStatus()
-				slog.DebugContext(ctx, "ssh run exited",
+				p.logger.DebugContext(ctx, "ssh run exited",
 					"exit_code", res.ExitCode,
 					"duration", dur,
 					"stdout_len", len(res.Stdout),
@@ -558,10 +570,10 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 				} else {
 					res.Err = err
 				}
-				slog.DebugContext(ctx, "ssh run error", "err", err, "duration", dur)
+				p.logger.DebugContext(ctx, "ssh run error", "err", err, "duration", dur)
 			}
 		} else {
-			slog.DebugContext(ctx, "ssh run success",
+			p.logger.DebugContext(ctx, "ssh run success",
 				"duration", dur,
 				"stdout_len", len(res.Stdout),
 				"stderr_len", len(res.Stderr),

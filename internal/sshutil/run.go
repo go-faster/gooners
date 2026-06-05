@@ -20,11 +20,15 @@ const DefaultTimeout = 10 * time.Second
 
 type RunOptions struct {
 	Timeout time.Duration
+	Logger  *slog.Logger
 }
 
 func (opts *RunOptions) setDefaults() {
 	if opts.Timeout == 0 {
 		opts.Timeout = DefaultTimeout
+	}
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
 	}
 }
 
@@ -59,7 +63,7 @@ func Run(ctx context.Context, client *ssh.Client, command string, opts RunOption
 	defer cancel()
 
 	start := time.Now()
-	slog.DebugContext(runCtx, "ssh run start", "command", command)
+	opts.Logger.DebugContext(runCtx, "ssh run start", "command", command)
 
 	type sessionResult struct {
 		sess *ssh.Session
@@ -74,7 +78,7 @@ func Run(ctx context.Context, client *ssh.Client, command string, opts RunOption
 	var sess *ssh.Session
 	select {
 	case <-runCtx.Done():
-		slog.DebugContext(runCtx, "ssh run canceled during NewSession", "err", runCtx.Err(), "duration", time.Since(start))
+		opts.Logger.DebugContext(runCtx, "ssh run canceled during NewSession", "err", runCtx.Err(), "duration", time.Since(start))
 		go func() {
 			if res := <-sessCh; res.err == nil {
 				_ = res.sess.Close()
@@ -83,7 +87,7 @@ func Run(ctx context.Context, client *ssh.Client, command string, opts RunOption
 		return Result{}, runCtx.Err()
 	case res := <-sessCh:
 		if res.err != nil {
-			slog.DebugContext(runCtx, "ssh run session error", "err", res.err, "duration", time.Since(start))
+			opts.Logger.DebugContext(runCtx, "ssh run session error", "err", res.err, "duration", time.Since(start))
 			return Result{}, res.err
 		}
 		sess = res.sess
@@ -110,9 +114,8 @@ func Run(ctx context.Context, client *ssh.Client, command string, opts RunOption
 			_ = sess.Close()
 		}()
 		out, errOut := stdout.String(), stderr.String()
-		slog.DebugContext(runCtx, "ssh run canceled",
-			"err", runCtx.Err(),
-			"duration", time.Since(start),
+		opts.Logger.DebugContext(runCtx, "ssh run canceled",
+			"err", runCtx.Err(), "duration", time.Since(start),
 			"stdout_len", len(out),
 			"stderr_len", len(errOut),
 		)
@@ -131,18 +134,17 @@ func Run(ctx context.Context, client *ssh.Client, command string, opts RunOption
 		if err != nil {
 			if e, ok := err.(*ssh.ExitError); ok {
 				res.ExitCode = e.ExitStatus()
-				slog.DebugContext(runCtx, "ssh run exited",
-					"exit_code", res.ExitCode,
-					"duration", dur,
+				opts.Logger.DebugContext(runCtx, "ssh run exited",
+					"exit_code", res.ExitCode, "duration", dur,
 					"stdout_len", len(res.Stdout),
 					"stderr_len", len(res.Stderr),
 				)
 			} else {
-				slog.DebugContext(runCtx, "ssh run error", "err", err, "duration", dur)
+				opts.Logger.DebugContext(runCtx, "ssh run error", "err", err, "duration", dur)
 				return res, err
 			}
 		} else {
-			slog.DebugContext(runCtx, "ssh run success",
+			opts.Logger.DebugContext(runCtx, "ssh run success",
 				"duration", dur,
 				"stdout_len", len(res.Stdout),
 				"stderr_len", len(res.Stderr),

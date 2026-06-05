@@ -101,8 +101,8 @@ func (p *ConfigFilePasswordProvider) Password(_ context.Context, machine string)
 // specificity: exact → user@host → host:port → host. This lets a bare hostname entry in
 // the config file match any user@ prefix or non-standard port.
 //
-//     "root@192.168.1.1:222" → ["root@192.168.1.1:222", "root@192.168.1.1", "192.168.1.1:222", "192.168.1.1"]
-//     "192.168.1.1"          → ["192.168.1.1"]
+//	"root@192.168.1.1:222" → ["root@192.168.1.1:222", "root@192.168.1.1", "192.168.1.1:222", "192.168.1.1"]
+//	"192.168.1.1"          → ["192.168.1.1"]
 func machineKeys(machine string) []string {
 	keys := []string{machine}
 

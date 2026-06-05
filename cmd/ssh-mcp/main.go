@@ -52,29 +52,46 @@ func runServer(ctx context.Context, s *mcp.Server, transport, addr string) error
 }
 
 func main() {
-	logFile := flag.String("log-file", "", "path to log file (enables structured debug logging)")
-	transport := flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
-	addr := flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
-	disableSudo := flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
-	passwordFile := flag.String("password-file", "", "file containing a password for all machines (re-read on each use)")
-	passwordEnv := flag.String("password-env", "", "env var containing a password for all machines")
-	passwordConfig := flag.String("password-config", "", "key=value config file mapping machine names to passwords (re-read on each use)")
-	passwordCmd := flag.String("password-cmd", "", "command called with machine name as first argument; stdout is used as the password (cached per machine)")
-	commandTimeout := flag.Duration("command-timeout", 10*time.Second, "default command timeout")
+	logLevel := slog.LevelInfo
+	flag.TextVar(&logLevel, "log-level", &logLevel, "log level: debug, info, warn, error")
+	var (
+		logFile   = flag.String("log-file", "", "path to log file (enables structured debug logging)")
+		logFormat = flag.String("log-format", "text", "log format: text, json")
+
+		transport      = flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
+		addr           = flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
+		disableSudo    = flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
+		passwordFile   = flag.String("password-file", "", "file containing a password for all machines (re-read on each use)")
+		passwordEnv    = flag.String("password-env", "", "env var containing a password for all machines")
+		passwordConfig = flag.String("password-config", "", "key=value config file mapping machine names to passwords (re-read on each use)")
+		passwordCmd    = flag.String("password-cmd", "", "command called with machine name as first argument; stdout is used as the password (cached per machine)")
+		commandTimeout = flag.Duration("command-timeout", 10*time.Second, "default command timeout")
+	)
 	flag.Parse()
 
+	out := os.Stdout
 	if *logFile != "" {
 		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
 			log.Fatalf("opening log file: %v", err)
 		}
 		defer func() { _ = f.Close() }()
-
-		handler := slog.NewTextHandler(f, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})
-		slog.SetDefault(slog.New(handler))
+		out = f
 	}
+
+	opts := &slog.HandlerOptions{Level: logLevel}
+	var handler slog.Handler
+	switch *logFormat {
+	case "json":
+		handler = slog.NewJSONHandler(out, opts)
+	case "text", "":
+		handler = slog.NewTextHandler(out, opts)
+	default:
+		log.Fatalf("unknown log format: %q", *logFormat)
+	}
+
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
 
 	uploadRoot, err := os.Getwd()
 	if err != nil {
@@ -85,28 +102,39 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := session.NewPool(session.PoolOptions{CommandTimeout: *commandTimeout})
+	pool := session.NewPool(session.PoolOptions{
+		CommandTimeout: *commandTimeout,
+		Logger:         logger,
+	})
 	go pool.RunLoop(ctx)
 
 	var passwords core.PasswordProvider
 	switch {
 	case *passwordFile != "":
 		passwords = &core.FilePasswordProvider{Path: *passwordFile}
+		logger.Info("configured password provider", "type", "file", "path", *passwordFile)
 	case *passwordEnv != "":
 		passwords = &core.EnvPasswordProvider{VarName: *passwordEnv}
+		logger.Info("configured password provider", "type", "env", "var", *passwordEnv)
 	case *passwordConfig != "":
 		passwords = &core.ConfigFilePasswordProvider{Path: *passwordConfig}
+		logger.Info("configured password provider", "type", "config", "path", *passwordConfig)
 	case *passwordCmd != "":
 		passwords = &core.CommandPasswordProvider{Command: *passwordCmd}
+		logger.Info("configured password provider", "type", "command")
+	default:
+		logger.Debug("no password provider configured")
 	}
 
 	s := mcp.NewServer(&mcp.Implementation{Name: "ssh-mcp", Version: "0.1.0"}, nil)
+	logger.Debug("registering MCP tools")
 	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
 	fs.Register(s, pool, uploadRoot)
 	systemd.Register(s, pool)
 	sysinfo.Register(s, pool)
 	proc.Register(s, pool)
 	disk.Register(s, pool)
+	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "upload_root", uploadRoot)
 
 	if err := runServer(ctx, s, *transport, *addr); err != nil {
 		slog.Error("failed to run server", "err", err)

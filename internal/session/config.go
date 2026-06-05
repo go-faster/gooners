@@ -34,6 +34,15 @@ type Config struct {
 	// ProxyJump overrides the ProxyJump directive from ~/.ssh/config.
 	// Set to "none" to disable jumping even if ssh_config specifies one.
 	ProxyJump string
+
+	Logger *slog.Logger
+}
+
+func (c Config) logger() *slog.Logger {
+	if c.Logger == nil {
+		return slog.Default()
+	}
+	return c.Logger
 }
 
 // clientConfig returns the ssh.ClientConfig plus two addresses:
@@ -101,10 +110,10 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 	var hkcb ssh.HostKeyCallback
 	var addrs []string
 	if host != alias {
-		hkcb = multiAddrHostKeyCallback(c.KnownHosts, home, sshAddr, tcpAddr)
+		hkcb = multiAddrHostKeyCallback(c.KnownHosts, home, c.logger(), sshAddr, tcpAddr)
 		addrs = []string{sshAddr, tcpAddr}
 	} else {
-		hkcb = hostKeyCallback(c.KnownHosts, home)
+		hkcb = hostKeyCallback(c.KnownHosts, home, c.logger())
 		addrs = []string{sshAddr}
 	}
 
@@ -123,7 +132,7 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 	// this host. Without this, the server may present a key type (e.g. ECDSA)
 	// that differs from what is stored (e.g. ED25519), causing a spurious
 	// "key mismatch" error even though the correct key is in known_hosts.
-	if algos := knownHostsAlgorithms(c.KnownHosts, home, addrs...); len(algos) > 0 {
+	if algos := knownHostsAlgorithms(c.KnownHosts, home, addrs, c.logger()); len(algos) > 0 {
 		cc.HostKeyAlgorithms = algos
 	}
 	return cc, tcpAddr, sshAddr, nil
@@ -150,7 +159,7 @@ func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error)
 		alias = c.Machine
 	}
 
-	slog.Debug("ssh dial start", "machine", c.Machine, "addr", tcpAddr, "timeout", cc.Timeout)
+	c.logger().Debug("ssh dial start", "machine", c.Machine, "addr", tcpAddr, "timeout", cc.Timeout)
 
 	jump := c.ProxyJump
 	if jump == "" {
@@ -159,20 +168,20 @@ func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error)
 
 	switch {
 	case jump != "" && jump != "none":
-		client, err = tunnelThrough(cfg, tcpAddr, sshAddr, cc, jump, c.KnownHosts, home)
+		client, err = tunnelThrough(cfg, tcpAddr, sshAddr, cc, jump, c.KnownHosts, home, c.logger())
 	default:
 		proxyCmd := cfg.Get(alias, "ProxyCommand")
 		if proxyCmd != "" && proxyCmd != "none" {
 			var conn net.Conn
-			conn, err = dialProxyCommand(proxyCmd, tcpAddr, cc.User)
+			conn, err = dialProxyCommand(proxyCmd, tcpAddr, cc.User, c.logger())
 			if err != nil {
-				slog.Debug("ssh proxycommand dial failed", "machine", c.Machine, "err", err)
+				c.logger().Debug("ssh proxycommand dial failed", "machine", c.Machine, "err", err)
 				return nil, "", "", err
 			}
 			ncc, chans, reqs, cerr := ssh.NewClientConn(conn, sshAddr, cc)
 			if cerr != nil {
 				_ = conn.Close()
-				slog.Debug("ssh NewClientConn (proxycommand) failed", "machine", c.Machine, "err", cerr)
+				c.logger().Debug("ssh NewClientConn (proxycommand) failed", "machine", c.Machine, "err", cerr)
 				return nil, "", "", cerr
 			}
 			client = ssh.NewClient(ncc, chans, reqs)
@@ -183,7 +192,7 @@ func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error)
 			var conn net.Conn
 			conn, err = net.DialTimeout("tcp", tcpAddr, cc.Timeout)
 			if err != nil {
-				slog.Debug("ssh tcp dial timeout/error", "machine", c.Machine, "addr", tcpAddr, "timeout", cc.Timeout, "err", err)
+				c.logger().Debug("ssh tcp dial timeout/error", "machine", c.Machine, "addr", tcpAddr, "timeout", cc.Timeout, "err", err)
 				return nil, "", "", err
 			}
 			var (
@@ -194,26 +203,26 @@ func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error)
 			ncc, chans, reqs, err = ssh.NewClientConn(conn, sshAddr, cc)
 			if err != nil {
 				_ = conn.Close()
-				slog.Debug("ssh NewClientConn failed", "machine", c.Machine, "addr", sshAddr, "err", err)
+				c.logger().Debug("ssh NewClientConn failed", "machine", c.Machine, "addr", sshAddr, "err", err)
 				return nil, "", "", err
 			}
 			client = ssh.NewClient(ncc, chans, reqs)
 		}
 	}
 	if err != nil {
-		slog.Debug("ssh dial failed", "machine", c.Machine, "err", err)
+		c.logger().Debug("ssh dial failed", "machine", c.Machine, "err", err)
 		return nil, "", "", err
 	}
 
-	slog.Debug("ssh connected", "machine", c.Machine, "addr", tcpAddr, "alias", alias)
-	startKeepalive(client, cfg, alias, home)
+	c.logger().Debug("ssh connected", "machine", c.Machine, "addr", tcpAddr, "alias", alias)
+	startKeepalive(client, cfg, alias, home, c.logger())
 	return client, string(client.ServerVersion()), targetBanner, nil
 }
 
 // tunnelThrough dials targetTCPAddr/targetCC through proxyChain (comma-separated,
 // left-to-right as in ssh_config ProxyJump). targetSSHAddr is the alias:port used
 // for the SSH handshake so known_hosts is checked by alias, not resolved IP.
-func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConfig, proxyChain, knownHosts, home string) (*ssh.Client, error) {
+func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConfig, proxyChain, knownHosts, home string, logger *slog.Logger) (*ssh.Client, error) {
 	// Split at the last comma: the rightmost entry is directly adjacent to the
 	// target; the remainder is the inner chain to reach that host.
 	lastJump, innerChain := proxyChain, ""
@@ -222,7 +231,7 @@ func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr s
 		lastJump = strings.TrimSpace(proxyChain[idx+1:])
 	}
 
-	slog.Debug("ssh tunnel start", "target", targetTCPAddr, "via", lastJump, "chain", innerChain)
+	logger.Debug("ssh tunnel start", "target", targetTCPAddr, "via", lastJump, "chain", innerChain)
 
 	var (
 		jumpClient *ssh.Client
@@ -239,23 +248,23 @@ func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr s
 		var jumpTCPAddr, jumpSSHAddr string
 		jumpCC, jumpTCPAddr, jumpSSHAddr, err = Config{Machine: lastJump, KnownHosts: knownHosts}.clientConfig(cfg)
 		if err != nil {
-			slog.Debug("ssh jump clientConfig failed", "jump", lastJump, "err", err)
+			logger.Debug("ssh jump clientConfig failed", "jump", lastJump, "err", err)
 			return nil, fmt.Errorf("jump host %q: %w", lastJump, err)
 		}
-		jumpClient, err = tunnelThrough(cfg, jumpTCPAddr, jumpSSHAddr, jumpCC, innerChain, knownHosts, home)
+		jumpClient, err = tunnelThrough(cfg, jumpTCPAddr, jumpSSHAddr, jumpCC, innerChain, knownHosts, home, logger)
 		if err == nil {
-			startKeepalive(jumpClient, cfg, lastJump, home)
+			startKeepalive(jumpClient, cfg, lastJump, home, logger)
 		}
 	}
 	if err != nil {
-		slog.Debug("ssh connecting to jump host failed", "jump", lastJump, "err", err)
+		logger.Debug("ssh connecting to jump host failed", "jump", lastJump, "err", err)
 		return nil, fmt.Errorf("connecting to jump host %q: %w", lastJump, err)
 	}
 
 	conn, err := jumpClient.Dial("tcp", targetTCPAddr)
 	if err != nil {
 		_ = jumpClient.Close()
-		slog.Debug("ssh jump dial failed", "jump", lastJump, "target", targetTCPAddr, "err", err)
+		logger.Debug("ssh jump dial failed", "jump", lastJump, "target", targetTCPAddr, "err", err)
 		return nil, fmt.Errorf("jump %q -> %q: %w", lastJump, targetTCPAddr, err)
 	}
 
@@ -263,10 +272,10 @@ func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr s
 	if err != nil {
 		_ = conn.Close()
 		_ = jumpClient.Close()
-		slog.Debug("ssh NewClientConn (jump) failed", "jump", lastJump, "target", targetSSHAddr, "err", err)
+		logger.Debug("ssh NewClientConn (jump) failed", "jump", lastJump, "target", targetSSHAddr, "err", err)
 		return nil, err
 	}
-	slog.Debug("ssh jump connected", "jump", lastJump, "target", targetTCPAddr)
+	logger.Debug("ssh jump connected", "jump", lastJump, "target", targetTCPAddr)
 	return ssh.NewClient(ncc, chans, reqs), nil
 }
 
@@ -287,7 +296,7 @@ func (jc *jumpedConn) Close() error {
 // keepalive requests at the interval specified by ServerAliveInterval in
 // ~/.ssh/config for alias. It closes the client if ServerAliveCountMax
 // consecutive failures are observed (default 3, matching OpenSSH).
-func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, home string) {
+func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, home string, logger *slog.Logger) {
 	if cfg == nil {
 		cfg = newSettings(home)
 	}
@@ -307,7 +316,7 @@ func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, ho
 		}
 	}
 
-	slog.Debug("ssh keepalive enabled", "alias", alias, "interval_sec", secs, "max_count", maxCount)
+	logger.Debug("ssh keepalive enabled", "alias", alias, "interval_sec", secs, "max_count", maxCount)
 
 	done := make(chan struct{})
 	go func() {
@@ -327,9 +336,9 @@ func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, ho
 				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 				if err != nil {
 					fails++
-					slog.Debug("ssh keepalive failed", "alias", alias, "fails", fails, "max", maxCount, "err", err)
+					logger.Debug("ssh keepalive failed", "alias", alias, "fails", fails, "max", maxCount, "err", err)
 					if fails >= maxCount {
-						slog.Debug("ssh keepalive max failures, closing connection", "alias", alias, "fails", fails)
+						logger.Debug("ssh keepalive max failures, closing connection", "alias", alias, "fails", fails)
 						_ = client.Close()
 						return
 					}
@@ -343,7 +352,7 @@ func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, ho
 
 // dialProxyCommand executes command (with %h/%p/%r/%% tokens expanded) and
 // wraps the subprocess stdin/stdout as a net.Conn for use with ssh.NewClientConn.
-func dialProxyCommand(command, addr, remoteUser string) (net.Conn, error) {
+func dialProxyCommand(command, addr, remoteUser string, logger *slog.Logger) (net.Conn, error) {
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		host = addr
@@ -351,7 +360,7 @@ func dialProxyCommand(command, addr, remoteUser string) (net.Conn, error) {
 	}
 
 	expanded := expandProxyCommandTokens(command, host, portStr, remoteUser)
-	slog.Debug("ssh proxycommand start", "command", expanded, "addr", addr)
+	logger.Debug("ssh proxycommand start", "command", expanded, "addr", addr)
 
 	cmd := exec.Command("sh", "-c", expanded) //nolint:gosec // proxy command is user-controlled, same as OpenSSH ProxyCommand
 	stdin, err := cmd.StdinPipe()
@@ -479,9 +488,9 @@ func homeDir() string {
 	return "/root"
 }
 
-func hostKeyCallback(kh, home string) ssh.HostKeyCallback {
+func hostKeyCallback(kh, home string, logger *slog.Logger) ssh.HostKeyCallback {
 	if kh == "insecure" {
-		slog.Warn("ssh host key verification disabled (insecure mode)")
+		logger.Warn("ssh host key verification disabled (insecure mode)")
 		return ssh.InsecureIgnoreHostKey() //nolint:gosec // explicitly requested by user via KnownHosts=insecure
 	}
 	path := kh
@@ -501,7 +510,7 @@ func hostKeyCallback(kh, home string) ssh.HostKeyCallback {
 		}
 	}
 	if err != nil {
-		slog.Error("failed to load known_hosts", "path", path, "err", err)
+		logger.Error("failed to load known_hosts", "path", path, "err", err)
 		loadErr := err
 		return func(_ string, _ net.Addr, _ ssh.PublicKey) error {
 			return fmt.Errorf("known_hosts unavailable: %w", loadErr)
@@ -516,8 +525,8 @@ func hostKeyCallback(kh, home string) ssh.HostKeyCallback {
 // the key types. This mirrors what OpenSSH does to build its HostKeyAlgorithms
 // list and avoids spurious "key mismatch" errors when the server offers multiple
 // key types but only one is stored in known_hosts.
-func knownHostsAlgorithms(kh, home string, addrs ...string) []string {
-	cb := hostKeyCallback(kh, home)
+func knownHostsAlgorithms(kh, home string, addrs []string, logger *slog.Logger) []string {
+	cb := hostKeyCallback(kh, home, logger)
 
 	// Use a fixed throw-away ed25519 key as the probe.
 	var (
@@ -554,11 +563,11 @@ func knownHostsAlgorithms(kh, home string, addrs ...string) []string {
 // in known_hosts are common and should not block a new connection whose alias
 // has no entry yet. If all addresses are unknown the error names all of them so
 // the user knows exactly what to add.
-func multiAddrHostKeyCallback(kh, home string, addresses ...string) ssh.HostKeyCallback {
-	rawCB := hostKeyCallback(kh, home)
+func multiAddrHostKeyCallback(kh, home string, logger *slog.Logger, addresses ...string) ssh.HostKeyCallback {
+	rawCB := hostKeyCallback(kh, home, logger)
 	return func(_ string, remote net.Addr, key ssh.PublicKey) error {
 		for i, addr := range addresses {
-			slog.Debug("checking host key", "addr", addr)
+			logger.Debug("checking host key", "addr", addr)
 			err := rawCB(addr, remote, key)
 			if err == nil {
 				return nil
@@ -570,7 +579,7 @@ func multiAddrHostKeyCallback(kh, home string, addresses ...string) ssh.HostKeyC
 					return fmt.Errorf("host key changed for %s: %w", addr, err)
 				}
 				// Stale fallback (IP) entry — log and skip rather than failing.
-				slog.Warn("stale known_hosts entry, skipping", "addr", addr)
+				logger.Warn("stale known_hosts entry, skipping", "addr", addr)
 				continue
 			}
 		}
@@ -639,7 +648,7 @@ func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _, home string)
 		fileSigners []ssh.AuthMethod
 	)
 	for _, p := range keyPaths {
-		pk, signer := loadKeyFile(p, c.Password)
+		pk, signer := loadKeyFile(p, c.Password, c.logger())
 		if signer != nil {
 			fileSigners = append(fileSigners, ssh.PublicKeys(signer))
 		}
@@ -648,7 +657,7 @@ func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _, home string)
 		}
 	}
 	if identitiesOnly && len(cfgPaths) > 0 && len(allowedPubs) == 0 {
-		slog.Warn("ssh auth: IdentitiesOnly is set but none of the configured IdentityFile paths could be loaded; "+
+		c.logger().Warn("ssh auth: IdentitiesOnly is set but none of the configured IdentityFile paths could be loaded; "+
 			"agent keys will not be offered (key may exist only in agent, not on disk)",
 			"alias", alias,
 			"identity_files", cfgPaths,
@@ -726,11 +735,11 @@ func resolveAgentSock(cfg *gosshconfig.UserSettings, alias, home string) string 
 // Returns (publicKey, signer): signer is nil for .pub-only files.
 // Returns (nil, nil) silently when the file does not exist; logs a warning when
 // the file exists but cannot be parsed as either format.
-func loadKeyFile(path, pass string) (ssh.PublicKey, ssh.Signer) {
+func loadKeyFile(path, pass string, logger *slog.Logger) (ssh.PublicKey, ssh.Signer) {
 	data, err := os.ReadFile(path) //nolint:gosec // path comes from ssh config or explicit KeyPath, user-controlled
 	if err != nil {
 		if !os.IsNotExist(err) {
-			slog.Warn("reading identity file", "path", path, "err", err)
+			logger.Warn("reading identity file", "path", path, "err", err)
 		}
 		return nil, nil
 	}
@@ -744,7 +753,7 @@ func loadKeyFile(path, pass string) (ssh.PublicKey, ssh.Signer) {
 	if pk, _, _, _, err := ssh.ParseAuthorizedKey(data); err == nil {
 		return pk, nil
 	}
-	slog.Warn("identity file is not a recognized private key or public key format", "path", path)
+	logger.Warn("identity file is not a recognized private key or public key format", "path", path)
 	return nil, nil
 }
 

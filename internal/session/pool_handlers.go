@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,7 +45,7 @@ func (p *Pool) handleDialResult(ctx context.Context, sessions map[string]*Sessio
 		platform:  platform,
 	}
 	sessions[id] = sess
-	slog.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
+	p.logger.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
 	res.req.resp <- OpenResponse{
 		ID:        id,
 		UserAgent: res.userAgent,
@@ -85,10 +84,13 @@ func (p *Pool) watchSession(poolCtx context.Context, sessionID string, c *ssh.Cl
 }
 
 func (p *Pool) handleOpen(ctx context.Context, dialCh chan<- dialResult, r OpenRequest) {
+	if r.Config.Logger == nil {
+		r.Config.Logger = p.logger
+	}
 	go func() {
 		client, userAgent, banner, err := r.Config.dial()
 		if err != nil {
-			slog.Debug("ssh dial failed", "machine", r.Config.Machine, "err", err)
+			p.logger.Debug("ssh dial failed", "machine", r.Config.Machine, "err", err)
 		}
 		select {
 		case dialCh <- dialResult{
@@ -133,7 +135,7 @@ func (p *Pool) handleClose(sessions map[string]*Session, r CloseRequest) {
 
 		_ = s.client.Close()
 		delete(sessions, r.ID)
-		slog.Debug("ssh session closed", "id", r.ID, "machine", s.Machine)
+		p.logger.Debug("ssh session closed", "id", r.ID, "machine", s.Machine)
 	}
 	r.resp <- nil
 }
