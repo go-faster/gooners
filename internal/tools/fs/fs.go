@@ -26,9 +26,9 @@ const (
 	maxGrepLines = 10_000
 )
 
-// withinDir resolves path to an absolute path and verifies it is inside root.
-func withinDir(root, path string) (string, error) {
-	abs, err := filepath.Abs(path)
+// withinDir resolves p to an absolute path and verifies it is inside root.
+func withinDir(root, p string) (string, error) {
+	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", fmt.Errorf("resolving path: %w", err)
 	}
@@ -37,7 +37,7 @@ func withinDir(root, path string) (string, error) {
 		return "", fmt.Errorf("resolving relative path: %w", err)
 	}
 	if strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("path %q is outside allowed upload directory %q", path, root)
+		return "", fmt.Errorf("path %q is outside allowed upload directory %q", p, root)
 	}
 	return abs, nil
 }
