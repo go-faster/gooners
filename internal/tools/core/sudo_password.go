@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 
@@ -73,6 +75,7 @@ func (p *ConfigFilePasswordProvider) Password(_ context.Context, machine string)
 	}
 	defer func() { _ = f.Close() }()
 
+	keys := machineKeys(machine)
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
@@ -83,7 +86,8 @@ func (p *ConfigFilePasswordProvider) Password(_ context.Context, machine string)
 		if !ok {
 			continue
 		}
-		if strings.TrimSpace(k) == machine {
+		k = strings.TrimSpace(k)
+		if slices.Contains(keys, k) {
 			return strings.TrimSpace(v), nil
 		}
 	}
@@ -91,6 +95,30 @@ func (p *ConfigFilePasswordProvider) Password(_ context.Context, machine string)
 		return "", fmt.Errorf("reading password config %q: %w", p.Path, err)
 	}
 	return "", fmt.Errorf("%w: %s", ErrPasswordNotFound, machine)
+}
+
+// machineKeys returns the lookup keys to try for a machine string in order of
+// specificity: exact → host:port → host. This lets a bare hostname entry in
+// the config file match any user@ prefix or non-standard port.
+//
+//	"root@192.168.1.1:222" → ["root@192.168.1.1:222", "192.168.1.1:222", "192.168.1.1"]
+//	"192.168.1.1"          → ["192.168.1.1"]
+func machineKeys(machine string) []string {
+	keys := []string{machine}
+
+	// Strip optional user@ prefix.
+	hostPort := machine
+	if _, after, found := strings.Cut(machine, "@"); found {
+		hostPort = after
+		keys = append(keys, hostPort)
+	}
+
+	// Strip optional :port suffix.
+	if host, _, err := net.SplitHostPort(hostPort); err == nil && host != hostPort {
+		keys = append(keys, host)
+	}
+
+	return keys
 }
 
 // CommandPasswordProvider runs a command with the machine name appended as the

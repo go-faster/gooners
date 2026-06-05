@@ -59,6 +59,36 @@ func TestConfigFilePasswordProvider(t *testing.T) {
 		_, err := p.Password(context.Background(), "unknown")
 		require.ErrorIs(t, err, ErrPasswordNotFound)
 	})
+
+	t.Run("user@host:port falls back to host", func(t *testing.T) {
+		// Config has "web-01 = hunter2"; lookup via "root@web-01:22" must match.
+		pwd, err := p.Password(context.Background(), "root@web-01:22")
+		require.NoError(t, err)
+		require.Equal(t, "hunter2", pwd)
+	})
+
+	t.Run("host:port falls back to host", func(t *testing.T) {
+		pwd, err := p.Password(context.Background(), "web-01:222")
+		require.NoError(t, err)
+		require.Equal(t, "hunter2", pwd)
+	})
+}
+
+func TestMachineKeys(t *testing.T) {
+	tests := []struct {
+		machine string
+		want    []string
+	}{
+		{"192.168.1.1", []string{"192.168.1.1"}},
+		{"192.168.1.1:222", []string{"192.168.1.1:222", "192.168.1.1"}},
+		{"root@192.168.1.1:222", []string{"root@192.168.1.1:222", "192.168.1.1:222", "192.168.1.1"}},
+		{"root@192.168.1.1", []string{"root@192.168.1.1", "192.168.1.1"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.machine, func(t *testing.T) {
+			require.Equal(t, tc.want, machineKeys(tc.machine))
+		})
+	}
 }
 
 func TestCommandPasswordProvider(t *testing.T) {
