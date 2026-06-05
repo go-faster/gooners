@@ -39,8 +39,9 @@ type Config struct {
 //     keyed on — OpenSSH stores/checks keys under the name the user typed, not
 //     the resolved IP.
 func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfig, tcpAddr, sshAddr string, err error) {
+	home := homeDir()
 	if cfg == nil {
-		cfg = newSettings()
+		cfg = newSettings(home)
 	}
 	usr, alias, port := parseTarget(c.Machine)
 	if alias == "" {
@@ -96,12 +97,12 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 	// ssh-keyscan or direct-IP connections store entries).
 	var hkcb ssh.HostKeyCallback
 	if host != alias {
-		hkcb = multiAddrHostKeyCallback(c.KnownHosts, sshAddr, tcpAddr)
+		hkcb = multiAddrHostKeyCallback(c.KnownHosts, home, sshAddr, tcpAddr)
 	} else {
-		hkcb = hostKeyCallback(c.KnownHosts)
+		hkcb = hostKeyCallback(c.KnownHosts, home)
 	}
 
-	auth, err := authMethods(cfg, c, alias, usr)
+	auth, err := authMethods(cfg, c, alias, usr, home)
 	if err != nil {
 		return nil, "", "", err
 	}
@@ -117,7 +118,8 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 // dial opens an SSH connection to c.Machine, following ProxyJump / ProxyCommand
 // directives from ~/.ssh/config (unless overridden by Config fields).
 func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error) {
-	cfg := newSettings()
+	home := homeDir()
+	cfg := newSettings(home)
 	cc, tcpAddr, sshAddr, err := c.clientConfig(cfg)
 	if err != nil {
 		return nil, "", "", err
@@ -143,7 +145,7 @@ func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error)
 
 	switch {
 	case jump != "" && jump != "none":
-		client, err = tunnelThrough(cfg, tcpAddr, sshAddr, cc, jump, c.KnownHosts)
+		client, err = tunnelThrough(cfg, tcpAddr, sshAddr, cc, jump, c.KnownHosts, home)
 	default:
 		proxyCmd := cfg.Get(alias, "ProxyCommand")
 		if proxyCmd != "" && proxyCmd != "none" {
@@ -190,14 +192,14 @@ func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error)
 	}
 
 	slog.Debug("ssh connected", "machine", c.Machine, "addr", tcpAddr, "alias", alias)
-	startKeepalive(client, cfg, alias)
+	startKeepalive(client, cfg, alias, home)
 	return client, string(client.ServerVersion()), targetBanner, nil
 }
 
 // tunnelThrough dials targetTCPAddr/targetCC through proxyChain (comma-separated,
 // left-to-right as in ssh_config ProxyJump). targetSSHAddr is the alias:port used
 // for the SSH handshake so known_hosts is checked by alias, not resolved IP.
-func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConfig, proxyChain, knownHosts string) (*ssh.Client, error) {
+func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr string, targetCC *ssh.ClientConfig, proxyChain, knownHosts, home string) (*ssh.Client, error) {
 	// Split at the last comma: the rightmost entry is directly adjacent to the
 	// target; the remainder is the inner chain to reach that host.
 	lastJump, innerChain := proxyChain, ""
@@ -226,9 +228,9 @@ func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr s
 			slog.Debug("ssh jump clientConfig failed", "jump", lastJump, "err", err)
 			return nil, fmt.Errorf("jump host %q: %w", lastJump, err)
 		}
-		jumpClient, err = tunnelThrough(cfg, jumpTCPAddr, jumpSSHAddr, jumpCC, innerChain, knownHosts)
+		jumpClient, err = tunnelThrough(cfg, jumpTCPAddr, jumpSSHAddr, jumpCC, innerChain, knownHosts, home)
 		if err == nil {
-			startKeepalive(jumpClient, cfg, lastJump)
+			startKeepalive(jumpClient, cfg, lastJump, home)
 		}
 	}
 	if err != nil {
@@ -271,9 +273,9 @@ func (jc *jumpedConn) Close() error {
 // keepalive requests at the interval specified by ServerAliveInterval in
 // ~/.ssh/config for alias. It closes the client if ServerAliveCountMax
 // consecutive failures are observed (default 3, matching OpenSSH).
-func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias string) {
+func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, home string) {
 	if cfg == nil {
-		cfg = newSettings()
+		cfg = newSettings(home)
 	}
 	intervalStr := cfg.Get(alias, "ServerAliveInterval")
 	if intervalStr == "" {
@@ -445,28 +447,15 @@ func currentUser() string {
 	return "root"
 }
 
-var (
-	testHomeDir   string
-	testAgentSock string
-)
-
-// SetTestHomeDir overrides the home directory and disables SSH agent fallback for tests.
-func SetTestHomeDir(dir string) {
-	testHomeDir = dir
-}
-
-func newSettings() *gosshconfig.UserSettings {
+func newSettings(home string) *gosshconfig.UserSettings {
 	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
 	cfg.ConfigFinder(func() string {
-		return filepath.Join(homeDir(), ".ssh", "config")
+		return filepath.Join(home, ".ssh", "config")
 	})
 	return cfg
 }
 
 func homeDir() string {
-	if testHomeDir != "" {
-		return testHomeDir
-	}
 	if h := os.Getenv("HOME"); h != "" {
 		return h
 	}
@@ -476,14 +465,14 @@ func homeDir() string {
 	return "/root"
 }
 
-func hostKeyCallback(kh string) ssh.HostKeyCallback {
+func hostKeyCallback(kh, home string) ssh.HostKeyCallback {
 	if kh == "insecure" {
 		slog.Warn("ssh host key verification disabled (insecure mode)")
 		return ssh.InsecureIgnoreHostKey() //nolint:gosec // explicitly requested by user via KnownHosts=insecure
 	}
 	path := kh
 	if path == "" {
-		path = filepath.Join(homeDir(), ".ssh", "known_hosts")
+		path = filepath.Join(home, ".ssh", "known_hosts")
 	}
 	cb, err := knownhosts.New(path)
 	if err != nil {
@@ -515,8 +504,8 @@ func hostKeyCallback(kh string) ssh.HostKeyCallback {
 // in known_hosts are common and should not block a new connection whose alias
 // has no entry yet. If all addresses are unknown the error names all of them so
 // the user knows exactly what to add.
-func multiAddrHostKeyCallback(kh string, addresses ...string) ssh.HostKeyCallback {
-	rawCB := hostKeyCallback(kh)
+func multiAddrHostKeyCallback(kh, home string, addresses ...string) ssh.HostKeyCallback {
+	rawCB := hostKeyCallback(kh, home)
 	return func(_ string, remote net.Addr, key ssh.PublicKey) error {
 		for i, addr := range addresses {
 			slog.Debug("checking host key", "addr", addr)
@@ -543,12 +532,12 @@ func multiAddrHostKeyCallback(kh string, addresses ...string) ssh.HostKeyCallbac
 	}
 }
 
-func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _ string) ([]ssh.AuthMethod, error) {
+func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _ string, home string) ([]ssh.AuthMethod, error) {
 	if cfg == nil {
-		cfg = newSettings()
+		cfg = newSettings(home)
 	}
 	var m []ssh.AuthMethod
-	h := homeDir()
+	h := home
 
 	if c.KeyPath != "" {
 		key, err := os.ReadFile(c.KeyPath)
@@ -664,16 +653,10 @@ func buildKeyPaths(cfgPaths []string, home string, identitiesOnly bool) []string
 // resolveAgentSock returns the SSH agent socket path for alias from ssh_config.
 func resolveAgentSock(cfg *gosshconfig.UserSettings, alias, home string) string {
 	if cfg == nil {
-		cfg = newSettings()
+		cfg = newSettings(home)
 	}
 	switch ia := cfg.Get(alias, "IdentityAgent"); strings.ToLower(ia) {
 	case "", "ssh_auth_sock":
-		if testAgentSock != "" {
-			return testAgentSock
-		}
-		if testHomeDir != "" {
-			return ""
-		}
 		return os.Getenv("SSH_AUTH_SOCK")
 	case "none":
 		return ""

@@ -46,9 +46,11 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		panic(err)
 	}
-	session.SetTestHomeDir(tmpDir)
-	defer os.RemoveAll(tmpDir)
-	os.Exit(m.Run())
+	os.Setenv("HOME", tmpDir)
+	os.Unsetenv("SSH_AUTH_SOCK")
+	code := m.Run()
+	os.RemoveAll(tmpDir)
+	os.Exit(code)
 }
 
 func getSharedEnv(t *testing.T) *testEnv {

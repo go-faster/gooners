@@ -14,14 +14,6 @@ import (
 	"github.com/go-faster/gooners/internal/sshutil"
 )
 
-func init() {
-	tmpDir, err := os.MkdirTemp("", "gooners-test-home-*")
-	if err != nil {
-		panic(err)
-	}
-	testHomeDir = tmpDir
-}
-
 func TestAuthMethods_IdentitiesOnly_MissingKeyFile(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -35,7 +27,7 @@ func TestAuthMethods_IdentitiesOnly_MissingKeyFile(t *testing.T) {
 	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
 	cfg.ConfigFinder(func() string { return confPath })
 
-	_, err := authMethods(cfg, Config{Machine: "testhost"}, "testhost", "user")
+	_, err := authMethods(cfg, Config{Machine: "testhost"}, "testhost", "user", tmpDir)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "no authentication methods available")
 }
