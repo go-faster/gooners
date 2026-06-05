@@ -130,6 +130,10 @@ func (e *testEnv) open(t *testing.T) string {
 	})
 	sid, _ := data["session_id"].(string)
 	require.NotEmpty(t, sid)
+	ua, _ := data["user_agent"].(string)
+	require.Contains(t, ua, "SSH-2.0-")
+	platform, _ := data["platform"].(string)
+	require.Equal(t, "linux", platform)
 
 	// Ensure the session is closed at end of this test (gives coverage for
 	// ssh_close on every path that opens a session, and prevents leakage
@@ -216,8 +220,24 @@ func TestE2E_Core_OpenListClose(t *testing.T) {
 	sid := env.open(t)
 
 	// list should include our session
-	listText := callRaw(t, env.CS, "ssh_list", map[string]any{})
-	require.Contains(t, listText, sid)
+	listData := callJSON(t, env.CS, "ssh_list", map[string]any{})
+	sessions, ok := listData["sessions"].([]any)
+	require.True(t, ok)
+	found := false
+	for _, s := range sessions {
+		m, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["id"] == sid {
+			found = true
+			ua, _ := m["user_agent"].(string)
+			require.Contains(t, ua, "SSH-2.0-")
+			platform, _ := m["platform"].(string)
+			require.Equal(t, "linux", platform)
+		}
+	}
+	require.True(t, found, "session %s not found in list", sid)
 
 	// close it
 	callJSON(t, env.CS, "ssh_close", map[string]any{"session_id": sid})

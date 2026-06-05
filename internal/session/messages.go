@@ -15,8 +15,11 @@ type OpenRequest struct {
 func (OpenRequest) isRequest() {}
 
 type OpenResponse struct {
-	ID  string
-	Err error
+	ID        string
+	UserAgent string
+	Banner    string
+	Platform  string
+	Err       error
 }
 
 type GetRequest struct {

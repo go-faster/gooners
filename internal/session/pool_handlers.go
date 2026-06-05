@@ -6,15 +6,18 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/ssh"
 )
 
 type dialResult struct {
-	req    OpenRequest
-	client *ssh.Client
-	err    error
+	req       OpenRequest
+	client    *ssh.Client
+	err       error
+	userAgent string
+	banner    string
 }
 
 func (p *Pool) handleDialResult(ctx context.Context, sessions map[string]*Session, res dialResult) {
@@ -22,6 +25,9 @@ func (p *Pool) handleDialResult(ctx context.Context, sessions map[string]*Sessio
 		res.req.resp <- OpenResponse{Err: res.err}
 		return
 	}
+
+	truncatedBanner := truncateBanner(res.banner)
+	platform := detectPlatform(res.userAgent)
 
 	id := generateSessionID(res.req.Config.Machine, sessions)
 	sCtx, sCancel := context.WithCancel(ctx)
@@ -35,10 +41,18 @@ func (p *Pool) handleDialResult(ctx context.Context, sessions map[string]*Sessio
 		spools:    make(map[string]string),
 		ctx:       sCtx,
 		cancel:    sCancel,
+		userAgent: res.userAgent,
+		banner:    truncatedBanner,
+		platform:  platform,
 	}
 	sessions[id] = sess
 	slog.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
-	res.req.resp <- OpenResponse{ID: id}
+	res.req.resp <- OpenResponse{
+		ID:        id,
+		UserAgent: res.userAgent,
+		Banner:    truncatedBanner,
+		Platform:  platform,
+	}
 
 	// Watch the connection and remove the session if it drops or fails.
 	go p.watchSession(ctx, id, res.client, sess)
@@ -72,12 +86,18 @@ func (p *Pool) watchSession(poolCtx context.Context, sessionID string, c *ssh.Cl
 
 func (p *Pool) handleOpen(ctx context.Context, dialCh chan<- dialResult, r OpenRequest) {
 	go func() {
-		client, err := r.Config.dial()
+		client, userAgent, banner, err := r.Config.dial()
 		if err != nil {
 			slog.Debug("ssh dial failed", "machine", r.Config.Machine, "err", err)
 		}
 		select {
-		case dialCh <- dialResult{req: r, client: client, err: err}:
+		case dialCh <- dialResult{
+			req:       r,
+			client:    client,
+			err:       err,
+			userAgent: userAgent,
+			banner:    banner,
+		}:
 		case <-ctx.Done():
 			if client != nil {
 				_ = client.Close()
@@ -121,7 +141,14 @@ func (p *Pool) handleClose(sessions map[string]*Session, r CloseRequest) {
 func (p *Pool) handleList(sessions map[string]*Session, r ListRequest) {
 	out := make([]SessionInfo, 0, len(sessions))
 	for _, s := range sessions {
-		info := SessionInfo{ID: s.ID, Machine: s.Machine, CreatedAt: s.CreatedAt}
+		info := SessionInfo{
+			ID:        s.ID,
+			Machine:   s.Machine,
+			CreatedAt: s.CreatedAt,
+			UserAgent: s.userAgent,
+			Banner:    s.banner,
+			Platform:  s.platform,
+		}
 		if ns := s.lastPing.Load(); ns != 0 {
 			info.LastPing = time.Unix(0, ns)
 			if time.Since(info.LastPing) < 30*time.Second {
@@ -284,4 +311,27 @@ func (p *Pool) handleExec(sessions map[string]*Session, r ExecRequest) {
 
 	// Run in background so we don't block the event loop
 	go p.executeCommand(s.ctx, s.client, r)
+}
+
+func truncateBanner(s string) string {
+	s = strings.TrimSpace(s)
+	line, _, _ := strings.Cut(s, "\n")
+	line = strings.TrimSpace(line)
+	cutLen := min(len(line), 100)
+	return line[:cutLen]
+}
+
+func detectPlatform(serverVersion string) string {
+	switch {
+	case strings.Contains(serverVersion, "Cisco"):
+		return "cisco"
+	case strings.Contains(serverVersion, "ROSSSH"):
+		return "mikrotik"
+	case strings.Contains(serverVersion, "OpenSSH_for_Windows"):
+		return "windows"
+	case strings.Contains(serverVersion, "OpenSSH"):
+		return "linux" // best guess; covers the vast majority
+	default:
+		return "unknown"
+	}
 }

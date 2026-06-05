@@ -19,8 +19,10 @@ go 1.26.3
 # Build all packages
 go build ./...
 
-# Run all tests
-go test ./...
+# Run
+
+# Run all tests, including race detector
+go test -race ./...
 
 # Run a single test
 go test ./path/to/pkg -run TestName

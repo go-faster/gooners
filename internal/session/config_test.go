@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	gosshconfig "github.com/kevinburke/ssh_config"
@@ -49,7 +50,7 @@ func TestConfig_Dial_PasswordAuth_Wrong(t *testing.T) {
 	cfg := dialInsecure(srv.addr)
 	cfg.Password = "wrong"
 
-	_, err := cfg.dial()
+	_, _, _, err := cfg.dial() //nolint:dogsled // only error matters here
 	require.Error(t, err)
 }
 
@@ -64,7 +65,7 @@ func dialInsecure(addr string) Config {
 //nolint:unparam // cmd is always testCmd in existing tests
 func runCmd(t *testing.T, cfg Config, cmd string) string {
 	t.Helper()
-	client, err := cfg.dial()
+	client, _, _, err := cfg.dial()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -111,7 +112,7 @@ func TestConfig_Dial_ProxyJump_Chain(t *testing.T) {
 
 func runSCPTest(t *testing.T, cfg Config, content string) {
 	t.Helper()
-	client, err := cfg.dial()
+	client, _, _, err := cfg.dial()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 
@@ -205,4 +206,48 @@ func TestConfig_DynamicReload(t *testing.T) {
 	require.Equal(t, "5.6.7.8:4444", tcpAddr2)
 	require.Equal(t, "test-dyn:4444", sshAddr2)
 	require.Equal(t, "bar", cc2.User)
+}
+
+func TestTruncateBanner(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"\n\n  \n", ""},
+		{"Hello World", "Hello World"},
+		{"\nFirst non-empty line\nSecond line", "First non-empty line"},
+		{"   Leading and trailing space   \nAnother line", "Leading and trailing space"},
+		{strings.Repeat("A", 120), strings.Repeat("A", 100)},
+		{"\n" + strings.Repeat("B", 150) + "\nLine 2", strings.Repeat("B", 100)},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := truncateBanner(tc.input)
+			require.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+func TestDetectPlatform(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"SSH-2.0-OpenSSH_9.5p1 Ubuntu-1ubuntu3", "linux"},
+		{"SSH-2.0-OpenSSH_for_Windows_8.1", "windows"},
+		{"SSH-2.0-Cisco-1.25", "cisco"},
+		{"SSH-2.0-ROSSSH", "mikrotik"},
+		{"SSH-2.0-libssh_0.9.5", "unknown"},
+		{"SSH-2.0-paramiko_2.7.2", "unknown"},
+		{"", "unknown"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := detectPlatform(tc.input)
+			require.Equal(t, tc.expected, got)
+		})
+	}
 }

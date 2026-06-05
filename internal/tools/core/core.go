@@ -104,11 +104,11 @@ func openHandler(p *session.Pool) mcp.ToolHandlerFor[openParams, mcputil.Session
 		openCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 
-		id, err := p.Open(openCtx, args.Machine)
+		res, err := p.Open(openCtx, args.Machine)
 		if err != nil {
 			return nil, mcputil.SessionResult{}, err
 		}
-		return nil, mcputil.SessionResult{SessionID: id}, nil
+		return nil, mcputil.SessionResult{SessionID: res.ID, UserAgent: res.UserAgent, Banner: res.Banner, Platform: res.Platform}, nil
 	}
 }
 
@@ -127,6 +127,7 @@ func openCfgHandler(p *session.Pool) mcp.ToolHandlerFor[openCfgParams, mcputil.S
 		if args.Machine == "" {
 			return nil, mcputil.SessionResult{}, fmt.Errorf("machine is required")
 		}
+
 		cfg := session.Config{
 			Machine:    args.Machine,
 			User:       args.User,
@@ -136,17 +137,27 @@ func openCfgHandler(p *session.Pool) mcp.ToolHandlerFor[openCfgParams, mcputil.S
 			TimeoutSec: args.TimeoutSec,
 			KnownHosts: args.KnownHosts,
 		}
+
 		timeout := 30
 		if args.TimeoutSec > 0 {
 			timeout = args.TimeoutSec
 		}
+
 		openCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		id, err := p.OpenCfg(openCtx, cfg)
+
+		res, err := p.OpenCfg(openCtx, cfg)
 		if err != nil {
 			return nil, mcputil.SessionResult{}, err
 		}
-		return nil, mcputil.SessionResult{SessionID: id}, nil
+
+		result := mcputil.SessionResult{
+			SessionID: res.ID,
+			UserAgent: res.UserAgent,
+			Banner:    res.Banner,
+			Platform:  res.Platform,
+		}
+		return nil, result, nil
 	}
 }
 
@@ -247,14 +258,14 @@ func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, mcputil.ExecRes
 		onceCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 
-		id, err := p.Open(onceCtx, args.Machine)
+		openRes, err := p.Open(onceCtx, args.Machine)
 		if err != nil {
 			return nil, mcputil.ExecResult{}, err
 		}
-		defer func() { _ = p.Close(ctx, id) }() // Use parent context for closing
+		defer func() { _ = p.Close(ctx, openRes.ID) }() // Use parent context for closing
 
 		res := p.Exec(onceCtx, session.ExecRequest{
-			SessionID:   id,
+			SessionID:   openRes.ID,
 			Command:     args.Command,
 			Description: args.Description,
 			Cwd:         args.Cwd,

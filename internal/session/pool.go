@@ -37,6 +37,10 @@ type Session struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	userAgent string
+	banner    string
+	platform  string
 }
 
 type UploadJob struct {
@@ -63,13 +67,23 @@ type DownloadJob struct {
 	cancel          context.CancelFunc
 }
 
+type OpenResult struct {
+	ID        string
+	UserAgent string
+	Banner    string
+	Platform  string
+}
+
 type SessionInfo struct {
 	ID        string    `json:"id"`
 	Machine   string    `json:"machine"`
 	CreatedAt time.Time `json:"created_at"`
 	LastPing  time.Time `json:"last_ping,omitzero"`
 	// Status is "connected" if a keepalive succeeded within the last 30s, "new" if no ping yet, "stale" otherwise.
-	Status string `json:"status"`
+	Status    string `json:"status"`
+	UserAgent string `json:"user_agent,omitempty"`
+	Banner    string `json:"banner,omitempty"`
+	Platform  string `json:"platform,omitempty" jsonschema:"Detected OS platform (may be imprecise)"`
 }
 
 type Provider interface {
@@ -622,17 +636,25 @@ func (p *Pool) Exec(ctx context.Context, r ExecRequest) ExecResponse {
 	}
 }
 
-func (p *Pool) Open(ctx context.Context, machine string) (string, error) {
+func (p *Pool) Open(ctx context.Context, machine string) (OpenResult, error) {
 	return p.OpenCfg(ctx, Config{Machine: machine})
 }
 
-func (p *Pool) OpenCfg(ctx context.Context, cfg Config) (string, error) {
+func (p *Pool) OpenCfg(ctx context.Context, cfg Config) (OpenResult, error) {
 	respCh := make(chan OpenResponse, 1)
 	resp, ok := send(ctx, p.reqCh, OpenRequest{Config: cfg, resp: respCh}, respCh)
 	if !ok {
-		return "", ctx.Err()
+		return OpenResult{}, ctx.Err()
 	}
-	return resp.ID, resp.Err
+	if resp.Err != nil {
+		return OpenResult{}, resp.Err
+	}
+	return OpenResult{
+		ID:        resp.ID,
+		UserAgent: resp.UserAgent,
+		Banner:    resp.Banner,
+		Platform:  resp.Platform,
+	}, nil
 }
 
 func (p *Pool) Close(ctx context.Context, id string) error {

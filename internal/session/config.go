@@ -116,11 +116,17 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 
 // dial opens an SSH connection to c.Machine, following ProxyJump / ProxyCommand
 // directives from ~/.ssh/config (unless overridden by Config fields).
-func (c Config) dial() (*ssh.Client, error) {
+func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error) {
 	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
 	cc, tcpAddr, sshAddr, err := c.clientConfig(cfg)
 	if err != nil {
-		return nil, err
+		return nil, "", "", err
+	}
+
+	var targetBanner string
+	cc.BannerCallback = func(message string) error {
+		targetBanner = message
+		return nil
 	}
 
 	_, alias, _ := parseTarget(c.Machine)
@@ -135,7 +141,6 @@ func (c Config) dial() (*ssh.Client, error) {
 		jump = strings.TrimSpace(cfg.Get(alias, "ProxyJump"))
 	}
 
-	var client *ssh.Client
 	switch {
 	case jump != "" && jump != "none":
 		client, err = tunnelThrough(cfg, tcpAddr, sshAddr, cc, jump, c.KnownHosts)
@@ -146,13 +151,13 @@ func (c Config) dial() (*ssh.Client, error) {
 			conn, err = dialProxyCommand(proxyCmd, tcpAddr, cc.User)
 			if err != nil {
 				slog.Debug("ssh proxycommand dial failed", "machine", c.Machine, "err", err)
-				return nil, err
+				return nil, "", "", err
 			}
 			ncc, chans, reqs, cerr := ssh.NewClientConn(conn, sshAddr, cc)
 			if cerr != nil {
 				_ = conn.Close()
 				slog.Debug("ssh NewClientConn (proxycommand) failed", "machine", c.Machine, "err", cerr)
-				return nil, cerr
+				return nil, "", "", cerr
 			}
 			client = ssh.NewClient(ncc, chans, reqs)
 		} else {
@@ -163,7 +168,7 @@ func (c Config) dial() (*ssh.Client, error) {
 			conn, err = net.DialTimeout("tcp", tcpAddr, cc.Timeout)
 			if err != nil {
 				slog.Debug("ssh tcp dial timeout/error", "machine", c.Machine, "addr", tcpAddr, "timeout", cc.Timeout, "err", err)
-				return nil, err
+				return nil, "", "", err
 			}
 			var (
 				ncc   ssh.Conn
@@ -174,19 +179,19 @@ func (c Config) dial() (*ssh.Client, error) {
 			if err != nil {
 				_ = conn.Close()
 				slog.Debug("ssh NewClientConn failed", "machine", c.Machine, "addr", sshAddr, "err", err)
-				return nil, err
+				return nil, "", "", err
 			}
 			client = ssh.NewClient(ncc, chans, reqs)
 		}
 	}
 	if err != nil {
 		slog.Debug("ssh dial failed", "machine", c.Machine, "err", err)
-		return nil, err
+		return nil, "", "", err
 	}
 
 	slog.Debug("ssh connected", "machine", c.Machine, "addr", tcpAddr, "alias", alias)
 	startKeepalive(client, cfg, alias)
-	return client, nil
+	return client, string(client.ServerVersion()), targetBanner, nil
 }
 
 // tunnelThrough dials targetTCPAddr/targetCC through proxyChain (comma-separated,
@@ -210,7 +215,8 @@ func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr s
 	if innerChain == "" {
 		// Single hop: use dial() so the jump host's own ssh_config (including
 		// its own ProxyJump) is respected.
-		jumpClient, err = Config{Machine: lastJump, KnownHosts: knownHosts}.dial()
+		// Jump host banner/version not surfaced.
+		jumpClient, _, _, err = Config{Machine: lastJump, KnownHosts: knownHosts}.dial()
 	} else {
 		// Multi-hop: route to lastJump through the remaining inner chain.
 		var jumpCC *ssh.ClientConfig

@@ -25,13 +25,14 @@ func TestSudoExec(t *testing.T) {
 
 	go p.RunLoop(ctx)
 
-	id, err := p.OpenCfg(ctx, Config{
+	openRes, err := p.OpenCfg(ctx, Config{
 		Machine:    addr,
 		User:       user,
 		Password:   password,
 		KnownHosts: "insecure",
 	})
 	require.NoError(t, err)
+	id := openRes.ID
 
 	// Execute a command with Sudo and SudoPassword.
 	// Since the container requires "secret" for sudo, this should succeed.

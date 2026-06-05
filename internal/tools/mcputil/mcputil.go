@@ -54,6 +54,9 @@ func Register[In, Out any](s *mcp.Server, def ToolDef, handler mcp.ToolHandlerFo
 // SessionResult is returned by ssh_open, ssh_open_cfg etc.
 type SessionResult struct {
 	SessionID string `json:"session_id"`
+	UserAgent string `json:"user_agent,omitempty"`
+	Banner    string `json:"banner,omitempty"`
+	Platform  string `json:"platform,omitempty" jsonschema:"Detected OS platform (may be imprecise)"`
 }
 
 // SuccessResult for close etc.
