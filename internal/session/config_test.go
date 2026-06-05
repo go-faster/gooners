@@ -57,7 +57,7 @@ func TestConfig_Dial_PasswordAuth_Wrong(t *testing.T) {
 // dialInsecure returns a Config that connects to addr without host-key
 // verification, suitable for in-process test servers.
 func dialInsecure(addr string) Config {
-	return Config{Machine: addr, KnownHosts: "insecure", Password: "test-dummy-password"}
+	return Config{Machine: addr, KnownHosts: "insecure"}
 }
 
 // runCmd runs a single command on a just-dialed connection and returns stdout.
@@ -184,7 +184,7 @@ func TestConfig_DynamicReload(t *testing.T) {
 		return confPath
 	})
 
-	c := Config{Machine: "test-dyn", Password: "test-dummy-password"}
+	c := Config{Machine: "test-dyn"}
 	cc, tcpAddr, sshAddr, err := c.clientConfig(cfg)
 	require.NoError(t, err)
 	require.Equal(t, "1.2.3.4:2222", tcpAddr)

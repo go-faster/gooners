@@ -603,7 +603,7 @@ func authMethods(cfg *gosshconfig.UserSettings, c Config, alias, _ string) ([]ss
 	}
 
 	m = append(m, fileSigners...)
-	if len(m) == 0 {
+	if len(m) == 0 && identitiesOnly {
 		return nil, fmt.Errorf("no authentication methods available for %q: "+
 			"no password set, no readable key files found, and no SSH agent keys offered "+
 			"(if IdentitiesOnly is set, ensure the IdentityFile exists on disk or remove IdentitiesOnly)", alias)
