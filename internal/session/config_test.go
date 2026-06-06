@@ -2,12 +2,17 @@ package session
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	gosshconfig "github.com/kevinburke/ssh_config"
 	"github.com/stretchr/testify/require"
@@ -270,4 +275,152 @@ func TestKnownHostsAlgorithms(t *testing.T) {
 	algos := knownHostsAlgorithms(khPath, tmp, []string{srv.addr}, slog.New(slog.DiscardHandler))
 	require.NotEmpty(t, algos, "expected at least one algorithm for known host")
 	require.Contains(t, algos, srv.hostKey.PublicKey().Type())
+}
+
+func TestExpandProxyCommandTokens(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		command    string
+		host       string
+		port       string
+		remoteUser string
+		expected   string
+	}{
+		{
+			name:       "no tokens",
+			command:    "ssh -W host:port jump",
+			host:       "example.com",
+			port:       "22",
+			remoteUser: "user",
+			expected:   "ssh -W host:port jump",
+		},
+		{
+			name:       "all tokens",
+			command:    "ssh -l %r -p %p %h %%",
+			host:       "example.com",
+			port:       "2222",
+			remoteUser: "admin",
+			expected:   "ssh -l admin -p 2222 example.com %",
+		},
+		{
+			name:       "partial tokens",
+			command:    "nc %h %p",
+			host:       "1.2.3.4",
+			port:       "443",
+			remoteUser: "root",
+			expected:   "nc 1.2.3.4 443",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := expandProxyCommandTokens(tc.command, tc.host, tc.port, tc.remoteUser)
+			require.Equal(t, tc.expected, got)
+		})
+	}
+}
+
+func TestMultiAddrHostKeyCallback(t *testing.T) {
+	t.Parallel()
+
+	// Generate key pairs for testing
+	_, priv1, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	signer1, err := ssh.NewSignerFromKey(priv1)
+	require.NoError(t, err)
+	key1 := signer1.PublicKey()
+
+	_, priv2, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	signer2, err := ssh.NewSignerFromKey(priv2)
+	require.NoError(t, err)
+	key2 := signer2.PublicKey()
+
+	tmp := t.TempDir()
+	khPath := filepath.Join(tmp, "known_hosts")
+
+	// Helper to format line
+	formatLine := func(host string, key ssh.PublicKey) string {
+		return host + " " + string(ssh.MarshalAuthorizedKey(key))
+	}
+
+	// 1. Success: alias matches
+	entry := formatLine("alias-host", key1)
+	require.NoError(t, os.WriteFile(khPath, []byte(entry), 0o600))
+	cb := multiAddrHostKeyCallback(khPath, tmp, slog.New(slog.DiscardHandler), "alias-host:22", "ip-host:22")
+	err = cb("alias-host:22", &net.TCPAddr{}, key1)
+	require.NoError(t, err)
+
+	// 2. Failure: alias key changed (hard failure)
+	err = cb("alias-host:22", &net.TCPAddr{}, key2)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "host key changed for alias-host:22")
+
+	// 3. Stale fallback skipped: alias has no entry, but IP host has entry which does not match key1.
+	// In this case, we call callback with key1.
+	// Since i=0 (alias-host) is unknown, it's skipped.
+	// For i=1 (ip-host), it has key2 in known_hosts, so key1 mismatch returns KeyError with Want > 0.
+	// Since i=1 != 0, it skips (warning logged) and moves on.
+	// Finally, it returns unknown error for the scanHost.
+	entryStale := formatLine("ip-host", key2)
+	require.NoError(t, os.WriteFile(khPath, []byte(entryStale), 0o600))
+	cbStale := multiAddrHostKeyCallback(khPath, tmp, slog.New(slog.DiscardHandler), "alias-host:22", "ip-host:22")
+	err = cbStale("alias-host:22", &net.TCPAddr{}, key1)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "host key unknown")
+	require.Contains(t, err.Error(), "ssh-keyscan")
+
+	// 4. Success: alias has no entry, but IP host has correct entry
+	entryIPCorrect := formatLine("ip-host", key1)
+	require.NoError(t, os.WriteFile(khPath, []byte(entryIPCorrect), 0o600))
+	cbIP := multiAddrHostKeyCallback(khPath, tmp, slog.New(slog.DiscardHandler), "alias-host:22", "ip-host:22")
+	err = cbIP("alias-host:22", &net.TCPAddr{}, key1)
+	require.NoError(t, err)
+}
+
+func TestDialProxyCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows: no sh/cat")
+	}
+
+	logger := slog.New(slog.DiscardHandler)
+
+	// Test normal loopback using "cat"
+	conn, err := dialProxyCommand("cat", "127.0.0.1:22", "user", logger)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	msg := []byte("hello proxy")
+	n, err := conn.Write(msg)
+	require.NoError(t, err)
+	require.Equal(t, len(msg), n)
+
+	buf := make([]byte, len(msg))
+	n, err = conn.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, len(msg), n)
+	require.Equal(t, msg, buf[:n])
+
+	// Verify methods on proxyCommandConn
+	require.Equal(t, "proxy-command", conn.LocalAddr().Network())
+	require.Equal(t, "proxy-command", conn.LocalAddr().String())
+	require.Equal(t, "proxy-command", conn.RemoteAddr().Network())
+	require.Equal(t, "proxy-command", conn.RemoteAddr().String())
+	require.NoError(t, conn.SetDeadline(time.Now()))
+	require.NoError(t, conn.SetReadDeadline(time.Now()))
+	require.NoError(t, conn.SetWriteDeadline(time.Now()))
+
+	// Test address without port fallback
+	conn2, err := dialProxyCommand("cat", "127.0.0.1", "user", logger)
+	require.NoError(t, err)
+	conn2.Close()
+
+	// Test command execution failure (fails on Read or Write because command cannot execute)
+	conn3, err := dialProxyCommand("/nonexistent/command/path/xyz", "127.0.0.1:22", "user", logger)
+	require.NoError(t, err)
+	defer conn3.Close()
+	buf3 := make([]byte, 10)
+	_, err = conn3.Read(buf3)
+	require.Error(t, err)
 }

@@ -108,6 +108,7 @@ type Pool struct {
 	commandTimeout time.Duration
 	maxOutputBytes int64
 	logger         *slog.Logger
+	homeDir        string
 }
 
 // PoolOptions contains configuration for a new Pool.
@@ -115,6 +116,10 @@ type PoolOptions struct {
 	CommandTimeout time.Duration
 	MaxOutputBytes int64
 	Logger         *slog.Logger
+	// HomeDir overrides the home directory used to resolve ~/.ssh/config,
+	// ~/.ssh/known_hosts, and identity keys for all sessions in this pool.
+	// Defaults to the process home directory if empty.
+	HomeDir string
 }
 
 func (opts *PoolOptions) setDefaults() {
@@ -136,6 +141,7 @@ func NewPool(opts PoolOptions) *Pool {
 		commandTimeout: opts.CommandTimeout,
 		maxOutputBytes: opts.MaxOutputBytes,
 		logger:         opts.Logger,
+		homeDir:        opts.HomeDir,
 	}
 }
 
@@ -655,6 +661,9 @@ func (p *Pool) Open(ctx context.Context, machine string) (OpenResult, error) {
 }
 
 func (p *Pool) OpenCfg(ctx context.Context, cfg Config) (OpenResult, error) {
+	if cfg.HomeDir == "" {
+		cfg.HomeDir = p.homeDir
+	}
 	respCh := make(chan OpenResponse, 1)
 	resp, ok := send(ctx, p.reqCh, OpenRequest{Config: cfg, resp: respCh}, respCh)
 	if !ok {

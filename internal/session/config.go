@@ -34,6 +34,9 @@ type Config struct {
 	// ProxyJump overrides the ProxyJump directive from ~/.ssh/config.
 	// Set to "none" to disable jumping even if ssh_config specifies one.
 	ProxyJump string
+	// HomeDir overrides the home directory used to resolve ~/.ssh/config,
+	// ~/.ssh/known_hosts, and identity keys. Defaults to homeDir() if empty.
+	HomeDir string
 
 	Logger *slog.Logger
 }
@@ -45,13 +48,20 @@ func (c Config) logger() *slog.Logger {
 	return c.Logger
 }
 
+func (c Config) effectiveHome() string {
+	if c.HomeDir != "" {
+		return c.HomeDir
+	}
+	return homeDir()
+}
+
 // clientConfig returns the ssh.ClientConfig plus two addresses:
 //   - tcpAddr: resolved address for the TCP dial (honors HostName)
 //   - sshAddr: alias:port for the SSH handshake, which is what known_hosts is
 //     keyed on — OpenSSH stores/checks keys under the name the user typed, not
 //     the resolved IP.
 func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfig, tcpAddr, sshAddr string, err error) {
-	home := homeDir()
+	home := c.effectiveHome()
 	if cfg == nil {
 		cfg = newSettings(home)
 	}
@@ -141,7 +151,7 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 // dial opens an SSH connection to c.Machine, following ProxyJump / ProxyCommand
 // directives from ~/.ssh/config (unless overridden by Config fields).
 func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error) {
-	home := homeDir()
+	home := c.effectiveHome()
 	cfg := newSettings(home)
 	cc, tcpAddr, sshAddr, err := c.clientConfig(cfg)
 	if err != nil {
