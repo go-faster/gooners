@@ -38,8 +38,9 @@ go build ./cmd/grafana-dashboard-mcp
 - `add_param` — adds a template variable (query, custom, or datasource) to the dashboard.
 - `set_time_range` — sets the default dashboard time range (e.g. `now-6h` to `now`).
 - `add_row` — adds a standard Grafana row for grouping panels.
-- `add_panel` — adds a panel (timeseries, stat, gauge, table, etc.) to the dashboard (or inside a row).
-- `update_panel` — updates properties (title, unit, decimals) of an existing panel.
+- `add_panel` — adds a panel (timeseries, stat, gauge, table, etc.) to the dashboard (or inside a row). Supports unit, decimals, and reduce_calcs directly.
+- `add_panels_batch` — adds multiple panels to a dashboard or a row in a single batch operation (with queries/thresholds).
+- `update_panel` — updates properties (title, description, unit, decimals, reduce_calcs) of an existing panel.
 - `delete_panel` — removes a panel.
 - `add_query` — attaches a query to an existing panel.
 - `add_threshold` — adds a color threshold to stat/gauge panels.

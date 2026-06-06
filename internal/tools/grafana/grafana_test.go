@@ -3,6 +3,7 @@ package grafana
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,9 +15,7 @@ import (
 )
 
 func TestSessionManager(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "grafana-mcp-test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	sm := NewSessionManager(tempDir)
 
@@ -96,9 +95,7 @@ func TestBuildPanel(t *testing.T) {
 }
 
 func TestExportDashboard(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "grafana-mcp-test")
-	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	sm := NewSessionManager(tempDir)
 	s := &DashboardSession{
@@ -183,4 +180,314 @@ func TestQueryRefID(t *testing.T) {
 	assert.Equal(t, "BA", queryRefID(52))
 	assert.Equal(t, "ZZ", queryRefID(701))
 	assert.Equal(t, "AAA", queryRefID(702))
+}
+
+func TestRowLayout(t *testing.T) {
+	tempDir := t.TempDir()
+
+	sm := NewSessionManager(tempDir)
+	s := &DashboardSession{
+		DashboardID: "dash-layout",
+		Title:       "Layout Test",
+	}
+	sm.Add(s)
+
+	// Add row
+	rowHandler := addRowHandler(sm)
+	_, rowRes, err := rowHandler(context.Background(), nil, AddRowReq{
+		DashboardID: "dash-layout",
+		Title:       "Stats Row",
+	})
+	require.NoError(t, err)
+	rowID := rowRes.RowID
+
+	// Add 5 stat panels (default width 6, height 4)
+	panelHandler := addPanelHandler(sm)
+
+	var panels []AddPanelRes
+	for i := range 5 {
+		_, pRes, err := panelHandler(context.Background(), nil, AddPanelReq{
+			DashboardID: "dash-layout",
+			Title:       fmt.Sprintf("Stat %d", i),
+			Type:        "stat",
+			RowID:       rowID,
+		})
+		require.NoError(t, err)
+		panels = append(panels, pRes)
+	}
+
+	// First 4 panels should be side-by-side on Y=1 (row is Y=0, height 1)
+	// X should be: 0, 6, 12, 18
+	assert.Equal(t, uint32(6), panels[0].GridPos.W)
+	assert.Equal(t, uint32(4), panels[0].GridPos.H)
+	assert.Equal(t, uint32(0), panels[0].GridPos.X)
+	assert.Equal(t, uint32(1), panels[0].GridPos.Y)
+
+	assert.Equal(t, uint32(6), panels[1].GridPos.W)
+	assert.Equal(t, uint32(6), panels[1].GridPos.X)
+	assert.Equal(t, uint32(1), panels[1].GridPos.Y)
+
+	assert.Equal(t, uint32(12), panels[2].GridPos.X)
+	assert.Equal(t, uint32(1), panels[2].GridPos.Y)
+
+	assert.Equal(t, uint32(18), panels[3].GridPos.X)
+	assert.Equal(t, uint32(1), panels[3].GridPos.Y)
+
+	// 5th panel should wrap to Y = 1 + 4 = 5, X = 0
+	assert.Equal(t, uint32(0), panels[4].GridPos.X)
+	assert.Equal(t, uint32(5), panels[4].GridPos.Y)
+}
+
+func TestAddPanelsBatch(t *testing.T) {
+	tempDir := t.TempDir()
+
+	sm := NewSessionManager(tempDir)
+	s := &DashboardSession{
+		DashboardID: "dash-batch",
+		Title:       "Batch Test",
+	}
+	sm.Add(s)
+
+	batchHandler := addPanelsBatchHandler(sm, nil)
+
+	_, batchRes, err := batchHandler(context.Background(), nil, AddPanelsBatchReq{
+		DashboardID: "dash-batch",
+		Panels: []PanelSpec{
+			{
+				Title: "Memory usage",
+				Type:  "stat",
+				Unit:  "bytes",
+				Queries: []QuerySpec{
+					{
+						DatasourceUID: "prom-ds",
+						Expr:          "go_memstats_alloc_bytes",
+						LegendFormat:  "{{class}}",
+					},
+				},
+				Thresholds: []ThresholdSpec{
+					{
+						Value: nil,
+						Color: "green",
+					},
+					{
+						Value: func() *float64 { v := 1000.0; return &v }(),
+						Color: "red",
+					},
+				},
+				ReduceCalcs: []string{"mean"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, batchRes.PanelIDs, 1)
+
+	// Fetch state to verify
+	state, err := sm.Get("dash-batch")
+	require.NoError(t, err)
+	require.Len(t, state.Panels, 1)
+
+	p := state.Panels[0]
+	assert.Equal(t, "Memory usage", p.Title)
+	assert.Equal(t, "stat", p.Type)
+	assert.Equal(t, "bytes", p.Unit)
+	require.Len(t, p.Queries, 1)
+	assert.Equal(t, "go_memstats_alloc_bytes", p.Queries[0].Expr)
+	assert.Equal(t, "{{class}}", p.Queries[0].LegendFormat)
+	require.Len(t, p.Thresholds, 2)
+	assert.Nil(t, p.Thresholds[0].Value)
+	assert.Equal(t, "green", p.Thresholds[0].Color)
+	assert.NotNil(t, p.Thresholds[1].Value)
+	assert.Equal(t, 1000.0, *p.Thresholds[1].Value)
+	assert.Equal(t, "red", p.Thresholds[1].Color)
+	assert.Equal(t, []string{"mean"}, p.ReduceCalcs)
+}
+
+func TestExtractMetricName(t *testing.T) {
+	tests := []struct {
+		expr string
+		want string
+	}{
+		// Standard PromQL
+		{`http_requests_total`, "http_requests_total"},
+		{`go_memstats_alloc_bytes`, "go_memstats_alloc_bytes"},
+		{`sum(rate(http_requests_total{job="api"}[5m]))`, "http_requests_total"},
+		{`sum by(pod) (container_memory_working_set_bytes)`, "container_memory_working_set_bytes"},
+		{`histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))`, "http_request_duration_seconds_bucket"},
+		// Metric names that start with known keywords (must not be stripped)
+		{`without_cache_hits`, "without_cache_hits"},
+		{`by_service_bytes`, "by_service_bytes"},
+		{`on_call_total`, "on_call_total"},
+		// VictoriaMetrics/MetricsQL extensions — functions not in standard PromQL
+		{`histogram_share(0.9, rate(request_duration_seconds_bucket[5m]))`, "request_duration_seconds_bucket"},
+		{`aggr_over_time("sum", node_memory_bytes[1h])`, "node_memory_bytes"},
+		// Empty / invalid
+		{`1 + 1`, ""},
+		{`not_valid{{`, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.expr, func(t *testing.T) {
+			assert.Equal(t, tt.want, extractMetricName(tt.expr))
+		})
+	}
+}
+
+func TestSuggestUnit(t *testing.T) {
+	tests := []struct {
+		metric   string
+		promUnit string
+		want     string
+	}{
+		{"go_memstats_alloc_bytes", "", "bytes"},
+		{"process_cpu_seconds_total", "", "s"},
+		{"cpu_usage_percent", "", "percent"},
+		{"http_requests_total", "", "short"},
+		{"foo_ratio", "", "percentunit"},
+		// Prometheus metadata unit takes priority
+		{"foo", "bytes", "bytes"},
+		{"foo", "seconds", "s"},
+		// Compound suffixes
+		{"request_duration_seconds_total", "", "s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.metric, func(t *testing.T) {
+			assert.Equal(t, tt.want, suggestUnit(tt.metric, tt.promUnit, ""))
+		})
+	}
+}
+
+func TestPlacePanel(t *testing.T) {
+	t.Run("stat defaults W=6 H=4", func(t *testing.T) {
+		s := &DashboardSession{}
+		pos := placePanel(s, nil, "stat", nil, nil, nil, nil)
+		assert.Equal(t, uint32(6), pos.W)
+		assert.Equal(t, uint32(4), pos.H)
+		assert.Equal(t, uint32(0), pos.X)
+		assert.Equal(t, uint32(0), pos.Y)
+		assert.Equal(t, uint32(4), s.NextY, "NextY must advance by H")
+	})
+
+	t.Run("timeseries defaults W=24 H=8", func(t *testing.T) {
+		s := &DashboardSession{}
+		pos := placePanel(s, nil, "timeseries", nil, nil, nil, nil)
+		assert.Equal(t, uint32(24), pos.W)
+		assert.Equal(t, uint32(8), pos.H)
+		assert.Equal(t, uint32(8), s.NextY)
+	})
+
+	t.Run("explicit H without Y still advances NextY", func(t *testing.T) {
+		s := &DashboardSession{}
+		h := 12
+		pos := placePanel(s, nil, "timeseries", nil, &h, nil, nil)
+		assert.Equal(t, uint32(12), pos.H)
+		assert.Equal(t, uint32(0), pos.Y)
+		assert.Equal(t, uint32(12), s.NextY, "NextY must advance even when only H is explicit")
+	})
+
+	t.Run("explicit Y does not regress NextY", func(t *testing.T) {
+		s := &DashboardSession{NextY: 10}
+		y := 2
+		pos := placePanel(s, nil, "timeseries", nil, nil, nil, &y)
+		assert.Equal(t, uint32(2), pos.Y)
+		assert.Equal(t, uint32(10), s.NextY, "placing behind existing cursor must not regress NextY")
+	})
+
+	t.Run("row: panels flow side-by-side", func(t *testing.T) {
+		s := &DashboardSession{NextY: 1}
+		r := &RowEntry{NextY: 1}
+		p1 := placePanel(s, r, "stat", nil, nil, nil, nil)
+		p2 := placePanel(s, r, "stat", nil, nil, nil, nil)
+		assert.Equal(t, uint32(0), p1.X)
+		assert.Equal(t, uint32(6), p2.X)
+		assert.Equal(t, p1.Y, p2.Y, "both panels in same row should share Y")
+	})
+
+	t.Run("row: wraps when NextX+W exceeds 24", func(t *testing.T) {
+		s := &DashboardSession{NextY: 1}
+		r := &RowEntry{NextY: 1}
+		// Fill 4 stat panels (4×6=24)
+		for range 4 {
+			placePanel(s, r, "stat", nil, nil, nil, nil)
+		}
+		p5 := placePanel(s, r, "stat", nil, nil, nil, nil)
+		assert.Equal(t, uint32(0), p5.X, "5th panel must wrap to X=0")
+		assert.Equal(t, uint32(5), p5.Y, "5th panel Y = row base (1) + lineHeight (4)")
+	})
+
+	t.Run("row: LineHeight tracks tallest panel in row", func(t *testing.T) {
+		s := &DashboardSession{NextY: 1}
+		r := &RowEntry{NextY: 1}
+		bigH := 12
+		placePanel(s, r, "stat", nil, &bigH, nil, nil) // W=6, H=12
+		placePanel(s, r, "stat", nil, nil, nil, nil)   // W=6, H=4  (default)
+		// Fill rest of row: 3 more stat panels to trigger wrap (6+6+6*3=30 > 24)
+		for range 2 {
+			placePanel(s, r, "stat", nil, nil, nil, nil)
+		}
+		p := placePanel(s, r, "stat", nil, nil, nil, nil) // triggers wrap
+		assert.Equal(t, uint32(0), p.X)
+		assert.Equal(t, uint32(13), p.Y, "wrap Y = row base (1) + max LineHeight (12)")
+	})
+}
+
+func TestGrafanaMCPNewFixes(t *testing.T) {
+	// 1. Test timeseries & table ReduceCalcs in buildPanel
+	decimals := 1.0
+	tsPanel := &PanelEntry{
+		ID:          "ts-1",
+		Title:       "TimeSeries Panel",
+		Type:        "timeseries",
+		Decimals:    &decimals,
+		ReduceCalcs: []string{"lastNotNull", "mean"},
+	}
+	tsBuilder := buildPanel(tsPanel)
+	require.NotNil(t, tsBuilder)
+	tsBuilt, err := tsBuilder.Build()
+	require.NoError(t, err)
+	assert.Equal(t, "TimeSeries Panel", *tsBuilt.Title)
+	// We can't directly inspect internal VizLegendOptions, but we know it built without errors
+
+	tablePanel := &PanelEntry{
+		ID:          "tbl-1",
+		Title:       "Table Panel",
+		Type:        "table",
+		ReduceCalcs: []string{"max"},
+	}
+	tblBuilder := buildPanel(tablePanel)
+	require.NotNil(t, tblBuilder)
+	tblBuilt, err := tblBuilder.Build()
+	require.NoError(t, err)
+	assert.Equal(t, "Table Panel", *tblBuilt.Title)
+
+	// 3. Test concurrent/race condition fix
+	tempDir := t.TempDir()
+	sm := NewSessionManager(tempDir)
+	s := &DashboardSession{
+		DashboardID: "race-dash",
+		Title:       "Race Test",
+	}
+	sm.Add(s)
+
+	// Launch concurrent panel additions; collect errors via channel to avoid
+	// calling require inside a goroutine (t.FailNow exits the goroutine, not
+	// the test).
+	errs := make(chan error, 5)
+	for i := range 5 {
+		go func(id int) {
+			h := addPanelHandler(sm)
+			_, _, err := h(context.Background(), nil, AddPanelReq{
+				DashboardID: "race-dash",
+				Title:       fmt.Sprintf("Panel %d", id),
+				Type:        "stat",
+			})
+			errs <- err
+		}(i)
+	}
+	for range 5 {
+		require.NoError(t, <-errs)
+	}
+
+	finalSession, err := sm.Get("race-dash")
+	require.NoError(t, err)
+	// Should have exactly 5 panels, and no race/corruption occurred
+	assert.Len(t, finalSession.Panels, 5)
 }
