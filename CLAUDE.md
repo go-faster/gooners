@@ -79,6 +79,17 @@ skills/
 - The `description` field drives automatic invocation — make it specific and include all relevant trigger contexts.
 - Update the Skills table in `README.md` when adding or removing a skill.
 
+## Testing
+
+- Tests must not rely on runner state
+- Tests should be fast and not rely on real time passing (e.g. avoid long sleeps or timeouts), when possible. Use mocks or fakes instead, or `testing/synctest` bubbles if necessary.
+- Tests should not be flaky
+- Tests should be hermetic: use `t.TempDir()` for temporary files (auto-cleaned) and `t.Cleanup()` for any other teardown
+- Tests should be cross-platform where possible (e.g. avoid Linux-specific syscalls or file paths)
+- Tests on unsupported platforms (like Windows) should be skipped with a clear message
+- E2E tests must use `testcontainers-go` for any external dependencies (like SSH servers) and clean up after themselves
+- E2E tests must be skipped if `-short` is passed
+
 ## Go Standards
 
 - Use `golangci-lint fmt ./...` for formatting (not `gofmt` or `goimports` directly).
