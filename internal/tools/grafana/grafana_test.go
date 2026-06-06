@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -138,18 +139,22 @@ func TestExportDashboard(t *testing.T) {
 	}
 	sm.Add(s)
 
+	outPath := filepath.Join(tempDir, "out.json")
 	handler := exportDashboardHandler(sm, nil)
 	_, res, err := handler(context.Background(), nil, ExportDashboardReq{
 		DashboardID: "dash-123",
 		Save:        false,
+		OutputPath:  outPath,
 	})
 	require.NoError(t, err)
-	assert.NotEmpty(t, res.DashboardJSON)
+	assert.NotEmpty(t, res.OutputPath)
 	assert.False(t, res.Saved)
 
 	// Check fields in exported JSON
 	var raw map[string]any
-	err = json.Unmarshal([]byte(res.DashboardJSON), &raw)
+	data, err := os.ReadFile(res.OutputPath)
+	require.NoError(t, err)
+	err = json.Unmarshal(data, &raw)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Production Service Health", raw["title"])

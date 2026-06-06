@@ -512,7 +512,7 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "export_dashboard",
-		Description: "Finalizes the build process, compiles the dashboard using SDK, and outputs the JSON dashboard. Optionally posts directly to Grafana.",
+		Description: "Finalizes and compiles the dashboard. By default, this only validates the dashboard can be built. Use 'save' to push directly to Grafana, or 'output_path' to write the JSON to a local file.",
 	}, exportDashboardHandler(sm, gc))
 
 	// 3.2 Discovery & Verification Tools
@@ -954,13 +954,14 @@ type ExportDashboardReq struct {
 	DashboardID string `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
 	Save        bool   `json:"save,omitempty" jsonschema:"If true, saves the dashboard directly to Grafana API"`
 	FolderUID   string `json:"folder_uid,omitempty" jsonschema:"Optional folder UID to save the dashboard under"`
+	OutputPath  string `json:"output_path,omitempty" jsonschema:"Optional file path to save the dashboard JSON to. If not absolute, it will be relative to the server's working directory."`
 }
 
 type ExportDashboardRes struct {
-	DashboardJSON string `json:"dashboard_json"`
-	Saved         bool   `json:"saved"`
-	UID           string `json:"uid"`
-	URL           string `json:"url,omitempty"`
+	Saved      bool   `json:"saved"`
+	UID        string `json:"uid"`
+	URL        string `json:"url,omitempty"`
+	OutputPath string `json:"output_path,omitempty"`
 }
 
 func stringPtr(s string) *string {
@@ -1057,8 +1058,14 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 		}
 
 		res := ExportDashboardRes{
-			DashboardJSON: string(dashboardJSON),
 			UID:           s.UID,
+		}
+
+		if args.OutputPath != "" {
+			if err := os.WriteFile(args.OutputPath, dashboardJSON, 0o644); err != nil {
+				return nil, ExportDashboardRes{}, fmt.Errorf("writing dashboard to file: %w", err)
+			}
+			res.OutputPath = args.OutputPath
 		}
 
 		if args.Save {
