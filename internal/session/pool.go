@@ -156,6 +156,11 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 	}
 
 	start := time.Now()
+
+	if !strings.Contains(string(client.ServerVersion()), "OpenSSH") {
+		return time.Since(start), nil
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)

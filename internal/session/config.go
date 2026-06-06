@@ -326,6 +326,12 @@ func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, ho
 		}
 	}
 
+	userAgent := string(client.ServerVersion())
+	if !strings.Contains(userAgent, "OpenSSH") {
+		logger.Debug("ssh keepalive disabled for non-OpenSSH server", "alias", alias, "user_agent", userAgent)
+		return
+	}
+
 	logger.Debug("ssh keepalive enabled", "alias", alias, "interval_sec", secs, "max_count", maxCount)
 
 	done := make(chan struct{})

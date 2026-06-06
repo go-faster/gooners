@@ -74,6 +74,10 @@ func (p *Pool) watchSession(poolCtx context.Context, sessionID string, c *ssh.Cl
 			_ = p.Close(poolCtx, sessionID)
 			return
 		case <-ticker.C:
+			if !strings.Contains(s.userAgent, "OpenSSH") {
+				s.lastPing.Store(time.Now().UnixNano())
+				continue
+			}
 			if _, _, err := c.SendRequest("keepalive@openssh.com", true, nil); err != nil {
 				_ = c.Close()
 				return
