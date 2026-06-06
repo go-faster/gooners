@@ -44,7 +44,7 @@ func TestConfig_Dial_PasswordAuth(t *testing.T) {
 	const pass = "hunter2"
 	srv := newTestServerPassword(t, pass)
 
-	cfg := dialInsecure(srv.addr)
+	cfg := dialInsecure(t, srv.addr)
 	cfg.Password = pass
 
 	require.Equal(t, testOut, runCmd(t, cfg, testCmd))
@@ -54,7 +54,7 @@ func TestConfig_Dial_PasswordAuth_Wrong(t *testing.T) {
 	t.Parallel()
 	srv := newTestServerPassword(t, "correct")
 
-	cfg := dialInsecure(srv.addr)
+	cfg := dialInsecure(t, srv.addr)
 	cfg.Password = "wrong"
 
 	_, _, _, err := cfg.dial() //nolint:dogsled // only error matters here
@@ -63,8 +63,9 @@ func TestConfig_Dial_PasswordAuth_Wrong(t *testing.T) {
 
 // dialInsecure returns a Config that connects to addr without host-key
 // verification, suitable for in-process test servers.
-func dialInsecure(addr string) Config {
-	return Config{Machine: addr, KnownHosts: "insecure"}
+func dialInsecure(t *testing.T, addr string) Config {
+	t.Helper()
+	return Config{Machine: addr, KnownHosts: "insecure", HomeDir: t.TempDir()}
 }
 
 // runCmd runs a single command on a just-dialed connection and returns stdout.
@@ -90,7 +91,7 @@ const (
 func TestConfig_Dial_Direct(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
-	require.Equal(t, testOut, runCmd(t, dialInsecure(srv.addr), testCmd))
+	require.Equal(t, testOut, runCmd(t, dialInsecure(t, srv.addr), testCmd))
 }
 
 func TestConfig_Dial_ProxyJump(t *testing.T) {
@@ -98,7 +99,7 @@ func TestConfig_Dial_ProxyJump(t *testing.T) {
 	target := newTestServer(t)
 	jump := newTestServer(t)
 
-	cfg := dialInsecure(target.addr)
+	cfg := dialInsecure(t, target.addr)
 	cfg.ProxyJump = jump.addr
 
 	require.Equal(t, testOut, runCmd(t, cfg, testCmd))
@@ -111,7 +112,7 @@ func TestConfig_Dial_ProxyJump_Chain(t *testing.T) {
 	jump2 := newTestServer(t)
 
 	// ProxyJump "jump1,jump2" means local → jump1 → jump2 → target.
-	cfg := dialInsecure(target.addr)
+	cfg := dialInsecure(t, target.addr)
 	cfg.ProxyJump = jump1.addr + "," + jump2.addr
 
 	require.Equal(t, testOut, runCmd(t, cfg, testCmd))
@@ -165,7 +166,7 @@ func runSCPTest(t *testing.T, cfg Config, content string) {
 func TestConfig_Dial_SCP(t *testing.T) {
 	t.Parallel()
 	srv := newTestServer(t)
-	runSCPTest(t, dialInsecure(srv.addr), "scp test content")
+	runSCPTest(t, dialInsecure(t, srv.addr), "scp test content")
 }
 
 func TestConfig_Dial_SCP_ProxyJump(t *testing.T) {
@@ -173,7 +174,7 @@ func TestConfig_Dial_SCP_ProxyJump(t *testing.T) {
 	target := newTestServer(t)
 	jump := newTestServer(t)
 
-	cfg := dialInsecure(target.addr)
+	cfg := dialInsecure(t, target.addr)
 	cfg.ProxyJump = jump.addr
 
 	runSCPTest(t, cfg, "scp proxyjump test content")
@@ -191,7 +192,7 @@ func TestConfig_DynamicReload(t *testing.T) {
 		return confPath
 	})
 
-	c := Config{Machine: "test-dyn"}
+	c := Config{Machine: "test-dyn", HomeDir: tmpDir}
 	cc, tcpAddr, sshAddr, err := c.clientConfig(cfg)
 	require.NoError(t, err)
 	require.Equal(t, "1.2.3.4:2222", tcpAddr)

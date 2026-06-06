@@ -66,6 +66,7 @@ func TestConfig_Dial_KnownHostsAlgorithmMismatch(t *testing.T) {
 		User:       user,
 		Password:   password,
 		KnownHosts: khPath,
+		HomeDir:    tmp,
 	})
 	require.NoError(t, err, "OpenCfg must succeed with knownHostsAlgorithms fix")
 
@@ -100,6 +101,7 @@ func TestSudoExec(t *testing.T) {
 		User:       user,
 		Password:   password,
 		KnownHosts: "insecure",
+		HomeDir:    t.TempDir(),
 	})
 	require.NoError(t, err)
 	id := openRes.ID

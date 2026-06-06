@@ -42,9 +42,10 @@ type testEnv struct {
 }
 
 var (
-	sharedEnv     *testEnv
-	sharedEnvOnce sync.Once
-	sharedEnvErr  error
+	sharedEnv        *testEnv
+	sharedEnvOnce    sync.Once
+	sharedEnvErr     error
+	sharedUploadRoot string
 )
 
 // TestMain exists so we can use a single container + MCP harness for the entire
@@ -52,7 +53,13 @@ var (
 // to 1 (biggest practical improvement for the suite).
 func TestMain(m *testing.M) {
 	os.Unsetenv("SSH_AUTH_SOCK")
+	uploadRoot, err := os.MkdirTemp("", "gooners-e2e-upload-*")
+	if err != nil {
+		panic(err)
+	}
+	sharedUploadRoot = uploadRoot
 	code := m.Run()
+	os.RemoveAll(uploadRoot)
 	os.Exit(code)
 }
 
@@ -93,7 +100,7 @@ func getSharedEnv(t *testing.T) *testEnv {
 		time.Sleep(30 * time.Millisecond)
 
 		s := mcp.NewServer(&mcp.Implementation{Name: "ssh-mcp-e2e", Version: "test"}, nil)
-		uploadRoot := os.TempDir() // shared across tests; withinDir still applies per-call
+		uploadRoot := sharedUploadRoot
 		core.Register(s, p, core.RegisterOptions{})
 		fs.Register(s, p, uploadRoot)
 		sysinfo.Register(s, p)
