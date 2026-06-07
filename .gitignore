@@ -18,6 +18,7 @@ secret.yml
 secret.yaml
 
 /ssh-mcp
+/grafana-dashboard-mcp
 
 # goreleaser
 dist

@@ -36,13 +36,16 @@ golangci-lint run ./...
 
 ```
 cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
+cmd/grafana-dashboard-mcp/ ← MCP server binary (go build ./cmd/grafana-dashboard-mcp)
 internal/
+  mcputil/            ← Standardized MCP server config, prompts, and log streaming
   session/            ← SSH session pool & async upload tracking
   sshutil/            ← SSH config / known-hosts helpers
   tools/              ← MCP tool registrations
     core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec, ssh_ping, ssh_read_output, ssh_save_output
     disk/             ← disk_df, disk_lsblk, disk_mounts
     fs/               ← ls, cat, find, grep, stat, du, truncate, upload_file, write_file
+    grafana/          ← add_dashboard, add_panel, add_query, export_dashboard, etc.
     proc/             ← proc_list, proc_info, proc_lsof, proc_kill
     sysinfo/          ← sys_mem, sys_net_addrs, sys_os_info, sys_uptime
     systemd/          ← systemctl_* tools
@@ -53,7 +56,8 @@ The `ssh-mcp` file in the repo root is a **compiled binary** (not a source direc
 
 ## Key Dependencies
 
-- `github.com/modelcontextprotocol/go-sdk` — MCP server/tool SDK; all tool registrations call `mcp.NewServer` and pass a `session.Pool`.
+- `github.com/modelcontextprotocol/go-sdk` — MCP server/tool SDK; all tool registrations call `mcp.NewServer` and pass a `session.Pool` or local state.
+- `github.com/grafana/grafana-foundation-sdk/go` — Official Go SDK for Grafana dashboard schema definitions and builders.
 
 ## ssh-mcp Build
 
@@ -63,6 +67,16 @@ go build ./cmd/ssh-mcp
 ./ssh-mcp
 # Or HTTP transport with debug logging:
 ./ssh-mcp -transport streamable-http -addr :8080 -log-file /tmp/ssh-mcp.log
+```
+
+## grafana-dashboard-mcp Build
+
+```bash
+go build ./cmd/grafana-dashboard-mcp
+# Run with default stdio transport:
+./grafana-dashboard-mcp
+# Or HTTP transport with debug logging and custom session dir:
+./grafana-dashboard-mcp -transport streamable-http -addr :8081 -sessions-dir /tmp/sessions -log-file /tmp/grafana-mcp.log
 ```
 
 ## Skills
@@ -78,6 +92,10 @@ skills/
 - Add new skills as `skills/<name>/SKILL.md`.
 - The `description` field drives automatic invocation — make it specific and include all relevant trigger contexts.
 - Update the Skills table in `README.md` when adding or removing a skill.
+
+## Commits
+
+- Commit generated files (golden files, mocks, protobuf output, etc.) in a separate commit from the code that produces them. If it's unclear whether a file is generated, ask before bundling it.
 
 ## Testing
 

@@ -109,6 +109,7 @@ type Pool struct {
 	maxOutputBytes int64
 	logger         *slog.Logger
 	homeDir        string
+	onDisconnect   func(machine string, err error)
 }
 
 // PoolOptions contains configuration for a new Pool.
@@ -120,6 +121,8 @@ type PoolOptions struct {
 	// ~/.ssh/known_hosts, and identity keys for all sessions in this pool.
 	// Defaults to the process home directory if empty.
 	HomeDir string
+	// OnDisconnect is invoked when a session is closed.
+	OnDisconnect func(machine string, err error)
 }
 
 func (opts *PoolOptions) setDefaults() {
@@ -142,6 +145,7 @@ func NewPool(opts PoolOptions) *Pool {
 		maxOutputBytes: opts.MaxOutputBytes,
 		logger:         opts.Logger,
 		homeDir:        opts.HomeDir,
+		onDisconnect:   opts.OnDisconnect,
 	}
 }
 
@@ -172,7 +176,17 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 		return 0, ctx.Err()
 	case err := <-errCh:
 		if err != nil {
+			var machine string
+			if p.onDisconnect != nil {
+				machine, _ = p.Machine(ctx, id)
+				if machine == "" {
+					machine = id
+				}
+			}
 			_ = p.Close(ctx, id)
+			if p.onDisconnect != nil {
+				p.onDisconnect(machine, fmt.Errorf("keepalive failed: %w", err))
+			}
 			return 0, err
 		}
 		return time.Since(start), nil

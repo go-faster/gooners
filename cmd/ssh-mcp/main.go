@@ -13,6 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/tools/core"
 	"github.com/go-faster/gooners/internal/tools/disk"
@@ -58,14 +59,15 @@ func main() {
 		logFile   = flag.String("log-file", "", "path to log file (enables structured debug logging)")
 		logFormat = flag.String("log-format", "text", "log format: text, json")
 
-		transport      = flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
-		addr           = flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
-		disableSudo    = flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
-		passwordFile   = flag.String("password-file", "", "file containing a password for all machines (re-read on each use)")
-		passwordEnv    = flag.String("password-env", "", "env var containing a password for all machines")
-		passwordConfig = flag.String("password-config", "", "key=value config file mapping machine names to passwords (re-read on each use)")
-		passwordCmd    = flag.String("password-cmd", "", "command called with machine name as first argument; stdout is used as the password (cached per machine)")
-		commandTimeout = flag.Duration("command-timeout", 10*time.Second, "default command timeout")
+		transport               = flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
+		addr                    = flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
+		disableSudo             = flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
+		disableSpecializedTools = flag.Bool("disable-specialized-tools", false, "register only core SSH tools: session management, exec, and file transfer")
+		passwordFile            = flag.String("password-file", "", "file containing a password for all machines (re-read on each use)")
+		passwordEnv             = flag.String("password-env", "", "env var containing a password for all machines")
+		passwordConfig          = flag.String("password-config", "", "key=value config file mapping machine names to passwords (re-read on each use)")
+		passwordCmd             = flag.String("password-cmd", "", "command called with machine name as first argument; stdout is used as the password (cached per machine)")
+		commandTimeout          = flag.Duration("command-timeout", 10*time.Second, "default command timeout")
 	)
 	flag.Parse()
 
@@ -102,12 +104,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := session.NewPool(session.PoolOptions{
-		CommandTimeout: *commandTimeout,
-		Logger:         logger,
-	})
-	go pool.RunLoop(ctx)
-
 	var passwords core.PasswordProvider
 	switch {
 	case *passwordFile != "":
@@ -126,15 +122,58 @@ func main() {
 		logger.Debug("no password provider configured")
 	}
 
-	s := mcp.NewServer(&mcp.Implementation{Name: "ssh-mcp", Version: "0.1.0"}, nil)
+	s := mcputil.NewServer(mcputil.ServerConfig{
+		Name:         "ssh-mcp",
+		Instructions: "You are connected to ssh-mcp. Use these tools to safely query and manage remote machine state over SSH.",
+		Logger:       logger.With("component", "mcp-sdk"),
+		Prompts: []*mcp.Prompt{
+			{
+				Name:        "troubleshoot-ssh",
+				Description: "Start a debugging session for a remote server via SSH",
+				Arguments: []*mcp.PromptArgument{
+					{Name: "machine", Description: "Name of the machine to connect to", Required: true},
+				},
+			},
+		},
+		PromptHandler: mcp.PromptHandler(func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			if req.Params.Name == "troubleshoot-ssh" {
+				return &mcp.GetPromptResult{
+					Description: "Instructions for using SSH tools to debug.",
+					Messages: []*mcp.PromptMessage{
+						{
+							Role: "user",
+							Content: &mcp.TextContent{
+								Text: "Use `ssh_exec` and systemd tools to analyze the server.",
+							},
+						},
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown prompt: %q", req.Params.Name)
+		}),
+	})
+
+	pool := session.NewPool(session.PoolOptions{
+		CommandTimeout: *commandTimeout,
+		Logger:         logger,
+		OnDisconnect: func(machine string, err error) {
+			mcputil.BroadcastWarning(s, "ssh-mcp", fmt.Sprintf("SSH session to %s disconnected: %v", machine, err))
+		},
+	})
+	go pool.RunLoop(ctx)
+
 	logger.Debug("registering MCP tools")
 	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
-	fs.Register(s, pool, uploadRoot)
-	systemd.Register(s, pool)
-	sysinfo.Register(s, pool)
-	proc.Register(s, pool)
-	disk.Register(s, pool)
-	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "upload_root", uploadRoot)
+	if *disableSpecializedTools {
+		fs.RegisterFileTransfer(s, pool, uploadRoot)
+	} else {
+		fs.Register(s, pool, uploadRoot)
+		systemd.Register(s, pool)
+		sysinfo.Register(s, pool)
+		proc.Register(s, pool)
+		disk.Register(s, pool)
+	}
+	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "disable_specialized_tools", *disableSpecializedTools, "upload_root", uploadRoot)
 
 	if err := runServer(ctx, s, *transport, *addr); err != nil {
 		slog.Error("failed to run server", "err", err)

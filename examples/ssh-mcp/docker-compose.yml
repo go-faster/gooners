@@ -1,0 +1,22 @@
+services:
+  ssh-mcp:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: ssh-mcp
+    entrypoint: ["ssh-mcp"]
+    command: ["-transport", "streamable-http", "-addr", ":8080"]
+    ports:
+      - "8080:8080"
+    environment:
+      # Pass host SSH agent socket path to the container
+      - SSH_AUTH_SOCK=/ssh-agent
+    volumes:
+      # Mount user's SSH configurations and known_hosts read-only
+      - ${HOME}/.ssh:/home/mcp/.ssh:ro
+      # Mount the host SSH agent socket to allow passwordless authentication
+      - ${SSH_AUTH_SOCK}:/ssh-agent
+      # Mount the local directory to serve as the workspace/upload root
+      - .:/work
+    working_dir: /work
+    restart: unless-stopped
