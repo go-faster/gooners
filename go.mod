@@ -11,6 +11,7 @@ require (
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/modelcontextprotocol/go-sdk v1.6.1
 	github.com/pkg/sftp v1.13.10
+	github.com/prometheus/common v0.68.1
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.42.0
 	golang.org/x/crypto v0.52.0
@@ -57,7 +58,6 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.68.1 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.3 // indirect
