@@ -229,6 +229,9 @@ func (m *SessionManager) loadAll() {
 }
 
 func (m *SessionManager) StartCleanupLoop(ctx context.Context, ttl time.Duration) {
+	if ttl <= 0 {
+		return
+	}
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {

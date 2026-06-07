@@ -20,7 +20,7 @@ go build ./cmd/ssh-mcp
 Pre-built or build yourself:
 
 ```bash
-docker build -t ssh-mcp .
+docker build --target ssh-mcp -t ssh-mcp .
 ```
 
 Run (stdio, for local MCP clients that support Docker stdio):
@@ -48,6 +48,11 @@ Notes:
 - The container working directory (`/work` above) becomes the upload root for `upload_file` / `download_file`.
 - For passwords from Docker secret: `-password-file /run/secrets/ssh_pass` (mount secret or use `--secret` with BuildKit). The same file is used for both SSH login and sudo.
 - Non-root user `mcp` (uid 100) inside container.
+
+### Docker Compose Sandbox
+
+For a complete local sandbox environment containing both a test SSH target server and the `ssh-mcp` server configured to communicate, see the [examples/ssh-mcp](../../examples/ssh-mcp) directory.
+
 
 ## Flags
 

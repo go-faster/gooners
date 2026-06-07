@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/prometheus/common/model"
 
 	"github.com/go-faster/gooners/internal/tools/grafana"
 )
@@ -50,8 +51,16 @@ func main() {
 	logFile := flag.String("log-file", "", "path to log file (enables structured debug logging)")
 	transport := flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
 	addr := flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
-	sessionsDir := flag.String("sessions-dir", "", "path to dashboard builder sessions directory")
-	sessionTTL := flag.Duration("session-ttl", 30*time.Minute, "idle session lifetime before deletion")
+	sessionsDir := flag.String("sessions-dir", os.Getenv("GRAFANA_SESSIONS_DIR"), "path to dashboard builder sessions directory (env: GRAFANA_SESSIONS_DIR)")
+	var sessionTTL time.Duration // default 0 (disabled)
+	flag.Func("session-ttl", "idle session lifetime before deletion (default: disabled; e.g. 1h, 2d, 1w)", func(s string) error {
+		dur, err := model.ParseDuration(s)
+		if err != nil {
+			return err
+		}
+		sessionTTL = time.Duration(dur)
+		return nil
+	})
 	grafanaURL := flag.String("grafana-url", os.Getenv("GRAFANA_URL"), "Grafana base URL")
 	grafanaToken := flag.String("grafana-token", os.Getenv("GRAFANA_TOKEN"), "Grafana API token or service account token")
 	grafanaUser := flag.String("grafana-user", os.Getenv("GRAFANA_USER"), "Grafana username for basic auth")
@@ -89,7 +98,7 @@ func main() {
 	defer cancel()
 
 	sm := grafana.NewSessionManager(*sessionsDir)
-	go sm.StartCleanupLoop(ctx, *sessionTTL)
+	go sm.StartCleanupLoop(ctx, sessionTTL)
 
 	gc := grafana.NewGrafanaClient(*grafanaURL, *grafanaToken, *grafanaUser, *grafanaPassword)
 

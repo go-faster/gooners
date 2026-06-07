@@ -1,0 +1,38 @@
+services:
+  grafana:
+    image: grafana/grafana-oss:11.5.0
+    container_name: grafana-sandbox
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # Enable anonymous admin access for easy local testing and development
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:3000/api/health" ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  grafana-mcp:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: grafana-dashboard-mcp
+    entrypoint: [ "grafana-dashboard-mcp" ]
+    command: [ "-transport", "streamable-http", "-addr", ":8081" ]
+    ports:
+      - "8081:8081"
+    environment:
+      - GRAFANA_URL=http://grafana:3000
+      - GRAFANA_USER=admin
+      - GRAFANA_PASSWORD=admin
+      - XDG_DATA_HOME=/data
+    volumes:
+      - ./mcp-sessions:/data
+    depends_on:
+      grafana:
+        condition: service_healthy
+    restart: unless-stopped

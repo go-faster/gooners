@@ -22,13 +22,47 @@ For discovery tools (like validating Prometheus/Loki queries, searching metrics,
 go build ./cmd/grafana-dashboard-mcp
 ```
 
+## Docker
+
+You can build and run `grafana-dashboard-mcp` using Docker.
+
+### Build the image
+
+From the repository root:
+```bash
+docker build --target grafana-dashboard-mcp -t grafana-dashboard-mcp .
+```
+
+### Run (stdio, for local MCP clients supporting docker stdio)
+
+```bash
+docker run --rm -i \
+  -e GRAFANA_URL="http://host.docker.internal:3000" \
+  -e GRAFANA_TOKEN="your-token" \
+  grafana-dashboard-mcp
+```
+
+### Run (streamable-http, recommended for Docker)
+
+```bash
+docker run --rm -p 8081:8081 \
+  -e GRAFANA_URL="http://host.docker.internal:3000" \
+  -e GRAFANA_TOKEN="your-token" \
+  grafana-dashboard-mcp -transport streamable-http -addr :8081
+```
+
+### Docker Compose Sandbox
+
+For a complete local sandbox environment containing both a Grafana instance and the MCP server configured to communicate, see the [examples/grafana-dashboard-mcp](../../examples/grafana-dashboard-mcp) directory.
+
+
 ## Flags
 
 - `-transport <stdio|streamable-http|sse>` — protocol to use (default: `stdio`)
 - `-addr <host:port>` — listen address for HTTP transports (`streamable-http`, `sse`). Default `:8080`
 - `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file.
 - `-sessions-dir <path>` — directory to persist session snapshots (defaults to `~/.gemini/antigravity-cli/scratch/grafana-sessions`).
-- `-session-ttl <duration>` — idle session lifetime before deletion (default: `30m`).
+- `-session-ttl <duration>` — idle session lifetime before deletion (default: disabled). Supports Prometheus duration strings: `1h`, `2d`, `1w`.
 
 ## Tools
 
