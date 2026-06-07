@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -1804,6 +1805,7 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 		if err != nil {
 			return nil, ExportDashboardRes{}, fmt.Errorf("marshaling dashboard: %w", err)
 		}
+		slog.Debug("exported dashboard", "dashboard_id", s.DashboardID)
 
 		res := ExportDashboardRes{
 			UID: s.UID,

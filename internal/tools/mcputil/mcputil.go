@@ -5,6 +5,9 @@
 package mcputil
 
 import (
+	"context"
+	"log/slog"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/session"
@@ -42,6 +45,13 @@ func Register[In, Out any](s *mcp.Server, def ToolDef, handler mcp.ToolHandlerFo
 		d := def.Flags.Has(Destructive)
 		ann.DestructiveHint = &d
 	}
+	wrapped := func(ctx context.Context, req *mcp.CallToolRequest, args In) (*mcp.CallToolResult, Out, error) {
+		session := req.Session
+		slog.Info("called tool handler", "tool", def.Name, "session_id", session.ID())
+		return handler(ctx, req, args)
+	}
+	handler = mcp.ToolHandlerFor[In, Out](wrapped)
+
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        def.Name,
 		Description: def.Description,
