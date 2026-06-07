@@ -92,6 +92,10 @@ skills/
 - The `description` field drives automatic invocation — make it specific and include all relevant trigger contexts.
 - Update the Skills table in `README.md` when adding or removing a skill.
 
+## Commits
+
+- Commit generated files (golden files, mocks, protobuf output, etc.) in a separate commit from the code that produces them. If it's unclear whether a file is generated, ask before bundling it.
+
 ## Testing
 
 - Tests must not rely on runner state
