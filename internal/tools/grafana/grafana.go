@@ -41,6 +41,7 @@ type DashboardSession struct {
 	DashboardID string         `json:"dashboard_id"`
 	Title       string         `json:"title"`
 	UID         string         `json:"uid,omitempty"`
+	Model       string         `json:"model,omitempty"`
 	Tags        []string       `json:"tags,omitempty"`
 	TimeFrom    string         `json:"time_from,omitempty"`
 	TimeTo      string         `json:"time_to,omitempty"`
@@ -780,7 +781,7 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 	// 3.1 Construction Tools
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "add_dashboard",
-		Description: "Initializes a new dashboard building session.",
+		Description: "Initializes a new dashboard building session. Pass your model name in the 'model' field — it is recorded on the session and added as a tag and description on export. Omit or pass empty string to opt out.",
 	}, addDashboardHandler(sm))
 
 	mcputil.Register(s, mcputil.ToolDef{
@@ -893,9 +894,10 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 // Handler implementations
 
 type AddDashboardReq struct {
-	Name string   `json:"name" jsonschema:"The title of the dashboard"`
-	UID  string   `json:"uid,omitempty" jsonschema:"Optional unique ID for the dashboard"`
-	Tags []string `json:"tags,omitempty" jsonschema:"Optional tags for the dashboard"`
+	Name  string   `json:"name" jsonschema:"The title of the dashboard"`
+	UID   string   `json:"uid,omitempty" jsonschema:"Optional unique ID for the dashboard"`
+	Tags  []string `json:"tags,omitempty" jsonschema:"Optional tags for the dashboard"`
+	Model string   `json:"model,omitempty" jsonschema:"Your model name (e.g. 'claude-sonnet-4-6'). Recorded on the session and added as a 'created-by:<model>' tag on export. Pass an empty string to opt out."`
 }
 
 type AddDashboardRes struct {
@@ -912,6 +914,7 @@ func addDashboardHandler(sm *SessionManager) mcp.ToolHandlerFor[AddDashboardReq,
 			DashboardID: id,
 			Title:       args.Name,
 			UID:         args.UID,
+			Model:       args.Model,
 			Tags:        args.Tags,
 			CreatedAt:   time.Now(),
 			TouchedAt:   time.Now(),
@@ -928,6 +931,7 @@ type ListSessionsRes struct {
 type SessionInfo struct {
 	DashboardID string    `json:"dashboard_id"`
 	Title       string    `json:"title"`
+	Model       string    `json:"model,omitempty"`
 	TouchedAt   time.Time `json:"touched_at"`
 }
 
@@ -941,6 +945,7 @@ func listSessionsHandler(sm *SessionManager) mcp.ToolHandlerFor[struct{}, ListSe
 			res.Sessions[i] = SessionInfo{
 				DashboardID: s.DashboardID,
 				Title:       s.Title,
+				Model:       s.Model,
 				TouchedAt:   s.TouchedAt,
 			}
 		}
@@ -1707,8 +1712,15 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 		if s.UID != "" {
 			dbBuilder.Uid(s.UID)
 		}
-		if len(s.Tags) > 0 {
-			dbBuilder.Tags(s.Tags)
+		tags := s.Tags
+		if s.Model != "" {
+			tags = append(tags, "created-by:"+s.Model)
+		}
+		if len(tags) > 0 {
+			dbBuilder.Tags(tags)
+		}
+		if s.Model != "" {
+			dbBuilder.Description("Created by " + s.Model)
 		}
 		if s.TimeFrom != "" || s.TimeTo != "" {
 			from := s.TimeFrom
