@@ -8,11 +8,17 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/go-faster/sdk/gold"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/grafana/grafana-foundation-sdk/go/dashboard"
 )
+
+func TestMain(m *testing.M) {
+	gold.Init()
+	os.Exit(m.Run())
+}
 
 func TestSessionManager(t *testing.T) {
 	tempDir := t.TempDir()
@@ -147,29 +153,15 @@ func TestExportDashboard(t *testing.T) {
 	assert.NotEmpty(t, res.OutputPath)
 	assert.False(t, res.Saved)
 
-	// Check fields in exported JSON
-	var raw map[string]any
 	data, err := os.ReadFile(res.OutputPath)
 	require.NoError(t, err)
-	err = json.Unmarshal(data, &raw)
+
+	// Normalize to pretty-printed JSON for stable comparison.
+	var raw any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	pretty, err := json.MarshalIndent(raw, "", "  ")
 	require.NoError(t, err)
-
-	assert.Equal(t, "Production Service Health", raw["title"])
-	assert.Equal(t, "prod-service-health", raw["uid"])
-	assert.Equal(t, []any{"production", "service"}, raw["tags"])
-
-	templating := raw["templating"].(map[string]any)
-	list := templating["list"].([]any)
-	assert.Len(t, list, 1)
-	v := list[0].(map[string]any)
-	assert.Equal(t, "env", v["name"])
-	assert.Equal(t, "query", v["type"])
-
-	panels := raw["panels"].([]any)
-	assert.Len(t, panels, 1)
-	p := panels[0].(map[string]any)
-	assert.Equal(t, "HTTP Requests Rate", p["title"])
-	assert.Equal(t, "timeseries", p["type"])
+	gold.Str(t, string(pretty)+"\n", "export_dashboard.json")
 
 	// roundtrip via parser
 	imported, err := parseDashboardToSession(data, "imp-1")
@@ -406,6 +398,28 @@ func TestPlacePanel(t *testing.T) {
 		assert.Equal(t, uint32(10), s.NextY, "placing behind existing cursor must not regress NextY")
 	})
 
+	t.Run("no-row: stat+timeseries placed side-by-side", func(t *testing.T) {
+		// Simulates the common pattern: stat (w=6) + timeseries (w=18) on the same line.
+		s := &DashboardSession{}
+		w6, w18 := 6, 18
+		stat := placePanel(s, nil, "stat", &w6, nil, nil, nil)
+		ts := placePanel(s, nil, "timeseries", &w18, nil, nil, nil)
+		assert.Equal(t, uint32(0), stat.X)
+		assert.Equal(t, uint32(6), ts.X, "timeseries must start right after stat")
+		assert.Equal(t, stat.Y, ts.Y, "stat and timeseries must share the same Y")
+	})
+
+	t.Run("no-row: wraps when NextX+W exceeds 24", func(t *testing.T) {
+		s := &DashboardSession{}
+		w6, w18 := 6, 18
+		placePanel(s, nil, "stat", &w6, nil, nil, nil)
+		placePanel(s, nil, "timeseries", &w18, nil, nil, nil)
+		// Second pair should wrap to a new line.
+		stat2 := placePanel(s, nil, "stat", &w6, nil, nil, nil)
+		assert.Equal(t, uint32(0), stat2.X, "second stat must wrap to X=0")
+		assert.Equal(t, uint32(8), stat2.Y, "second stat Y = first line height (8)")
+	})
+
 	t.Run("row: panels flow side-by-side", func(t *testing.T) {
 		s := &DashboardSession{NextY: 1}
 		r := &RowEntry{NextY: 1}
@@ -583,6 +597,14 @@ func TestParseDashboardRoundtrip(t *testing.T) {
 	data, err := os.ReadFile(res.OutputPath)
 	require.NoError(t, err)
 
+	// Golden file covers the full exported JSON structure.
+	var raw any
+	require.NoError(t, json.Unmarshal(data, &raw))
+	pretty, err := json.MarshalIndent(raw, "", "  ")
+	require.NoError(t, err)
+	gold.Str(t, string(pretty)+"\n", "roundtrip_dashboard.json")
+
+	// Verify the parser correctly reconstructs the session from the JSON.
 	imported, err := parseDashboardToSession(data, "dash-roundtrip")
 	require.NoError(t, err)
 
@@ -596,35 +618,37 @@ func TestParseDashboardRoundtrip(t *testing.T) {
 	assert.Equal(t, "var1", imported.Variables[0].Name)
 
 	require.Len(t, imported.Rows, 2)
-	assert.Equal(t, "Flat Row", imported.Rows[0].Title)
-	assert.False(t, imported.Rows[0].Collapsed)
-	require.Len(t, imported.Rows[0].Panels, 1)
+	ir0 := imported.Rows[0]
+	assert.Equal(t, "Flat Row", ir0.Title)
+	assert.False(t, ir0.Collapsed)
+	require.Len(t, ir0.Panels, 1)
 
-	p1 := imported.Rows[0].Panels[0]
-	assert.Equal(t, "Panel 1", p1.Title)
-	assert.Equal(t, "stat", p1.Type)
-	assert.Equal(t, "bytes", p1.Unit)
-	assert.NotNil(t, p1.Decimals)
-	assert.Equal(t, 2.0, *p1.Decimals)
-	assert.Equal(t, []string{"lastNotNull", "mean"}, p1.ReduceCalcs)
-	require.Len(t, p1.Thresholds, 2)
-	assert.Nil(t, p1.Thresholds[0].Value)
-	assert.Equal(t, "green", p1.Thresholds[0].Color)
-	assert.NotNil(t, p1.Thresholds[1].Value)
-	assert.Equal(t, 80.0, *p1.Thresholds[1].Value)
-	assert.Equal(t, "red", p1.Thresholds[1].Color)
-	require.Len(t, p1.Queries, 1)
-	assert.Equal(t, "up", p1.Queries[0].Expr)
+	ip1 := ir0.Panels[0]
+	assert.Equal(t, "Panel 1", ip1.Title)
+	assert.Equal(t, "stat", ip1.Type)
+	assert.Equal(t, "bytes", ip1.Unit)
+	require.NotNil(t, ip1.Decimals)
+	assert.Equal(t, 2.0, *ip1.Decimals)
+	assert.Equal(t, []string{"lastNotNull", "mean"}, ip1.ReduceCalcs)
+	require.Len(t, ip1.Thresholds, 2)
+	assert.Nil(t, ip1.Thresholds[0].Value)
+	assert.Equal(t, "green", ip1.Thresholds[0].Color)
+	require.NotNil(t, ip1.Thresholds[1].Value)
+	assert.Equal(t, 80.0, *ip1.Thresholds[1].Value)
+	assert.Equal(t, "red", ip1.Thresholds[1].Color)
+	require.Len(t, ip1.Queries, 1)
+	assert.Equal(t, "up", ip1.Queries[0].Expr)
 
-	assert.Equal(t, "Collapsed Row", imported.Rows[1].Title)
-	assert.True(t, imported.Rows[1].Collapsed)
-	require.Len(t, imported.Rows[1].Panels, 1)
+	ir1 := imported.Rows[1]
+	assert.Equal(t, "Collapsed Row", ir1.Title)
+	assert.True(t, ir1.Collapsed)
+	require.Len(t, ir1.Panels, 1)
 
-	p2 := imported.Rows[1].Panels[0]
-	assert.Equal(t, "Panel 2", p2.Title)
-	assert.Equal(t, "timeseries", p2.Type)
-	require.Len(t, p2.Queries, 1)
-	assert.Equal(t, "rate(http_requests[5m])", p2.Queries[0].Expr)
+	ip2 := ir1.Panels[0]
+	assert.Equal(t, "Panel 2", ip2.Title)
+	assert.Equal(t, "timeseries", ip2.Type)
+	require.Len(t, ip2.Queries, 1)
+	assert.Equal(t, "rate(http_requests[5m])", ip2.Queries[0].Expr)
 }
 
 func TestImportDashboardHandler(t *testing.T) {

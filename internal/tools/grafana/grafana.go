@@ -47,7 +47,9 @@ type DashboardSession struct {
 	Variables   []VariableSpec `json:"variables,omitempty"`
 	Rows        []*RowEntry    `json:"rows,omitempty"`
 	Panels      []*PanelEntry  `json:"panels,omitempty"`
+	NextX       uint32         `json:"next_x"`
 	NextY       uint32         `json:"next_y"`
+	LineHeight  uint32         `json:"line_height"`
 	CreatedAt   time.Time      `json:"created_at"`
 	TouchedAt   time.Time      `json:"touched_at"`
 }
@@ -1138,6 +1140,29 @@ type AddPanelsBatchRes struct {
 	PanelIDs []string `json:"panel_ids"`
 }
 
+// placePanel computes the GridPos for a new panel using a flow layout.
+//
+// The layout tracks two cursors — NextX (column) and NextY (max extent) — at
+// both the row level (r != nil) and the session level (r == nil), mirroring
+// Grafana's own grid model.
+//
+// Row context (r != nil):
+//   - Panels are placed left-to-right starting at r.NextX, r.NextY.
+//   - r.LineHeight tracks the tallest panel on the current line.
+//   - When r.NextX + w > 24 the line wraps: r.NextY advances by r.LineHeight,
+//     r.NextX and r.LineHeight reset to zero.
+//   - s.NextY is kept as the global max extent (max of y+h across all panels).
+//
+// Session context (r == nil):
+//   - s.NextX and s.LineHeight play the same role as r.NextX / r.LineHeight.
+//   - s.NextY is the global max extent, not the current-line start.
+//   - Because of that, the current line's Y is derived as s.NextY − s.LineHeight
+//     (zero when the line is fresh, because s.LineHeight == 0).
+//   - On wrap, s.NextX and s.LineHeight reset; s.NextY is already correct and
+//     does not need to be advanced (it already accounts for the previous line).
+//
+// Explicit x/y override the cursor entirely; the max-extent invariant on s.NextY
+// is still maintained so subsequent auto-placed panels don't overlap.
 func placePanel(s *DashboardSession, r *RowEntry, ptype string, wOpt, hOpt, xOpt, yOpt *int) dashboard.GridPos {
 	w := uint32(24)
 	if wOpt != nil {
@@ -1163,7 +1188,7 @@ func placePanel(s *DashboardSession, r *RowEntry, ptype string, wOpt, hOpt, xOpt
 		} else {
 			if r.NextX+w > 24 {
 				if r.LineHeight == 0 {
-					r.LineHeight = 4
+					r.LineHeight = h
 				}
 				r.NextY += r.LineHeight
 				r.NextX = 0
@@ -1189,17 +1214,31 @@ func placePanel(s *DashboardSession, r *RowEntry, ptype string, wOpt, hOpt, xOpt
 		if xOpt != nil {
 			x = uint32(*xOpt)
 		} else {
-			x = 0
+			if s.NextX+w > 24 {
+				// s.NextY already reflects the max extent of the current line.
+				// Just reset the per-line counters to start a new line there.
+				s.NextX = 0
+				s.LineHeight = 0
+			}
+			x = s.NextX
+			s.NextX += w
 		}
+
+		// Compute Y before updating LineHeight to avoid using the new height.
 		if yOpt != nil {
 			y = uint32(*yOpt)
+		} else if s.LineHeight > 0 {
+			// Current line Y = NextY minus the height already recorded for this line.
+			y = s.NextY - s.LineHeight
 		} else {
+			// Fresh line: start at the current max extent.
 			y = s.NextY
 		}
 
-		if yOpt == nil {
-			s.NextY = y + h
-		} else if y+h > s.NextY {
+		if h > s.LineHeight {
+			s.LineHeight = h
+		}
+		if y+h > s.NextY {
 			s.NextY = y + h
 		}
 	}
