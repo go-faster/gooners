@@ -69,6 +69,7 @@ For a complete local sandbox environment containing both a Grafana instance and 
 ### 1. Dashboard Construction Tools
 - `add_dashboard` — initializes a new dashboard building session.
 - `list_dashboard_sessions` — lists active sessions.
+- `import_dashboard` — fetches existing dashboard by its Grafana UID and loads it into an editable session (supports round-tripping dashboards originally built with this MCP).
 - `add_param` — adds a template variable (query, custom, or datasource) to the dashboard.
 - `set_time_range` — sets the default dashboard time range (e.g. `now-6h` to `now`).
 - `add_row` — adds a standard Grafana row for grouping panels.

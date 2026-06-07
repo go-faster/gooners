@@ -108,6 +108,274 @@ func (s *DashboardSession) findPanel(panelID string) (*PanelEntry, *RowEntry, in
 	return nil, nil, -1
 }
 
+func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSession, error) {
+	var dash map[string]any
+	if err := json.Unmarshal(dashJSON, &dash); err != nil {
+		return nil, err
+	}
+	s := &DashboardSession{
+		DashboardID: sessionID,
+		Title:       getString(dash, "title"),
+		UID:         getString(dash, "uid"),
+		Tags:        getStringSlice(dash, "tags"),
+		CreatedAt:   time.Now(),
+		TouchedAt:   time.Now(),
+	}
+	if t, ok := dash["time"].(map[string]any); ok {
+		s.TimeFrom = getString(t, "from")
+		s.TimeTo = getString(t, "to")
+	}
+	if templ, ok := dash["templating"].(map[string]any); ok {
+		if list, ok := templ["list"].([]any); ok {
+			for _, lv := range list {
+				if vm, ok := lv.(map[string]any); ok {
+					vs := VariableSpec{
+						Name:  getString(vm, "name"),
+						Type:  getString(vm, "type"),
+						Query: getString(vm, "query"),
+					}
+					if ds, ok := vm["datasource"].(map[string]any); ok {
+						vs.DatasourceUID = getString(ds, "uid")
+						vs.DatasourceType = getString(ds, "type")
+					}
+					s.Variables = append(s.Variables, vs)
+				}
+			}
+		}
+	}
+	panelsRaw, _ := dash["panels"].([]any)
+	var topPanels []*PanelEntry
+	var rows []*RowEntry
+	i := 0
+	for i < len(panelsRaw) {
+		pmap, ok := panelsRaw[i].(map[string]any)
+		if !ok {
+			i++
+			continue
+		}
+		ptype := getString(pmap, "type")
+		if ptype == "row" {
+			rowID := uuid.New().String()
+			row := &RowEntry{
+				ID:        rowID,
+				Title:     getString(pmap, "title"),
+				Collapsed: getBool(pmap, "collapsed"),
+			}
+			if gp, ok := pmap["gridPos"].(map[string]any); ok {
+				row.Y = uint32(getFloat(gp, "y"))
+			}
+			row.NextX = 0
+			row.NextY = row.Y + 1
+			row.LineHeight = 0
+			subs := []any{}
+			if sps, ok := pmap["panels"].([]any); ok {
+				subs = sps
+			}
+			if row.Collapsed || len(subs) > 0 {
+				for _, sp := range subs {
+					if spm, ok := sp.(map[string]any); ok {
+						if pe := parsePanelEntry(spm); pe != nil {
+							row.Panels = append(row.Panels, pe)
+						}
+					}
+				}
+			} else {
+				i++
+				for i < len(panelsRaw) {
+					next, ok := panelsRaw[i].(map[string]any)
+					if !ok {
+						i++
+						continue
+					}
+					if getString(next, "type") == "row" {
+						break
+					}
+					if pe := parsePanelEntry(next); pe != nil {
+						row.Panels = append(row.Panels, pe)
+					}
+					i++
+				}
+				for _, p := range row.Panels {
+					if p.GridPos.Y+p.GridPos.H > row.NextY {
+						row.NextY = p.GridPos.Y + p.GridPos.H
+					}
+					// Approximation to restore layout tightly for the last row-line
+					if p.GridPos.X+p.GridPos.W > row.NextX {
+						row.NextX = p.GridPos.X + p.GridPos.W
+					}
+					if p.GridPos.H > row.LineHeight {
+						row.LineHeight = p.GridPos.H
+					}
+				}
+				rows = append(rows, row)
+				if row.NextY > s.NextY {
+					s.NextY = row.NextY
+				}
+				continue
+			}
+			for _, p := range row.Panels {
+				if p.GridPos.Y+p.GridPos.H > row.NextY {
+					row.NextY = p.GridPos.Y + p.GridPos.H
+				}
+				if p.GridPos.X+p.GridPos.W > row.NextX {
+					row.NextX = p.GridPos.X + p.GridPos.W
+				}
+				if p.GridPos.H > row.LineHeight {
+					row.LineHeight = p.GridPos.H
+				}
+			}
+			rows = append(rows, row)
+			if row.NextY > s.NextY {
+				s.NextY = row.NextY
+			}
+		} else {
+			if pe := parsePanelEntry(pmap); pe != nil {
+				topPanels = append(topPanels, pe)
+				if pe.GridPos.Y+pe.GridPos.H > s.NextY {
+					s.NextY = pe.GridPos.Y + pe.GridPos.H
+				}
+			}
+		}
+		i++
+	}
+	s.Rows = rows
+	s.Panels = topPanels
+	for _, r := range s.Rows {
+		if r.NextY > s.NextY {
+			s.NextY = r.NextY
+		}
+	}
+	return s, nil
+}
+
+func parsePanelEntry(pmap map[string]any) *PanelEntry {
+	pe := &PanelEntry{
+		ID:          uuid.New().String(),
+		Title:       getString(pmap, "title"),
+		Description: getString(pmap, "description"),
+		Type:        getString(pmap, "type"),
+	}
+	if gp, ok := pmap["gridPos"].(map[string]any); ok {
+		pe.GridPos = dashboard.GridPos{
+			X: uint32(getFloat(gp, "x")),
+			Y: uint32(getFloat(gp, "y")),
+			W: uint32(getFloat(gp, "w")),
+			H: uint32(getFloat(gp, "h")),
+		}
+	}
+	if targets, ok := pmap["targets"].([]any); ok {
+		for _, t := range targets {
+			if tm, ok := t.(map[string]any); ok {
+				q := QueryEntry{
+					RefID:        getString(tm, "refId"),
+					Expr:         getString(tm, "expr"),
+					LegendFormat: getString(tm, "legendFormat"),
+				}
+				if ds, ok := tm["datasource"].(map[string]any); ok {
+					q.DatasourceUID = getString(ds, "uid")
+					q.DatasourceType = getString(ds, "type")
+				}
+				pe.Queries = append(pe.Queries, q)
+			}
+		}
+	}
+	if fc, ok := pmap["fieldConfig"].(map[string]any); ok {
+		if defs, ok := fc["defaults"].(map[string]any); ok {
+			if u, ok := defs["unit"].(string); ok {
+				pe.Unit = u
+			}
+			if defs["decimals"] != nil {
+				f := getFloat(defs, "decimals")
+				pe.Decimals = &f
+			}
+			if ths, ok := defs["thresholds"].(map[string]any); ok {
+				if steps, ok := ths["steps"].([]any); ok {
+					for _, st := range steps {
+						if sm, ok := st.(map[string]any); ok {
+							var val *float64
+							if sm["value"] != nil {
+								f := getFloat(sm, "value")
+								val = &f
+							}
+							col := getString(sm, "color")
+							if col != "" {
+								pe.Thresholds = append(pe.Thresholds, dashboard.Threshold{Value: val, Color: col})
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	if opts, ok := pmap["options"].(map[string]any); ok {
+		if leg, ok := opts["legend"].(map[string]any); ok {
+			if calcs, ok := leg["calcs"].([]any); ok {
+				for _, c := range calcs {
+					if s, ok := c.(string); ok {
+						pe.ReduceCalcs = append(pe.ReduceCalcs, s)
+					}
+				}
+			}
+		}
+		if ro, ok := opts["reduceOptions"].(map[string]any); ok {
+			if calcs, ok := ro["calcs"].([]any); ok {
+				for _, c := range calcs {
+					if s, ok := c.(string); ok {
+						pe.ReduceCalcs = append(pe.ReduceCalcs, s)
+					}
+				}
+			}
+		}
+	}
+	return pe
+}
+
+func getString(m map[string]any, k string) string {
+	if v, ok := m[k]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+func getBool(m map[string]any, k string) bool {
+	if v, ok := m[k]; ok {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+func getFloat(m map[string]any, k string) float64 {
+	if v, ok := m[k]; ok {
+		if f, ok := v.(float64); ok {
+			return f
+		}
+		if i, ok := v.(int); ok {
+			return float64(i)
+		}
+		if i, ok := v.(int64); ok {
+			return float64(i)
+		}
+	}
+	return 0
+}
+
+func getStringSlice(m map[string]any, k string) []string {
+	if v, ok := m[k].([]any); ok {
+		var res []string
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				res = append(res, s)
+			}
+		}
+		return res
+	}
+	return nil
+}
+
 // SessionManager manages active dashboard builder sessions.
 type SessionManager struct {
 	mu       sync.Mutex
@@ -492,6 +760,18 @@ func (c *GrafanaClient) SaveDashboard(ctx context.Context, dashboardJSON []byte,
 	return &saveRes, nil
 }
 
+func (c *GrafanaClient) GetDashboardByUID(ctx context.Context, uid string) ([]byte, error) {
+	var full struct {
+		Dashboard json.RawMessage `json:"dashboard"`
+	}
+	u := &url.URL{Path: "/api/dashboards/uid/"}
+	path := u.JoinPath(url.PathEscape(uid)).EscapedPath()
+	if err := c.getJSON(ctx, path, &full); err != nil {
+		return nil, err
+	}
+	return full.Dashboard, nil
+}
+
 // Tool implementation.
 
 func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
@@ -506,6 +786,12 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 		Description: "Returns active dashboard_ids with their titles and timestamps.",
 		Flags:       mcputil.ReadOnly,
 	}, listSessionsHandler(sm))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "import_dashboard",
+		Description: "Fetches an existing dashboard by UID from Grafana, or from a local file path, and starts a new editable session from it. Works for dashboards created with this tool (roundtrippable). Provide exactly one of uid or file_path.",
+		Flags:       mcputil.ReadOnly,
+	}, importDashboardHandler(sm, gc))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "add_param",
@@ -657,6 +943,51 @@ func listSessionsHandler(sm *SessionManager) mcp.ToolHandlerFor[struct{}, ListSe
 			}
 		}
 		return nil, res, nil
+	}
+}
+
+type ImportDashboardReq struct {
+	UID      string `json:"uid,omitempty" jsonschema:"The UID of the dashboard in Grafana to import for editing"`
+	FilePath string `json:"file_path,omitempty" jsonschema:"The file path to import the dashboard from"`
+}
+
+type ImportDashboardRes struct {
+	DashboardID string `json:"dashboard_id"`
+	Title       string `json:"title,omitempty"`
+}
+
+func importDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandlerFor[ImportDashboardReq, ImportDashboardRes] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args ImportDashboardReq) (*mcp.CallToolResult, ImportDashboardRes, error) {
+		var raw []byte
+		var err error
+		switch {
+		case args.FilePath != "":
+			raw, err = os.ReadFile(args.FilePath)
+			if err != nil {
+				return nil, ImportDashboardRes{}, fmt.Errorf("reading dashboard file: %w", err)
+			}
+		case args.UID != "":
+			if gc == nil {
+				return nil, ImportDashboardRes{}, fmt.Errorf("grafana client not configured")
+			}
+			raw, err = gc.GetDashboardByUID(ctx, args.UID)
+			if err != nil {
+				return nil, ImportDashboardRes{}, fmt.Errorf("fetching dashboard: %w", err)
+			}
+		default:
+			return nil, ImportDashboardRes{}, fmt.Errorf("either uid or file_path must be provided")
+		}
+
+		id := uuid.New().String()
+		sess, err := parseDashboardToSession(raw, id)
+		if err != nil {
+			return nil, ImportDashboardRes{}, fmt.Errorf("parsing dashboard: %w", err)
+		}
+		if sess.UID == "" {
+			sess.UID = args.UID
+		}
+		sm.Add(sess)
+		return nil, ImportDashboardRes{DashboardID: id, Title: sess.Title}, nil
 	}
 }
 
@@ -1392,11 +1723,19 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 		// Add rows
 		for _, r := range s.Rows {
 			rowBuilder := dashboard.NewRowBuilder(r.Title).Collapsed(r.Collapsed)
-			for _, p := range r.Panels {
-				pBuilder := buildPanel(p)
-				rowBuilder.WithPanel(pBuilder)
+			if r.Collapsed {
+				for _, p := range r.Panels {
+					pBuilder := buildPanel(p)
+					rowBuilder.WithPanel(pBuilder)
+				}
+				dbBuilder.WithRow(rowBuilder)
+			} else {
+				dbBuilder.WithRow(rowBuilder)
+				for _, p := range r.Panels {
+					pBuilder := buildPanel(p)
+					dbBuilder.WithPanel(pBuilder)
+				}
 			}
-			dbBuilder.WithRow(rowBuilder)
 		}
 
 		// Add top-level panels

@@ -170,6 +170,21 @@ func TestExportDashboard(t *testing.T) {
 	p := panels[0].(map[string]any)
 	assert.Equal(t, "HTTP Requests Rate", p["title"])
 	assert.Equal(t, "timeseries", p["type"])
+
+	// roundtrip via parser
+	imported, err := parseDashboardToSession(data, "imp-1")
+	require.NoError(t, err)
+	assert.Equal(t, "Production Service Health", imported.Title)
+	assert.Equal(t, "prod-service-health", imported.UID)
+	assert.Len(t, imported.Tags, 2)
+	assert.Len(t, imported.Variables, 1)
+	assert.Equal(t, "env", imported.Variables[0].Name)
+	assert.Equal(t, "query", imported.Variables[0].Type)
+	assert.Equal(t, "label_values(up, job)", imported.Variables[0].Query)
+	assert.Len(t, imported.Panels, 1)
+	assert.Equal(t, "HTTP Requests Rate", imported.Panels[0].Title)
+	assert.Equal(t, "timeseries", imported.Panels[0].Type)
+	assert.Equal(t, uint32(24), imported.Panels[0].GridPos.W)
 }
 
 func TestQueryRefID(t *testing.T) {
@@ -490,4 +505,164 @@ func TestGrafanaMCPNewFixes(t *testing.T) {
 	require.NoError(t, err)
 	// Should have exactly 5 panels, and no race/corruption occurred
 	assert.Len(t, finalSession.Panels, 5)
+}
+
+func TestParseDashboardRoundtrip(t *testing.T) {
+	tempDir := t.TempDir()
+	sm := NewSessionManager(tempDir)
+	s := &DashboardSession{
+		DashboardID: "dash-roundtrip",
+		Title:       "Roundtrip Test",
+		UID:         "uid-roundtrip",
+		TimeFrom:    "now-24h",
+		TimeTo:      "now",
+		Tags:        []string{"tag1", "tag2"},
+	}
+	s.Variables = []VariableSpec{
+		{Name: "var1", Type: "custom", Query: "a,b,c"},
+	}
+
+	// Flat row
+	r1 := &RowEntry{
+		ID:        "row-1",
+		Title:     "Flat Row",
+		Collapsed: false,
+		Y:         0,
+		NextY:     5,
+		Panels: []*PanelEntry{
+			{
+				ID:          "p1",
+				Title:       "Panel 1",
+				Type:        "stat",
+				GridPos:     dashboard.GridPos{X: 0, Y: 1, W: 12, H: 4},
+				Unit:        "bytes",
+				Decimals:    func() *float64 { f := 2.0; return &f }(),
+				ReduceCalcs: []string{"lastNotNull", "mean"},
+				Thresholds: []dashboard.Threshold{
+					{Value: nil, Color: "green"},
+					{Value: func() *float64 { f := 80.0; return &f }(), Color: "red"},
+				},
+				Queries: []QueryEntry{
+					{RefID: "A", Expr: "up", DatasourceUID: "ds1", DatasourceType: "prometheus"},
+				},
+			},
+		},
+	}
+
+	// Collapsed row
+	r2 := &RowEntry{
+		ID:        "row-2",
+		Title:     "Collapsed Row",
+		Collapsed: true,
+		Y:         5,
+		NextY:     6,
+		Panels: []*PanelEntry{
+			{
+				ID:      "p2",
+				Title:   "Panel 2",
+				Type:    "timeseries",
+				GridPos: dashboard.GridPos{X: 0, Y: 6, W: 24, H: 8},
+				Queries: []QueryEntry{
+					{RefID: "B", Expr: "rate(http_requests[5m])"},
+				},
+			},
+		},
+	}
+	s.Rows = []*RowEntry{r1, r2}
+	sm.Add(s)
+
+	outPath := filepath.Join(tempDir, "out-roundtrip.json")
+	handler := exportDashboardHandler(sm, nil)
+	_, res, err := handler(context.Background(), nil, ExportDashboardReq{
+		DashboardID: "dash-roundtrip",
+		Save:        false,
+		OutputPath:  outPath,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(res.OutputPath)
+	require.NoError(t, err)
+
+	imported, err := parseDashboardToSession(data, "dash-roundtrip")
+	require.NoError(t, err)
+
+	assert.Equal(t, "Roundtrip Test", imported.Title)
+	assert.Equal(t, "uid-roundtrip", imported.UID)
+	assert.Equal(t, "now-24h", imported.TimeFrom)
+	assert.Equal(t, "now", imported.TimeTo)
+	assert.Equal(t, []string{"tag1", "tag2"}, imported.Tags)
+
+	require.Len(t, imported.Variables, 1)
+	assert.Equal(t, "var1", imported.Variables[0].Name)
+
+	require.Len(t, imported.Rows, 2)
+	assert.Equal(t, "Flat Row", imported.Rows[0].Title)
+	assert.False(t, imported.Rows[0].Collapsed)
+	require.Len(t, imported.Rows[0].Panels, 1)
+
+	p1 := imported.Rows[0].Panels[0]
+	assert.Equal(t, "Panel 1", p1.Title)
+	assert.Equal(t, "stat", p1.Type)
+	assert.Equal(t, "bytes", p1.Unit)
+	assert.NotNil(t, p1.Decimals)
+	assert.Equal(t, 2.0, *p1.Decimals)
+	assert.Equal(t, []string{"lastNotNull", "mean"}, p1.ReduceCalcs)
+	require.Len(t, p1.Thresholds, 2)
+	assert.Nil(t, p1.Thresholds[0].Value)
+	assert.Equal(t, "green", p1.Thresholds[0].Color)
+	assert.NotNil(t, p1.Thresholds[1].Value)
+	assert.Equal(t, 80.0, *p1.Thresholds[1].Value)
+	assert.Equal(t, "red", p1.Thresholds[1].Color)
+	require.Len(t, p1.Queries, 1)
+	assert.Equal(t, "up", p1.Queries[0].Expr)
+
+	assert.Equal(t, "Collapsed Row", imported.Rows[1].Title)
+	assert.True(t, imported.Rows[1].Collapsed)
+	require.Len(t, imported.Rows[1].Panels, 1)
+
+	p2 := imported.Rows[1].Panels[0]
+	assert.Equal(t, "Panel 2", p2.Title)
+	assert.Equal(t, "timeseries", p2.Type)
+	require.Len(t, p2.Queries, 1)
+	assert.Equal(t, "rate(http_requests[5m])", p2.Queries[0].Expr)
+}
+
+func TestImportDashboardHandler(t *testing.T) {
+	tempDir := t.TempDir()
+	sm := NewSessionManager(tempDir)
+
+	dashboardJSON := `{
+		"title": "File Import Test",
+		"uid": "file-123",
+		"panels": []
+	}`
+
+	filePath := filepath.Join(tempDir, "dash.json")
+	require.NoError(t, os.WriteFile(filePath, []byte(dashboardJSON), 0o600))
+
+	handler := importDashboardHandler(sm, nil)
+
+	// Test file path import
+	_, res, err := handler(context.Background(), nil, ImportDashboardReq{
+		FilePath: filePath,
+	})
+	require.NoError(t, err)
+	assert.NotEmpty(t, res.DashboardID)
+	assert.Equal(t, "File Import Test", res.Title)
+
+	// Verify it was saved to the session manager
+	sess, err := sm.Get(res.DashboardID)
+	require.NoError(t, err)
+	assert.Equal(t, "File Import Test", sess.Title)
+	assert.Equal(t, "file-123", sess.UID)
+
+	// Test failure on missing file
+	_, _, err = handler(context.Background(), nil, ImportDashboardReq{
+		FilePath: filepath.Join(tempDir, "does-not-exist.json"),
+	})
+	require.ErrorContains(t, err, "reading dashboard file")
+
+	// Test failure when neither provided
+	_, _, err = handler(context.Background(), nil, ImportDashboardReq{})
+	require.ErrorContains(t, err, "either uid or file_path must be provided")
 }
