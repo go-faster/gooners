@@ -16,7 +16,7 @@ The MCP servers expose predefined prompts that can be invoked by AI agents:
 | Server | Prompt | Description |
 |--------|--------|-------------|
 | `ssh-mcp` | `troubleshoot-ssh` | Provides instructions on how to use SSH tools to debug a remote machine |
-| `grafana-dashboard-mcp` | `design-dashboard` | Guides the agent on designing a dashboard following the RED/USE methods |
+| `grafana-dashboard-mcp` | `design-dashboard` | Guides the agent through metric discovery, RED/USE dashboard design, query verification, and export |
 
 ## Skills
 

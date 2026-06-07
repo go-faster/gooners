@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	_ "embed"
 	"flag"
 	"fmt"
 	"log"
@@ -18,6 +19,9 @@ import (
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/grafana"
 )
+
+//go:embed design-dashboard.md
+var designDashboardPrompt string
 
 func runServer(ctx context.Context, s *mcp.Server, transport, addr string) error {
 	handler := func(*http.Request) *mcp.Server { return s }
@@ -108,35 +112,17 @@ func main() {
 			{
 				Name:        "design-dashboard",
 				Description: "Design and build a high-quality Grafana dashboard",
-				Arguments: []*mcp.PromptArgument{
-					{Name: "telemetry_standard", Description: "Telemetry standard in use (e.g., Prometheus, OpenTelemetry)", Required: false},
-				},
 			},
 		},
 		PromptHandler: mcp.PromptHandler(func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 			if req.Params.Name == "design-dashboard" {
-				telemetry := "Prometheus or OpenTelemetry (determine from context)"
-				if t, ok := req.Params.Arguments["telemetry_standard"]; ok && t != "" {
-					telemetry = t
-				}
-
-				promptText := fmt.Sprintf("You are designing a Grafana dashboard for a system using %s.\n\n"+
-					"**Design Best Practices:**\n"+
-					"1. **Layout**: Place high-level SLIs and summary statistics at the top row. Detailed, per-instance metrics go at the bottom.\n"+
-					"2. **Methodology**: Use the RED method (Rate, Errors, Duration) for services. Use the USE method (Utilization, Saturation, Errors) for infrastructure.\n"+
-					"3. **Consistency**: Use unified unit scales, avoid overlapping lines where stacked charts are better, and keep the number of panels manageable.\n\n"+
-					"**Tools Workflow**:\n"+
-					"1. Call 'add_dashboard' to create the skeleton.\n"+
-					"2. Call 'add_panel' for each visualization.\n"+
-					"3. Call 'add_query' to attach the correct PromQL to each panel based on the telemetry standard.", telemetry)
-
 				return &mcp.GetPromptResult{
 					Description: "Dashboard design guidelines",
 					Messages: []*mcp.PromptMessage{
 						{
 							Role: "user",
 							Content: &mcp.TextContent{
-								Text: promptText,
+								Text: designDashboardPrompt,
 							},
 						},
 					},
