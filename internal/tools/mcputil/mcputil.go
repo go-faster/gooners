@@ -45,18 +45,18 @@ func Register[In, Out any](s *mcp.Server, def ToolDef, handler mcp.ToolHandlerFo
 		d := def.Flags.Has(Destructive)
 		ann.DestructiveHint = &d
 	}
+	orig := handler
 	wrapped := func(ctx context.Context, req *mcp.CallToolRequest, args In) (*mcp.CallToolResult, Out, error) {
 		session := req.Session
 		slog.Info("called tool handler", "tool", def.Name, "session_id", session.ID())
-		return handler(ctx, req, args)
+		return orig(ctx, req, args)
 	}
-	handler = mcp.ToolHandlerFor[In, Out](wrapped)
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        def.Name,
 		Description: def.Description,
 		Annotations: ann,
-	}, handler)
+	}, wrapped)
 }
 
 // Common result types for tool outputs, enabling structured output schemas.

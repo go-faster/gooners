@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/common/model"
 
+	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/grafana"
 )
 
@@ -97,12 +98,60 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sm := grafana.NewSessionManager(*sessionsDir)
-	go sm.StartCleanupLoop(ctx, sessionTTL)
-
 	gc := grafana.NewGrafanaClient(*grafanaURL, *grafanaToken, *grafanaUser, *grafanaPassword)
 
-	s := mcp.NewServer(&mcp.Implementation{Name: "grafana-dashboard-mcp", Version: "0.1.0"}, nil)
+	s := mcputil.NewServer(mcputil.ServerConfig{
+		Name:         "grafana-dashboard-mcp",
+		Instructions: "You are connected to grafana-dashboard-mcp. Use these tools to incrementally build and deploy Grafana dashboards.",
+		Logger:       slog.Default().With("component", "mcp-sdk"),
+		Prompts: []*mcp.Prompt{
+			{
+				Name:        "design-dashboard",
+				Description: "Design and build a high-quality Grafana dashboard",
+				Arguments: []*mcp.PromptArgument{
+					{Name: "telemetry_standard", Description: "Telemetry standard in use (e.g., Prometheus, OpenTelemetry)", Required: false},
+				},
+			},
+		},
+		PromptHandler: mcp.PromptHandler(func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			if req.Params.Name == "design-dashboard" {
+				telemetry := "Prometheus or OpenTelemetry (determine from context)"
+				if t, ok := req.Params.Arguments["telemetry_standard"]; ok && t != "" {
+					telemetry = t
+				}
+
+				promptText := fmt.Sprintf("You are designing a Grafana dashboard for a system using %s.\n\n"+
+					"**Design Best Practices:**\n"+
+					"1. **Layout**: Place high-level SLIs and summary statistics at the top row. Detailed, per-instance metrics go at the bottom.\n"+
+					"2. **Methodology**: Use the RED method (Rate, Errors, Duration) for services. Use the USE method (Utilization, Saturation, Errors) for infrastructure.\n"+
+					"3. **Consistency**: Use unified unit scales, avoid overlapping lines where stacked charts are better, and keep the number of panels manageable.\n\n"+
+					"**Tools Workflow**:\n"+
+					"1. Call 'add_dashboard' to create the skeleton.\n"+
+					"2. Call 'add_panel' for each visualization.\n"+
+					"3. Call 'add_query' to attach the correct PromQL to each panel based on the telemetry standard.", telemetry)
+
+				return &mcp.GetPromptResult{
+					Description: "Dashboard design guidelines",
+					Messages: []*mcp.PromptMessage{
+						{
+							Role: "user",
+							Content: &mcp.TextContent{
+								Text: promptText,
+							},
+						},
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown prompt: %q", req.Params.Name)
+		}),
+	})
+
+	sm := grafana.NewSessionManager(*sessionsDir)
+	sm.OnEvict = func(id string) {
+		mcputil.BroadcastWarning(s, "grafana-mcp", fmt.Sprintf("Dashboard session %q evicted due to inactivity", id))
+	}
+	go sm.StartCleanupLoop(ctx, sessionTTL)
+
 	grafana.Register(s, sm, gc)
 
 	if err := runServer(ctx, s, *transport, *addr); err != nil {

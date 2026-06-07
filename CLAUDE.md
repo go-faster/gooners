@@ -38,6 +38,7 @@ golangci-lint run ./...
 cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
 cmd/grafana-dashboard-mcp/ ← MCP server binary (go build ./cmd/grafana-dashboard-mcp)
 internal/
+  mcputil/            ← Standardized MCP server config, prompts, and log streaming
   session/            ← SSH session pool & async upload tracking
   sshutil/            ← SSH config / known-hosts helpers
   tools/              ← MCP tool registrations

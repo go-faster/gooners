@@ -385,6 +385,7 @@ type SessionManager struct {
 	mu       sync.Mutex
 	sessions map[string]*DashboardSession
 	dir      string
+	OnEvict  func(id string)
 }
 
 func NewSessionManager(dir string) *SessionManager {
@@ -517,6 +518,11 @@ func (m *SessionManager) StartCleanupLoop(ctx context.Context, ttl time.Duration
 				if now.Sub(s.TouchedAt) > ttl {
 					delete(m.sessions, id)
 					_ = os.Remove(filepath.Join(m.dir, id+".json"))
+					if m.OnEvict != nil {
+						// Called within lock, should be fast or run in goroutine
+						// but since it's just logging it's fine.
+						go m.OnEvict(id)
+					}
 				}
 			}
 			m.mu.Unlock()
@@ -1231,12 +1237,13 @@ func placePanel(s *DashboardSession, r *RowEntry, ptype string, wOpt, hOpt, xOpt
 		}
 
 		// Compute Y before updating LineHeight to avoid using the new height.
-		if yOpt != nil {
+		switch {
+		case yOpt != nil:
 			y = uint32(*yOpt)
-		} else if s.LineHeight > 0 {
+		case s.LineHeight > 0:
 			// Current line Y = NextY minus the height already recorded for this line.
 			y = s.NextY - s.LineHeight
-		} else {
+		default:
 			// Fresh line: start at the current max extent.
 			y = s.NextY
 		}

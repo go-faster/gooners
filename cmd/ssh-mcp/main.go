@@ -13,6 +13,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/tools/core"
 	"github.com/go-faster/gooners/internal/tools/disk"
@@ -102,12 +103,6 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	pool := session.NewPool(session.PoolOptions{
-		CommandTimeout: *commandTimeout,
-		Logger:         logger,
-	})
-	go pool.RunLoop(ctx)
-
 	var passwords core.PasswordProvider
 	switch {
 	case *passwordFile != "":
@@ -126,7 +121,46 @@ func main() {
 		logger.Debug("no password provider configured")
 	}
 
-	s := mcp.NewServer(&mcp.Implementation{Name: "ssh-mcp", Version: "0.1.0"}, nil)
+	s := mcputil.NewServer(mcputil.ServerConfig{
+		Name:         "ssh-mcp",
+		Instructions: "You are connected to ssh-mcp. Use these tools to safely query and manage remote machine state over SSH.",
+		Logger:       logger.With("component", "mcp-sdk"),
+		Prompts: []*mcp.Prompt{
+			{
+				Name:        "troubleshoot-ssh",
+				Description: "Start a debugging session for a remote server via SSH",
+				Arguments: []*mcp.PromptArgument{
+					{Name: "machine", Description: "Name of the machine to connect to", Required: true},
+				},
+			},
+		},
+		PromptHandler: mcp.PromptHandler(func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			if req.Params.Name == "troubleshoot-ssh" {
+				return &mcp.GetPromptResult{
+					Description: "Instructions for using SSH tools to debug.",
+					Messages: []*mcp.PromptMessage{
+						{
+							Role: "user",
+							Content: &mcp.TextContent{
+								Text: "Use `ssh_exec` and systemd tools to analyze the server.",
+							},
+						},
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown prompt: %q", req.Params.Name)
+		}),
+	})
+
+	pool := session.NewPool(session.PoolOptions{
+		CommandTimeout: *commandTimeout,
+		Logger:         logger,
+		OnDisconnect: func(machine string, err error) {
+			mcputil.BroadcastWarning(s, "ssh-mcp", fmt.Sprintf("SSH session to %s disconnected: %v", machine, err))
+		},
+	})
+	go pool.RunLoop(ctx)
+
 	logger.Debug("registering MCP tools")
 	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
 	fs.Register(s, pool, uploadRoot)
