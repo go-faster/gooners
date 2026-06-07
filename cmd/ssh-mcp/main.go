@@ -59,14 +59,15 @@ func main() {
 		logFile   = flag.String("log-file", "", "path to log file (enables structured debug logging)")
 		logFormat = flag.String("log-format", "text", "log format: text, json")
 
-		transport      = flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
-		addr           = flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
-		disableSudo    = flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
-		passwordFile   = flag.String("password-file", "", "file containing a password for all machines (re-read on each use)")
-		passwordEnv    = flag.String("password-env", "", "env var containing a password for all machines")
-		passwordConfig = flag.String("password-config", "", "key=value config file mapping machine names to passwords (re-read on each use)")
-		passwordCmd    = flag.String("password-cmd", "", "command called with machine name as first argument; stdout is used as the password (cached per machine)")
-		commandTimeout = flag.Duration("command-timeout", 10*time.Second, "default command timeout")
+		transport               = flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
+		addr                    = flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
+		disableSudo             = flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
+		disableSpecializedTools = flag.Bool("disable-specialized-tools", false, "register only core SSH tools: session management, exec, and file transfer")
+		passwordFile            = flag.String("password-file", "", "file containing a password for all machines (re-read on each use)")
+		passwordEnv             = flag.String("password-env", "", "env var containing a password for all machines")
+		passwordConfig          = flag.String("password-config", "", "key=value config file mapping machine names to passwords (re-read on each use)")
+		passwordCmd             = flag.String("password-cmd", "", "command called with machine name as first argument; stdout is used as the password (cached per machine)")
+		commandTimeout          = flag.Duration("command-timeout", 10*time.Second, "default command timeout")
 	)
 	flag.Parse()
 
@@ -163,12 +164,16 @@ func main() {
 
 	logger.Debug("registering MCP tools")
 	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
-	fs.Register(s, pool, uploadRoot)
-	systemd.Register(s, pool)
-	sysinfo.Register(s, pool)
-	proc.Register(s, pool)
-	disk.Register(s, pool)
-	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "upload_root", uploadRoot)
+	if *disableSpecializedTools {
+		fs.RegisterFileTransfer(s, pool, uploadRoot)
+	} else {
+		fs.Register(s, pool, uploadRoot)
+		systemd.Register(s, pool)
+		sysinfo.Register(s, pool)
+		proc.Register(s, pool)
+		disk.Register(s, pool)
+	}
+	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "disable_specialized_tools", *disableSpecializedTools, "upload_root", uploadRoot)
 
 	if err := runServer(ctx, s, *transport, *addr); err != nil {
 		slog.Error("failed to run server", "err", err)

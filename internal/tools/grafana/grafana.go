@@ -1190,70 +1190,85 @@ func placePanel(s *DashboardSession, r *RowEntry, ptype string, wOpt, hOpt, xOpt
 		h = 4
 	}
 
-	var x, y uint32
 	if r != nil {
-		if r.NextY == 0 {
-			r.NextY = s.NextY
-		}
-		if xOpt != nil {
-			x = uint32(*xOpt)
-		} else {
-			if r.NextX+w > 24 {
-				if r.LineHeight == 0 {
-					r.LineHeight = h
-				}
-				r.NextY += r.LineHeight
-				r.NextX = 0
-				r.LineHeight = 0
-			}
-			x = r.NextX
-			r.NextX += w
-			if h > r.LineHeight {
+		return placePanelInRow(s, r, w, h, xOpt, yOpt)
+	}
+	return placePanelInDashboard(s, w, h, xOpt, yOpt)
+}
+
+func placePanelInRow(s *DashboardSession, r *RowEntry, w, h uint32, xOpt, yOpt *int) dashboard.GridPos {
+	var x, y uint32
+	if r.NextY == 0 {
+		r.NextY = s.NextY
+	}
+	if xOpt != nil {
+		x = uint32(*xOpt)
+	} else {
+		if r.NextX+w > 24 {
+			if r.LineHeight == 0 {
 				r.LineHeight = h
 			}
+			r.NextY += r.LineHeight
+			r.NextX = 0
+			r.LineHeight = 0
 		}
+		x = r.NextX
+		r.NextX += w
+		if h > r.LineHeight {
+			r.LineHeight = h
+		}
+	}
 
-		if yOpt != nil {
-			y = uint32(*yOpt)
-		} else {
-			y = r.NextY
-		}
-
-		if y+h > s.NextY {
-			s.NextY = y + h
-		}
+	if yOpt != nil {
+		y = uint32(*yOpt)
 	} else {
-		if xOpt != nil {
-			x = uint32(*xOpt)
-		} else {
-			if s.NextX+w > 24 {
-				// s.NextY already reflects the max extent of the current line.
-				// Just reset the per-line counters to start a new line there.
-				s.NextX = 0
-				s.LineHeight = 0
-			}
-			x = s.NextX
-			s.NextX += w
-		}
+		y = r.NextY
+	}
 
-		// Compute Y before updating LineHeight to avoid using the new height.
-		switch {
-		case yOpt != nil:
-			y = uint32(*yOpt)
-		case s.LineHeight > 0:
-			// Current line Y = NextY minus the height already recorded for this line.
-			y = s.NextY - s.LineHeight
-		default:
-			// Fresh line: start at the current max extent.
-			y = s.NextY
-		}
+	if y+h > s.NextY {
+		s.NextY = y + h
+	}
 
-		if h > s.LineHeight {
-			s.LineHeight = h
+	return dashboard.GridPos{
+		W: w,
+		H: h,
+		X: x,
+		Y: y,
+	}
+}
+
+func placePanelInDashboard(s *DashboardSession, w, h uint32, xOpt, yOpt *int) dashboard.GridPos {
+	var x, y uint32
+	if xOpt != nil {
+		x = uint32(*xOpt)
+	} else {
+		if s.NextX+w > 24 {
+			// s.NextY already reflects the max extent of the current line.
+			// Just reset the per-line counters to start a new line there.
+			s.NextX = 0
+			s.LineHeight = 0
 		}
-		if y+h > s.NextY {
-			s.NextY = y + h
-		}
+		x = s.NextX
+		s.NextX += w
+	}
+
+	// Compute Y before updating LineHeight to avoid using the new height.
+	switch {
+	case yOpt != nil:
+		y = uint32(*yOpt)
+	case s.LineHeight > 0:
+		// Current line Y = NextY minus the height already recorded for this line.
+		y = s.NextY - s.LineHeight
+	default:
+		// Fresh line: start at the current max extent.
+		y = s.NextY
+	}
+
+	if h > s.LineHeight {
+		s.LineHeight = h
+	}
+	if y+h > s.NextY {
+		s.NextY = y + h
 	}
 
 	return dashboard.GridPos{

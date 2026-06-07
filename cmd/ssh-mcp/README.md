@@ -60,6 +60,7 @@ For a complete local sandbox environment containing both a test SSH target serve
 - `-addr <host:port>` — listen address for HTTP transports (`streamable-http`, `sse`). Default `:8080`
 - `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file in append mode.
 - `-disable-sudo` — do not register the `ssh_sudo_exec` tool. Useful when deploying to untrusted contexts to reduce the capability surface.
+- `-disable-specialized-tools` — register only core SSH tools: session management, command execution, and file transfer (`upload_file`/`download_file`).
 - `-command-timeout <duration>` — default command timeout (default: `10s`).
 
 ### Password sources
@@ -197,4 +198,3 @@ Alternatively, use `ssh_open_cfg` with `known_hosts` pointing to a file you mana
 ```bash
 ssh-keyscan host >> ~/.ssh/known_hosts
 ```
-

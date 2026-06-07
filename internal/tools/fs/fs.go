@@ -61,6 +61,10 @@ func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "du", Description: "Get directory or file size (disk usage).", Flags: mcputil.ReadOnly}, duHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "truncate", Description: "Truncate file to given size on remote via SFTP.", Flags: mcputil.Destructive}, truncateHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP.", Flags: mcputil.Destructive}, writeFileHandler(p))
+	RegisterFileTransfer(s, p, uploadRoot)
+}
+
+func RegisterFileTransfer(s *mcp.Server, p SessionProvider, uploadRoot string) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Local path must be within the server's working directory. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_status", Description: "Check the status of an asynchronous file upload.", Flags: mcputil.ReadOnly}, uploadStatusHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_file", Description: "Download a remote file asynchronously to local path via SFTP. Local path must be within the server's working directory. Returns a download_id."}, downloadFileHandler(p, uploadRoot))
