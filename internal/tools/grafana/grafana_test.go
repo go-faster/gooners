@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-faster/sdk/gold"
@@ -689,4 +692,406 @@ func TestImportDashboardHandler(t *testing.T) {
 	// Test failure when neither provided
 	_, _, err = handler(context.Background(), nil, ImportDashboardReq{})
 	require.ErrorContains(t, err, "either uid or file_path must be provided")
+}
+
+type grafanaTestRoute struct {
+	Status   int
+	Response string
+	Check    func(*http.Request)
+}
+
+func newGrafanaTestServer(t *testing.T, routes map[string]grafanaTestRoute) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		route, ok := routes[r.URL.Path]
+		if !ok {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.String())
+		}
+		if route.Check != nil {
+			route.Check(r)
+		}
+		if route.Status != 0 {
+			w.WriteHeader(route.Status)
+		}
+		_, _ = w.Write([]byte(route.Response))
+	}))
+}
+
+func TestGrafanaClient(t *testing.T) {
+	ctx := context.Background()
+	var seenAuth string
+	recordAuth := func(r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+	}
+	server := newGrafanaTestServer(t, map[string]grafanaTestRoute{
+		"/api/datasources/uid/prom": {
+			Response: `{"uid":"prom","type":"prometheus","name":"Prometheus"}`,
+			Check:    recordAuth,
+		},
+		"/api/datasources/name/Prometheus": {
+			Response: `{"uid":"prom","type":"prometheus","name":"Prometheus"}`,
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/label/__name__/values": {
+			Response: `{"status":"success","data":["up","process_cpu_seconds_total"]}`,
+			Check: func(r *http.Request) {
+				assert.Equal(t, `up`, r.URL.Query().Get("match[]"))
+			},
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/labels": {
+			Response: `{"status":"success","data":["job","instance"]}`,
+			Check: func(r *http.Request) {
+				assert.Equal(t, `{__name__="up"}`, r.URL.Query().Get("match[]"))
+			},
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/label/job/values": {
+			Response: `{"status":"success","data":["api","worker"]}`,
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/metadata": {
+			Response: `{"status":"success","data":{"up":[{"type":"gauge","help":"Up","unit":""}]}}`,
+			Check: func(r *http.Request) {
+				assert.Equal(t, "up", r.URL.Query().Get("metric"))
+			},
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/query": {
+			Response: `{"status":"success","data":{"result":[]}}`,
+			Check: func(r *http.Request) {
+				assert.Equal(t, "up", r.URL.Query().Get("query"))
+			},
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/query_range": {
+			Response: `{"status":"success","data":{"result":[]}}`,
+			Check: func(r *http.Request) {
+				assert.Equal(t, "up", r.URL.Query().Get("query"))
+			},
+		},
+		"/api/datasources/proxy/uid/loki/loki/api/v1/query": {
+			Response: `{"status":"success","data":{"result":[]}}`,
+		},
+		"/api/datasources/proxy/uid/loki/loki/api/v1/query_range": {
+			Response: `{"status":"success","data":{"result":[]}}`,
+		},
+		"/api/dashboards/db": {
+			Response: `{"id":1,"uid":"saved","url":"/d/saved","status":"success","version":2}`,
+			Check: func(r *http.Request) {
+				require.Equal(t, http.MethodPost, r.Method)
+				var req SaveDashboardReq
+				require.NoError(t, json.NewDecoder(r.Body).Decode(&req))
+				assert.True(t, req.Overwrite)
+				assert.Equal(t, "folder", req.FolderUID)
+			},
+		},
+		"/api/dashboards/uid/dash": {
+			Response: `{"dashboard":{"title":"Imported","panels":[]}}`,
+		},
+		"/error": {
+			Status:   http.StatusBadGateway,
+			Response: "bad",
+		},
+	})
+	t.Cleanup(server.Close)
+
+	c := NewGrafanaClient(server.URL+"/", "token", "", "")
+	ds, err := c.GetDatasourceByUID(ctx, "prom")
+	require.NoError(t, err)
+	assert.Equal(t, &DatasourceInfo{UID: "prom", Type: "prometheus", Name: "Prometheus"}, ds)
+	assert.Equal(t, "Bearer token", seenAuth)
+
+	ds, err = c.ResolveDatasource(ctx, "Prometheus")
+	require.NoError(t, err)
+	assert.Equal(t, "prom", ds.UID)
+
+	metrics, err := c.SearchMetrics(ctx, "prom", "up")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"up", "process_cpu_seconds_total"}, metrics)
+
+	labels, err := c.LookupLabels(ctx, "prom", `{__name__="up"}`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"job", "instance"}, labels)
+
+	values, err := c.LookupLabelValues(ctx, "prom", "job")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"api", "worker"}, values)
+
+	metadata, err := c.LookupMetricMetadata(ctx, "prom", "up")
+	require.NoError(t, err)
+	assert.Contains(t, metadata, `"status":"success"`)
+
+	raw, err := c.VerifyPrometheusQuery(ctx, "prom", "up", "instant")
+	require.NoError(t, err)
+	assert.Contains(t, raw, `"success"`)
+	raw, err = c.VerifyPrometheusQuery(ctx, "prom", "up", "range")
+	require.NoError(t, err)
+	assert.Contains(t, raw, `"success"`)
+	raw, err = c.VerifyLokiQuery(ctx, "loki", `{job="api"}`, "instant")
+	require.NoError(t, err)
+	assert.Contains(t, raw, `"success"`)
+	raw, err = c.VerifyLokiQuery(ctx, "loki", `{job="api"}`, "range")
+	require.NoError(t, err)
+	assert.Contains(t, raw, `"success"`)
+
+	saveRes, err := c.SaveDashboard(ctx, []byte(`{"title":"Saved"}`), "folder")
+	require.NoError(t, err)
+	assert.Equal(t, "saved", saveRes.UID)
+
+	dash, err := c.GetDashboardByUID(ctx, "dash")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"title":"Imported","panels":[]}`, string(dash))
+
+	c.User = "user"
+	c.Password = "pass"
+	c.Token = ""
+	_, err = c.GetDatasourceByUID(ctx, "prom")
+	require.NoError(t, err)
+	assert.True(t, strings.HasPrefix(seenAuth, "Basic "))
+
+	_, err = NewGrafanaClient("", "", "", "").GetDatasourceByUID(ctx, "prom")
+	require.ErrorContains(t, err, "base URL")
+	err = c.getJSON(ctx, "/error", &DatasourceInfo{})
+	require.ErrorContains(t, err, "HTTP error 502")
+	_, err = c.getRaw(ctx, "/error")
+	require.ErrorContains(t, err, "HTTP error 502")
+	_, err = c.SaveDashboard(ctx, []byte(`not-json`), "")
+	require.ErrorContains(t, err, "parsing dashboard JSON")
+}
+
+func TestGrafanaClientVerifyQuery(t *testing.T) {
+	ctx := context.Background()
+	server := newGrafanaTestServer(t, map[string]grafanaTestRoute{
+		"/api/datasources/uid/prom": {
+			Response: `{"uid":"prom","type":"prometheus","name":"Prometheus"}`,
+		},
+		"/api/datasources/uid/loki": {
+			Response: `{"uid":"loki","type":"loki","name":"Loki"}`,
+		},
+		"/api/datasources/uid/unknown": {
+			Response: `{"uid":"unknown","type":"tempo","name":"Tempo"}`,
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/query_range": {
+			Response: `{"status":"success"}`,
+		},
+		"/api/datasources/proxy/uid/loki/loki/api/v1/query_range": {
+			Response: `{"status":"success"}`,
+		},
+	})
+	t.Cleanup(server.Close)
+	c := NewGrafanaClient(server.URL, "", "", "")
+
+	res, err := c.VerifyQuery(ctx, "prom", "up", "range")
+	require.NoError(t, err)
+	assert.Contains(t, res, "success")
+	res, err = c.VerifyQuery(ctx, "loki", `{job="api"}`, "range")
+	require.NoError(t, err)
+	assert.Contains(t, res, "success")
+	_, err = c.VerifyQuery(ctx, "unknown", "trace", "range")
+	require.ErrorContains(t, err, "unsupported datasource type")
+}
+
+func TestDashboardHandlers(t *testing.T) {
+	ctx := context.Background()
+	sm := NewSessionManager(t.TempDir())
+
+	addDashboard := addDashboardHandler(sm)
+	_, _, err := addDashboard(ctx, nil, AddDashboardReq{})
+	require.ErrorContains(t, err, "name is required")
+	_, dash, err := addDashboard(ctx, nil, AddDashboardReq{
+		Name:  "Handlers",
+		UID:   "handlers",
+		Tags:  []string{"test"},
+		Model: "gpt-5.5",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, dash.DashboardID)
+
+	_, listed, err := listSessionsHandler(sm)(ctx, nil, struct{}{})
+	require.NoError(t, err)
+	require.Len(t, listed.Sessions, 1)
+	assert.Equal(t, "Handlers", listed.Sessions[0].Title)
+
+	_, ok, err := addParamHandler(sm, nil)(ctx, nil, AddParamReq{
+		DashboardID:   dash.DashboardID,
+		Name:          "job",
+		Type:          "query",
+		Query:         "label_values(up, job)",
+		DatasourceUID: "prom",
+	})
+	require.NoError(t, err)
+	assert.True(t, ok.OK)
+
+	_, ok, err = setTimeRangeHandler(sm)(ctx, nil, SetTimeRangeReq{DashboardID: dash.DashboardID, From: "now-1h", To: "now"})
+	require.NoError(t, err)
+	assert.True(t, ok.OK)
+
+	_, row, err := addRowHandler(sm)(ctx, nil, AddRowReq{DashboardID: dash.DashboardID, Title: "Row", Collapsed: true})
+	require.NoError(t, err)
+	require.NotEmpty(t, row.RowID)
+
+	decimals := 2.0
+	_, panel, err := addPanelHandler(sm)(ctx, nil, AddPanelReq{
+		DashboardID: dash.DashboardID,
+		Title:       "CPU",
+		Type:        "stat",
+		RowID:       row.RowID,
+		Unit:        "percent",
+		Decimals:    &decimals,
+		ReduceCalcs: []string{"lastNotNull"},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, panel.PanelID)
+
+	_, _, err = addPanelHandler(sm)(ctx, nil, AddPanelReq{
+		DashboardID: dash.DashboardID,
+		Title:       "Bad",
+		Type:        "text",
+		ReduceCalcs: []string{"mean"},
+	})
+	require.ErrorContains(t, err, "reduce_calcs")
+
+	_, ok, err = updatePanelHandler(sm)(ctx, nil, UpdatePanelReq{
+		DashboardID: dash.DashboardID,
+		PanelID:     panel.PanelID,
+		Title:       "CPU updated",
+		Description: "description",
+		Unit:        "short",
+		ReduceCalcs: []string{"max"},
+	})
+	require.NoError(t, err)
+	assert.True(t, ok.OK)
+
+	_, query, err := addQueryHandler(sm, nil)(ctx, nil, AddQueryReq{
+		DashboardID:   dash.DashboardID,
+		PanelID:       panel.PanelID,
+		DatasourceUID: "prom",
+		Expr:          "process_cpu_seconds_total",
+		LegendFormat:  "{{instance}}",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "A", query.QueryRef)
+	assert.Empty(t, query.SuggestedUnit)
+
+	_, ok, err = addThresholdHandler(sm)(ctx, nil, AddThresholdReq{
+		DashboardID: dash.DashboardID,
+		PanelID:     panel.PanelID,
+		Value:       90,
+		Color:       "red",
+	})
+	require.NoError(t, err)
+	assert.True(t, ok.OK)
+
+	_, state, err := getDashboardStateHandler(sm)(ctx, nil, GetDashboardStateReq(dash))
+	require.NoError(t, err)
+	assert.Equal(t, "Handlers", state.Title)
+	require.Len(t, state.Rows, 1)
+	require.Len(t, state.Rows[0].Panels, 1)
+	assert.Equal(t, "CPU updated", state.Rows[0].Panels[0].Title)
+
+	_, ok, err = deletePanelHandler(sm)(ctx, nil, DeletePanelReq{DashboardID: dash.DashboardID, PanelID: panel.PanelID})
+	require.NoError(t, err)
+	assert.True(t, ok.OK)
+	_, _, err = deletePanelHandler(sm)(ctx, nil, DeletePanelReq{DashboardID: dash.DashboardID, PanelID: "missing"})
+	require.ErrorContains(t, err, "panel_id missing not found")
+}
+
+func TestDiscoveryHandlers(t *testing.T) {
+	ctx := context.Background()
+	server := newGrafanaTestServer(t, map[string]grafanaTestRoute{
+		"/api/datasources/name/Prometheus": {
+			Response: `{"uid":"prom","type":"prometheus","name":"Prometheus"}`,
+		},
+		"/api/datasources/uid/prom": {
+			Response: `{"uid":"prom","type":"prometheus","name":"Prometheus"}`,
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/query_range": {
+			Response: `{"status":"success"}`,
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/label/__name__/values": {
+			Response: `{"status":"success","data":["up"]}`,
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/labels": {
+			Response: `{"status":"success","data":["job"]}`,
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/label/job/values": {
+			Response: `{"status":"success","data":["api"]}`,
+		},
+		"/api/datasources/proxy/uid/prom/api/v1/metadata": {
+			Response: `{"status":"success","data":{}}`,
+		},
+	})
+	t.Cleanup(server.Close)
+	gc := NewGrafanaClient(server.URL, "", "", "")
+
+	_, ds, err := resolveDatasourceHandler(gc)(ctx, nil, ResolveDatasourceReq{Name: "Prometheus"})
+	require.NoError(t, err)
+	assert.Equal(t, ResolveDatasourceRes{UID: "prom", Type: "prometheus"}, ds)
+	_, _, err = resolveDatasourceHandler(nil)(ctx, nil, ResolveDatasourceReq{Name: "Prometheus"})
+	require.ErrorContains(t, err, "not configured")
+
+	_, verify, err := verifyQueryHandler(gc)(ctx, nil, VerifyQueryReq{DatasourceUID: "prom", Query: "up"})
+	require.NoError(t, err)
+	assert.Contains(t, verify.Text, "success")
+	_, _, err = verifyQueryHandler(nil)(ctx, nil, VerifyQueryReq{})
+	require.ErrorContains(t, err, "not configured")
+
+	_, metrics, err := searchMetricsHandler(gc)(ctx, nil, SearchMetricsReq{DatasourceUID: "prom"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"up"}, metrics.Metrics)
+	_, _, err = searchMetricsHandler(nil)(ctx, nil, SearchMetricsReq{})
+	require.ErrorContains(t, err, "not configured")
+
+	_, labels, err := lookupLabelsHandler(gc)(ctx, nil, LookupLabelsReq{DatasourceUID: "prom"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"job"}, labels.Labels)
+	_, _, err = lookupLabelsHandler(nil)(ctx, nil, LookupLabelsReq{})
+	require.ErrorContains(t, err, "not configured")
+
+	_, values, err := lookupLabelValuesHandler(gc)(ctx, nil, LookupLabelValuesReq{DatasourceUID: "prom", Label: "job"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"api"}, values.Values)
+	_, _, err = lookupLabelValuesHandler(nil)(ctx, nil, LookupLabelValuesReq{})
+	require.ErrorContains(t, err, "not configured")
+
+	_, metadata, err := lookupMetricMetadataHandler(gc)(ctx, nil, LookupMetricMetadataReq{DatasourceUID: "prom", Metric: "up"})
+	require.NoError(t, err)
+	assert.Contains(t, metadata.Text, "success")
+	_, _, err = lookupMetricMetadataHandler(nil)(ctx, nil, LookupMetricMetadataReq{})
+	require.ErrorContains(t, err, "not configured")
+}
+
+func TestBuildPanelVariants(t *testing.T) {
+	threshold := 80.0
+	for _, tt := range []struct {
+		name     string
+		typeName string
+	}{
+		{name: "gauge", typeName: "gauge"},
+		{name: "table", typeName: "table"},
+		{name: "unknown", typeName: "bargauge"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			decimals := 1.0
+			builder := buildPanel(&PanelEntry{
+				Title:       "Panel",
+				Description: "desc",
+				Type:        tt.typeName,
+				GridPos:     dashboard.GridPos{W: 6, H: 4, X: 1, Y: 2},
+				Unit:        "bytes",
+				Decimals:    &decimals,
+				ReduceCalcs: []string{"mean"},
+				Queries: []QueryEntry{{
+					RefID:          "A",
+					DatasourceUID:  "prom",
+					DatasourceType: "prometheus",
+					Expr:           "go_memstats_alloc_bytes",
+					LegendFormat:   "{{instance}}",
+				}},
+				Thresholds: []dashboard.Threshold{
+					{Value: &threshold, Color: "red"},
+					{Value: nil, Color: "green"},
+				},
+			})
+			panel, err := builder.Build()
+			require.NoError(t, err)
+			assert.Equal(t, "Panel", *panel.Title)
+			assert.Equal(t, uint32(6), panel.GridPos.W)
+		})
+	}
 }
