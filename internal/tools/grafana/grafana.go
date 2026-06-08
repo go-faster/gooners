@@ -1,22 +1,14 @@
 // Package grafana registers MCP tools to build, verify, and save Grafana dashboards.
-//
-//nolint:modernize // False positives on stringPtr which is not new(string)
 package grafana
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/VictoriaMetrics/metricsql"
@@ -110,6 +102,24 @@ func (s *DashboardSession) findPanel(panelID string) (*PanelEntry, *RowEntry, in
 		}
 	}
 	return nil, nil, -1
+}
+
+func (s *DashboardSession) findRow(rowID string) *RowEntry {
+	for _, r := range s.Rows {
+		if r.ID == rowID {
+			return r
+		}
+	}
+	return nil
+}
+
+func (s *DashboardSession) findRowIndex(rowID string) int {
+	for i, r := range s.Rows {
+		if r.ID == rowID {
+			return i
+		}
+	}
+	return -1
 }
 
 func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSession, error) {
@@ -380,411 +390,8 @@ func getStringSlice(m map[string]any, k string) []string {
 	return nil
 }
 
-// SessionManager manages active dashboard builder sessions.
-type SessionManager struct {
-	mu       sync.Mutex
-	sessions map[string]*DashboardSession
-	dir      string
-	OnEvict  func(id string)
-}
 
-func NewSessionManager(dir string) *SessionManager {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to create session dir %q: %v\n", dir, err)
-	}
-	m := &SessionManager{
-		sessions: make(map[string]*DashboardSession),
-		dir:      dir,
-	}
-	m.loadAll()
-	return m
-}
 
-func (m *SessionManager) clone(s *DashboardSession) *DashboardSession {
-	if s == nil {
-		return nil
-	}
-	data, err := json.Marshal(s)
-	if err != nil {
-		// DashboardSession contains only JSON-serializable types; this is a
-		// programming error if it ever fires.
-		panic(fmt.Sprintf("grafana: session marshal failed: %v", err))
-	}
-	var res DashboardSession
-	if err := json.Unmarshal(data, &res); err != nil {
-		panic(fmt.Sprintf("grafana: session unmarshal failed: %v", err))
-	}
-	return &res
-}
-
-func (m *SessionManager) Add(s *DashboardSession) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	cloned := m.clone(s)
-	m.sessions[cloned.DashboardID] = cloned
-	m.save(cloned)
-}
-
-func (m *SessionManager) Get(id string) (*DashboardSession, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok := m.sessions[id]
-	if !ok {
-		return nil, fmt.Errorf("session not found: %s", id)
-	}
-	s.TouchedAt = time.Now()
-	m.save(s)
-	return m.clone(s), nil
-}
-
-func (m *SessionManager) Update(id string, fn func(*DashboardSession) error) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	s, ok := m.sessions[id]
-	if !ok {
-		return fmt.Errorf("session not found: %s", id)
-	}
-	cloned := m.clone(s)
-	if err := fn(cloned); err != nil {
-		return err
-	}
-	cloned.TouchedAt = time.Now()
-	m.sessions[id] = cloned
-	m.save(cloned)
-	return nil
-}
-
-func (m *SessionManager) List() []*DashboardSession {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	res := make([]*DashboardSession, 0, len(m.sessions))
-	for _, s := range m.sessions {
-		res = append(res, m.clone(s))
-	}
-	sort.Slice(res, func(i, j int) bool {
-		return res[i].TouchedAt.After(res[j].TouchedAt)
-	})
-	return res
-}
-
-func (m *SessionManager) Delete(id string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.sessions, id)
-	_ = os.Remove(filepath.Join(m.dir, id+".json"))
-}
-
-func (m *SessionManager) save(s *DashboardSession) {
-	data, err := json.Marshal(s)
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(filepath.Join(m.dir, s.DashboardID+".json"), data, 0o600)
-}
-
-func (m *SessionManager) loadAll() {
-	files, err := os.ReadDir(m.dir)
-	if err != nil {
-		return
-	}
-	for _, f := range files {
-		if filepath.Ext(f.Name()) == ".json" {
-			data, err := os.ReadFile(filepath.Join(m.dir, f.Name()))
-			if err != nil {
-				continue
-			}
-			var s DashboardSession
-			if err := json.Unmarshal(data, &s); err == nil {
-				m.sessions[s.DashboardID] = &s
-			}
-		}
-	}
-}
-
-func (m *SessionManager) StartCleanupLoop(ctx context.Context, ttl time.Duration) {
-	if ttl <= 0 {
-		return
-	}
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.mu.Lock()
-			now := time.Now()
-			for id, s := range m.sessions {
-				if now.Sub(s.TouchedAt) > ttl {
-					delete(m.sessions, id)
-					_ = os.Remove(filepath.Join(m.dir, id+".json"))
-					if m.OnEvict != nil {
-						// Called within lock, should be fast or run in goroutine
-						// but since it's just logging it's fine.
-						go m.OnEvict(id)
-					}
-				}
-			}
-			m.mu.Unlock()
-		}
-	}
-}
-
-// GrafanaClient calls Grafana API endpoints.
-type GrafanaClient struct {
-	URL        string
-	Token      string
-	User       string
-	Password   string
-	httpClient *http.Client
-}
-
-func NewGrafanaClient(urlStr, token, user, password string) *GrafanaClient {
-	return &GrafanaClient{
-		URL:      urlStr,
-		Token:    token,
-		User:     user,
-		Password: password,
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-		},
-	}
-}
-
-func (c *GrafanaClient) doRequest(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	if c.URL == "" {
-		return nil, fmt.Errorf("grafana base URL is not configured")
-	}
-	baseURL := strings.TrimSuffix(c.URL, "/")
-	reqURL := baseURL + path
-	req, err := http.NewRequestWithContext(ctx, method, reqURL, body)
-	if err != nil {
-		return nil, err
-	}
-	if c.Token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.Token)
-	} else if c.User != "" || c.Password != "" {
-		req.SetBasicAuth(c.User, c.Password)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return c.httpClient.Do(req)
-}
-
-func (c *GrafanaClient) getJSON(ctx context.Context, path string, out any) error {
-	resp, err := c.doRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("HTTP error %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
-}
-
-func (c *GrafanaClient) getRaw(ctx context.Context, path string) (string, error) {
-	resp, err := c.doRequest(ctx, "GET", path, nil)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("HTTP error %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-	return string(bodyBytes), nil
-}
-
-type DatasourceInfo struct {
-	UID  string `json:"uid"`
-	Type string `json:"type"`
-	Name string `json:"name"`
-}
-
-func (c *GrafanaClient) GetDatasourceByUID(ctx context.Context, uid string) (*DatasourceInfo, error) {
-	var info DatasourceInfo
-	err := c.getJSON(ctx, "/api/datasources/uid/"+uid, &info)
-	if err != nil {
-		return nil, err
-	}
-	return &info, nil
-}
-
-func (c *GrafanaClient) ResolveDatasource(ctx context.Context, name string) (*DatasourceInfo, error) {
-	var info DatasourceInfo
-	err := c.getJSON(ctx, "/api/datasources/name/"+url.PathEscape(name), &info)
-	if err != nil {
-		return nil, err
-	}
-	return &info, nil
-}
-
-type PromLabelValuesResponse struct {
-	Status string   `json:"status"`
-	Data   []string `json:"data"`
-}
-
-func (c *GrafanaClient) SearchMetrics(ctx context.Context, dsUID, match string) ([]string, error) {
-	v := url.Values{}
-	if match != "" {
-		v.Add("match[]", match)
-	}
-	path := fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/label/__name__/values?%s", dsUID, v.Encode())
-	var resp PromLabelValuesResponse
-	err := c.getJSON(ctx, path, &resp)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
-}
-
-func (c *GrafanaClient) LookupLabels(ctx context.Context, dsUID, match string) ([]string, error) {
-	v := url.Values{}
-	if match != "" {
-		v.Add("match[]", match)
-	}
-	path := fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/labels?%s", dsUID, v.Encode())
-	var resp PromLabelValuesResponse
-	err := c.getJSON(ctx, path, &resp)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
-}
-
-func (c *GrafanaClient) LookupLabelValues(ctx context.Context, dsUID, label, match string) ([]string, error) {
-	v := url.Values{}
-	if match != "" {
-		v.Add("match[]", match)
-	}
-	path := fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/label/%s/values?%s", dsUID, url.PathEscape(label), v.Encode())
-	var resp PromLabelValuesResponse
-	err := c.getJSON(ctx, path, &resp)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Data, nil
-}
-
-func (c *GrafanaClient) LookupMetricMetadata(ctx context.Context, dsUID, metric string) (string, error) {
-	v := url.Values{}
-	v.Set("metric", metric)
-	path := fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/metadata?%s", dsUID, v.Encode())
-	return c.getRaw(ctx, path)
-}
-
-func (c *GrafanaClient) VerifyPrometheusQuery(ctx context.Context, dsUID, query, queryType string) (string, error) {
-	v := url.Values{}
-	v.Set("query", query)
-	var path string
-	if queryType == "instant" {
-		v.Set("time", fmt.Sprintf("%d", time.Now().Unix()))
-		path = fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/query?%s", dsUID, v.Encode())
-	} else {
-		now := time.Now()
-		start := now.Add(-1 * time.Hour).Unix()
-		end := now.Unix()
-		v.Set("start", fmt.Sprintf("%d", start))
-		v.Set("end", fmt.Sprintf("%d", end))
-		v.Set("step", "15s")
-		path = fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/query_range?%s", dsUID, v.Encode())
-	}
-	return c.getRaw(ctx, path)
-}
-
-func (c *GrafanaClient) VerifyLokiQuery(ctx context.Context, dsUID, query, queryType string) (string, error) {
-	v := url.Values{}
-	v.Set("query", query)
-	var path string
-	if queryType == "instant" {
-		v.Set("time", fmt.Sprintf("%d", time.Now().UnixNano()))
-		path = fmt.Sprintf("/api/datasources/proxy/uid/%s/loki/api/v1/query?%s", dsUID, v.Encode())
-	} else {
-		now := time.Now()
-		start := now.Add(-1 * time.Hour).UnixNano()
-		end := now.UnixNano()
-		v.Set("start", fmt.Sprintf("%d", start))
-		v.Set("end", fmt.Sprintf("%d", end))
-		v.Set("step", "15s")
-		path = fmt.Sprintf("/api/datasources/proxy/uid/%s/loki/api/v1/query_range?%s", dsUID, v.Encode())
-	}
-	return c.getRaw(ctx, path)
-}
-
-func (c *GrafanaClient) VerifyQuery(ctx context.Context, dsUID, query, queryType string) (string, error) {
-	info, err := c.GetDatasourceByUID(ctx, dsUID)
-	if err != nil {
-		return "", fmt.Errorf("resolving datasource by UID: %w", err)
-	}
-	switch info.Type {
-	case "prometheus":
-		return c.VerifyPrometheusQuery(ctx, dsUID, query, queryType)
-	case "loki":
-		return c.VerifyLokiQuery(ctx, dsUID, query, queryType)
-	default:
-		return "", fmt.Errorf("unsupported datasource type: %s", info.Type)
-	}
-}
-
-type SaveDashboardReq struct {
-	Dashboard any    `json:"dashboard"`
-	FolderUID string `json:"folderUid,omitempty"`
-	Overwrite bool   `json:"overwrite"`
-}
-
-type SaveDashboardRes struct {
-	ID      int64  `json:"id"`
-	UID     string `json:"uid"`
-	URL     string `json:"url"`
-	Status  string `json:"status"`
-	Version int64  `json:"version"`
-}
-
-func (c *GrafanaClient) SaveDashboard(ctx context.Context, dashboardJSON []byte, folderUID string) (*SaveDashboardRes, error) {
-	var dbRaw any
-	if err := json.Unmarshal(dashboardJSON, &dbRaw); err != nil {
-		return nil, fmt.Errorf("parsing dashboard JSON: %w", err)
-	}
-	payload := SaveDashboardReq{
-		Dashboard: dbRaw,
-		FolderUID: folderUID,
-		Overwrite: true,
-	}
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.doRequest(ctx, "POST", "/api/dashboards/db", bytes.NewReader(payloadBytes))
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	bodyBytes, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP error %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-	var saveRes SaveDashboardRes
-	if err := json.Unmarshal(bodyBytes, &saveRes); err != nil {
-		return nil, err
-	}
-	return &saveRes, nil
-}
-
-func (c *GrafanaClient) GetDashboardByUID(ctx context.Context, uid string) ([]byte, error) {
-	var full struct {
-		Dashboard json.RawMessage `json:"dashboard"`
-	}
-	u := &url.URL{Path: "/api/dashboards/uid/"}
-	path := u.JoinPath(url.PathEscape(uid)).EscapedPath()
-	if err := c.getJSON(ctx, path, &full); err != nil {
-		return nil, err
-	}
-	return full.Dashboard, nil
-}
 
 // Tool implementation.
 
@@ -834,7 +441,7 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "update_panel",
-		Description: "Updates properties of an existing panel without rebuilding. Supports updating title, description, unit, decimals, and reduce_calcs.",
+		Description: "Updates properties of an existing panel without rebuilding. Supports updating title, description, type, unit, decimals, and reduce_calcs. Changing type resets reduce_calcs to empty.",
 	}, updatePanelHandler(sm))
 
 	mcputil.Register(s, mcputil.ToolDef{
@@ -844,14 +451,51 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 	}, deletePanelHandler(sm))
 
 	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "move_panel",
+		Description: "Moves a panel to a different row or to dashboard top-level. Uses auto-layout in the destination when no explicit x/y are given. Pass row_id='' to move to top-level.",
+	}, movePanelHandler(sm))
+
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "add_query",
 		Description: "Attaches a query to an existing panel. Returns a suggested_unit using Prometheus metadata. Use legend_format for legend labels (e.g. '{{class}}', '{{pod}}'). Call lookup_metric_metadata first if you are unsure of the metric's unit.",
 	}, addQueryHandler(sm, gc))
 
 	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "update_query",
+		Description: "Edits an existing query on a panel. Identify the query by its ref ID (e.g. A, B, C). Pass only the fields to change.",
+	}, updateQueryHandler(sm))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "delete_query",
+		Description: "Removes a query from a panel by its ref ID (e.g. A, B, C).",
+		Flags:       mcputil.Destructive,
+	}, deleteQueryHandler(sm))
+
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "add_threshold",
 		Description: "Adds a color threshold to stat/gauge panels. Base threshold is automatically created on panel creation.",
 	}, addThresholdHandler(sm))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "update_dashboard",
+		Description: "Edits metadata on the current dashboard session: title, uid, and/or tags.",
+	}, updateDashboardHandler(sm))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "update_row",
+		Description: "Edits a row's title and/or collapsed state.",
+	}, updateRowHandler(sm))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "delete_row",
+		Description: "Removes a row. By default all panels inside are discarded. Pass keep_panels=true to promote them to dashboard top-level instead.",
+		Flags:       mcputil.Destructive,
+	}, deleteRowHandler(sm))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "move_row",
+		Description: "Reorders a row relative to another. Pass before_row_id to insert before it, or empty string to move the row to the end.",
+	}, moveRowHandler(sm))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "get_dashboard_state",
@@ -1459,6 +1103,7 @@ type UpdatePanelReq struct {
 	PanelID     string   `json:"panel_id" jsonschema:"The ID of the panel"`
 	Title       string   `json:"title,omitempty" jsonschema:"Optional new title"`
 	Description string   `json:"description,omitempty" jsonschema:"Optional new description"`
+	Type        string   `json:"type,omitempty" jsonschema:"Optional new panel type (e.g. timeseries, stat, gauge, table). Changing type resets reduce_calcs to empty."`
 	Unit        string   `json:"unit,omitempty" jsonschema:"Optional unit (e.g. short, percent, bytes)"`
 	Decimals    *float64 `json:"decimals,omitempty" jsonschema:"Optional decimal precision"`
 	ReduceCalcs []string `json:"reduce_calcs,omitempty" jsonschema:"Optional calculation/reducers for stat/gauge panels (e.g. mean, lastNotNull, max)"`
@@ -1477,6 +1122,10 @@ func updatePanelHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdatePanelReq, m
 			}
 			if args.Description != "" {
 				p.Description = args.Description
+			}
+			if args.Type != "" && args.Type != p.Type {
+				p.Type = args.Type
+				p.ReduceCalcs = nil
 			}
 			if args.Unit != "" {
 				p.Unit = args.Unit
@@ -1702,6 +1351,273 @@ func addThresholdHandler(sm *SessionManager) mcp.ToolHandlerFor[AddThresholdReq,
 	}
 }
 
+type UpdateDashboardReq struct {
+	DashboardID string   `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
+	Title       string   `json:"title,omitempty" jsonschema:"Optional new title"`
+	UID         string   `json:"uid,omitempty" jsonschema:"Optional new UID"`
+	Tags        []string `json:"tags,omitempty" jsonschema:"Optional new tag list (replaces existing)"`
+	Description string   `json:"description,omitempty" jsonschema:"Optional description (stored as model field override)"`
+}
+
+func updateDashboardHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateDashboardReq, mcputil.SuccessResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args UpdateDashboardReq) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
+		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			if args.Title != "" {
+				s.Title = args.Title
+			}
+			if args.UID != "" {
+				s.UID = args.UID
+			}
+			if args.Tags != nil {
+				s.Tags = args.Tags
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, mcputil.SuccessResult{OK: false}, err
+		}
+		return nil, mcputil.SuccessResult{OK: true}, nil
+	}
+}
+
+type UpdateRowReq struct {
+	DashboardID string `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
+	RowID       string `json:"row_id" jsonschema:"The ID of the row"`
+	Title       string `json:"title,omitempty" jsonschema:"Optional new title"`
+	Collapsed   *bool  `json:"collapsed,omitempty" jsonschema:"Optional collapsed state"`
+}
+
+func updateRowHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateRowReq, mcputil.SuccessResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args UpdateRowReq) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
+		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			r := s.findRow(args.RowID)
+			if r == nil {
+				return fmt.Errorf("row_id %s not found", args.RowID)
+			}
+			if args.Title != "" {
+				r.Title = args.Title
+			}
+			if args.Collapsed != nil {
+				r.Collapsed = *args.Collapsed
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, mcputil.SuccessResult{OK: false}, err
+		}
+		return nil, mcputil.SuccessResult{OK: true}, nil
+	}
+}
+
+type DeleteRowReq struct {
+	DashboardID string `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
+	RowID       string `json:"row_id" jsonschema:"The ID of the row"`
+	KeepPanels  bool   `json:"keep_panels,omitempty" jsonschema:"If true, panels inside the row are promoted to dashboard top-level instead of being discarded"`
+}
+
+func deleteRowHandler(sm *SessionManager) mcp.ToolHandlerFor[DeleteRowReq, mcputil.SuccessResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args DeleteRowReq) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
+		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			idx := s.findRowIndex(args.RowID)
+			if idx < 0 {
+				return fmt.Errorf("row_id %s not found", args.RowID)
+			}
+			r := s.Rows[idx]
+			if args.KeepPanels {
+				s.Panels = append(s.Panels, r.Panels...)
+			}
+			s.Rows = append(s.Rows[:idx], s.Rows[idx+1:]...)
+			return nil
+		})
+		if err != nil {
+			return nil, mcputil.SuccessResult{OK: false}, err
+		}
+		return nil, mcputil.SuccessResult{OK: true}, nil
+	}
+}
+
+type UpdateQueryReq struct {
+	DashboardID    string `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
+	PanelID        string `json:"panel_id" jsonschema:"The ID of the panel"`
+	QueryRef       string `json:"query_ref" jsonschema:"The reference ID of the query (e.g. A, B, C)"`
+	Expr           string `json:"expr,omitempty" jsonschema:"Optional new query expression"`
+	LegendFormat   string `json:"legend_format,omitempty" jsonschema:"Optional new legend format"`
+	DatasourceUID  string `json:"datasource_uid,omitempty" jsonschema:"Optional new datasource UID"`
+	DatasourceType string `json:"datasource_type,omitempty" jsonschema:"Optional new datasource type"`
+}
+
+func updateQueryHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateQueryReq, mcputil.SuccessResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args UpdateQueryReq) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
+		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			p, _, _ := s.findPanel(args.PanelID)
+			if p == nil {
+				return fmt.Errorf("panel_id %s not found", args.PanelID)
+			}
+			for i := range p.Queries {
+				if p.Queries[i].RefID != args.QueryRef {
+					continue
+				}
+				if args.Expr != "" {
+					p.Queries[i].Expr = args.Expr
+				}
+				if args.LegendFormat != "" {
+					p.Queries[i].LegendFormat = args.LegendFormat
+				}
+				if args.DatasourceUID != "" {
+					p.Queries[i].DatasourceUID = args.DatasourceUID
+				}
+				if args.DatasourceType != "" {
+					p.Queries[i].DatasourceType = args.DatasourceType
+				}
+				return nil
+			}
+			return fmt.Errorf("query_ref %s not found on panel %s", args.QueryRef, args.PanelID)
+		})
+		if err != nil {
+			return nil, mcputil.SuccessResult{OK: false}, err
+		}
+		return nil, mcputil.SuccessResult{OK: true}, nil
+	}
+}
+
+type DeleteQueryReq struct {
+	DashboardID string `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
+	PanelID     string `json:"panel_id" jsonschema:"The ID of the panel"`
+	QueryRef    string `json:"query_ref" jsonschema:"The reference ID of the query to remove (e.g. A, B, C)"`
+}
+
+func deleteQueryHandler(sm *SessionManager) mcp.ToolHandlerFor[DeleteQueryReq, mcputil.SuccessResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args DeleteQueryReq) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
+		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			p, _, _ := s.findPanel(args.PanelID)
+			if p == nil {
+				return fmt.Errorf("panel_id %s not found", args.PanelID)
+			}
+			for i, q := range p.Queries {
+				if q.RefID == args.QueryRef {
+					p.Queries = append(p.Queries[:i], p.Queries[i+1:]...)
+					return nil
+				}
+			}
+			return fmt.Errorf("query_ref %s not found on panel %s", args.QueryRef, args.PanelID)
+		})
+		if err != nil {
+			return nil, mcputil.SuccessResult{OK: false}, err
+		}
+		return nil, mcputil.SuccessResult{OK: true}, nil
+	}
+}
+
+type MovePanelReq struct {
+	DashboardID string `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
+	PanelID     string `json:"panel_id" jsonschema:"The ID of the panel to move"`
+	RowID       string `json:"row_id,omitempty" jsonschema:"Target row ID. Empty string moves the panel to dashboard top-level."`
+	X           *int   `json:"x,omitempty" jsonschema:"Optional explicit X position in the destination. Omit to use auto-layout."`
+	Y           *int   `json:"y,omitempty" jsonschema:"Optional explicit Y position in the destination. Omit to use auto-layout."`
+}
+
+func movePanelHandler(sm *SessionManager) mcp.ToolHandlerFor[MovePanelReq, mcputil.SuccessResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args MovePanelReq) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
+		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			p, srcRow, idx := s.findPanel(args.PanelID)
+			if p == nil {
+				return fmt.Errorf("panel_id %s not found", args.PanelID)
+			}
+
+			// Determine destination row (nil = top-level).
+			var dstRow *RowEntry
+			if args.RowID != "" {
+				dstRow = s.findRow(args.RowID)
+				if dstRow == nil {
+					return fmt.Errorf("row_id %s not found", args.RowID)
+				}
+			}
+
+			// Don't move to the same container.
+			if srcRow == dstRow {
+				return nil
+			}
+
+			// Remove from source.
+			if srcRow != nil {
+				srcRow.Panels = append(srcRow.Panels[:idx], srcRow.Panels[idx+1:]...)
+			} else {
+				s.Panels = append(s.Panels[:idx], s.Panels[idx+1:]...)
+			}
+
+			// Compute new grid position using auto-layout (or explicit coords).
+			wOpt := new(int(p.GridPos.W))
+			hOpt := new(int(p.GridPos.H))
+			p.GridPos = placePanel(s, dstRow, p.Type, wOpt, hOpt, args.X, args.Y)
+
+			// Append to destination.
+			if dstRow != nil {
+				dstRow.Panels = append(dstRow.Panels, p)
+			} else {
+				s.Panels = append(s.Panels, p)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, mcputil.SuccessResult{OK: false}, err
+		}
+		return nil, mcputil.SuccessResult{OK: true}, nil
+	}
+}
+
+type MoveRowReq struct {
+	DashboardID string `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
+	RowID       string `json:"row_id" jsonschema:"The ID of the row to move"`
+	BeforeRowID string `json:"before_row_id,omitempty" jsonschema:"Move the row before this row. Pass empty string to move to the end."`
+}
+
+func moveRowHandler(sm *SessionManager) mcp.ToolHandlerFor[MoveRowReq, mcputil.SuccessResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args MoveRowReq) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
+		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			srcIdx := s.findRowIndex(args.RowID)
+			if srcIdx < 0 {
+				return fmt.Errorf("row_id %s not found", args.RowID)
+			}
+
+			row := s.Rows[srcIdx]
+
+			// Build a new slice without the source row.
+			without := make([]*RowEntry, 0, len(s.Rows)-1)
+			without = append(without, s.Rows[:srcIdx]...)
+			without = append(without, s.Rows[srcIdx+1:]...)
+
+			if args.BeforeRowID == "" {
+				without = append(without, row)
+				s.Rows = without
+				return nil
+			}
+
+			dstIdx := -1
+			for i, r := range without {
+				if r.ID == args.BeforeRowID {
+					dstIdx = i
+					break
+				}
+			}
+			if dstIdx < 0 {
+				return fmt.Errorf("before_row_id %s not found", args.BeforeRowID)
+			}
+
+			// Insert at dstIdx.
+			result := make([]*RowEntry, 0, len(without)+1)
+			result = append(result, without[:dstIdx]...)
+			result = append(result, row)
+			result = append(result, without[dstIdx:]...)
+			s.Rows = result
+			return nil
+		})
+		if err != nil {
+			return nil, mcputil.SuccessResult{OK: false}, err
+		}
+		return nil, mcputil.SuccessResult{OK: true}, nil
+	}
+}
+
 func getDashboardStateHandler(sm *SessionManager) mcp.ToolHandlerFor[GetDashboardStateReq, *DashboardSession] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args GetDashboardStateReq) (*mcp.CallToolResult, *DashboardSession, error) {
 		s, err := sm.Get(args.DashboardID)
@@ -1728,10 +1644,6 @@ type ExportDashboardRes struct {
 	UID        string `json:"uid"`
 	URL        string `json:"url,omitempty"`
 	OutputPath string `json:"output_path,omitempty"`
-}
-
-func stringPtr(s string) *string {
-	return &s
 }
 
 func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandlerFor[ExportDashboardReq, ExportDashboardRes] {
@@ -1778,12 +1690,12 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 						dsType = "prometheus"
 					}
 					vb.Datasource(common.DataSourceRef{
-						Uid:  stringPtr(v.DatasourceUID),
-						Type: stringPtr(dsType),
+						Uid:  new(v.DatasourceUID),
+						Type: new(dsType),
 					})
 				}
 				if v.Query != "" {
-					vb.Query(dashboard.StringOrMap{String: stringPtr(v.Query)})
+					vb.Query(dashboard.StringOrMap{String: new(v.Query)})
 				}
 				vb.Refresh(dashboard.VariableRefresh(1))
 				dbBuilder.WithVariable(vb)
@@ -1791,7 +1703,7 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 			case "custom":
 				vb := dashboard.NewCustomVariableBuilder(v.Name)
 				if v.Query != "" {
-					vb.Values(dashboard.StringOrMap{String: stringPtr(v.Query)})
+					vb.Values(dashboard.StringOrMap{String: new(v.Query)})
 				}
 				dbBuilder.WithVariable(vb)
 
@@ -1879,8 +1791,8 @@ func buildPanel(p *PanelEntry) cog.Builder[dashboard.Panel] {
 				dsType = "prometheus"
 			}
 			dq.Datasource(common.DataSourceRef{
-				Uid:  stringPtr(q.DatasourceUID),
-				Type: stringPtr(dsType),
+				Uid:  new(q.DatasourceUID),
+				Type: new(dsType),
 			})
 		}
 		if q.LegendFormat != "" {

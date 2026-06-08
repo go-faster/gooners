@@ -1143,3 +1143,319 @@ func TestBuildPanelVariants(t *testing.T) {
 		})
 	}
 }
+
+func newTestSession(t *testing.T, title string) *SessionManager {
+	t.Helper()
+	sm := NewSessionManager(t.TempDir())
+	sm.Add(&DashboardSession{DashboardID: "d1", Title: title})
+	return sm
+}
+
+func TestUpdateDashboard(t *testing.T) {
+	sm := newTestSession(t, "Old Title")
+	h := updateDashboardHandler(sm)
+
+	_, _, err := h(context.Background(), nil, UpdateDashboardReq{
+		DashboardID: "d1",
+		Title:       "New Title",
+		UID:         "new-uid",
+		Tags:        []string{"a", "b"},
+	})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	assert.Equal(t, "New Title", s.Title)
+	assert.Equal(t, "new-uid", s.UID)
+	assert.Equal(t, []string{"a", "b"}, s.Tags)
+}
+
+func TestUpdateDashboard_NotFound(t *testing.T) {
+	sm := newTestSession(t, "Title")
+	h := updateDashboardHandler(sm)
+	_, res, err := h(context.Background(), nil, UpdateDashboardReq{DashboardID: "nope", Title: "X"})
+	require.Error(t, err)
+	assert.False(t, res.OK)
+}
+
+func TestUpdateRow(t *testing.T) {
+	sm := newTestSession(t, "T")
+	rowH := addRowHandler(sm)
+	_, rowRes, err := rowH(context.Background(), nil, AddRowReq{DashboardID: "d1", Title: "Old"})
+	require.NoError(t, err)
+
+	collapsed := true
+	h := updateRowHandler(sm)
+	_, _, err = h(context.Background(), nil, UpdateRowReq{
+		DashboardID: "d1",
+		RowID:       rowRes.RowID,
+		Title:       "New Title",
+		Collapsed:   &collapsed,
+	})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	require.Len(t, s.Rows, 1)
+	assert.Equal(t, "New Title", s.Rows[0].Title)
+	assert.True(t, s.Rows[0].Collapsed)
+}
+
+func TestDeleteRow_Discard(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	rowH := addRowHandler(sm)
+	_, rowRes, err := rowH(context.Background(), nil, AddRowReq{DashboardID: "d1", Title: "R"})
+	require.NoError(t, err)
+
+	panelH := addPanelHandler(sm)
+	_, _, err = panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "stat", RowID: rowRes.RowID})
+	require.NoError(t, err)
+
+	h := deleteRowHandler(sm)
+	_, _, err = h(context.Background(), nil, DeleteRowReq{DashboardID: "d1", RowID: rowRes.RowID, KeepPanels: false})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	assert.Empty(t, s.Rows)
+	assert.Empty(t, s.Panels, "panels should be discarded when keep_panels=false")
+}
+
+func TestDeleteRow_KeepPanels(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	rowH := addRowHandler(sm)
+	_, rowRes, err := rowH(context.Background(), nil, AddRowReq{DashboardID: "d1", Title: "R"})
+	require.NoError(t, err)
+
+	panelH := addPanelHandler(sm)
+	_, _, err = panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "stat", RowID: rowRes.RowID})
+	require.NoError(t, err)
+
+	h := deleteRowHandler(sm)
+	_, _, err = h(context.Background(), nil, DeleteRowReq{DashboardID: "d1", RowID: rowRes.RowID, KeepPanels: true})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	assert.Empty(t, s.Rows)
+	require.Len(t, s.Panels, 1, "panel should be promoted to top-level")
+	assert.Equal(t, "P", s.Panels[0].Title)
+}
+
+func TestUpdateQuery(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	panelH := addPanelHandler(sm)
+	_, pRes, err := panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "timeseries"})
+	require.NoError(t, err)
+
+	addQH := addQueryHandler(sm, nil)
+	_, qRes, err := addQH(context.Background(), nil, AddQueryReq{
+		DashboardID:    "d1",
+		PanelID:        pRes.PanelID,
+		DatasourceUID:  "ds1",
+		DatasourceType: "prometheus",
+		Expr:           "old_expr",
+	})
+	require.NoError(t, err)
+
+	h := updateQueryHandler(sm)
+	_, _, err = h(context.Background(), nil, UpdateQueryReq{
+		DashboardID:  "d1",
+		PanelID:      pRes.PanelID,
+		QueryRef:     qRes.QueryRef,
+		Expr:         "new_expr",
+		LegendFormat: "{{job}}",
+	})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	require.Len(t, s.Panels[0].Queries, 1)
+	q := s.Panels[0].Queries[0]
+	assert.Equal(t, "new_expr", q.Expr)
+	assert.Equal(t, "{{job}}", q.LegendFormat)
+	assert.Equal(t, "ds1", q.DatasourceUID)
+}
+
+func TestUpdateQuery_NotFound(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	panelH := addPanelHandler(sm)
+	_, pRes, err := panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "timeseries"})
+	require.NoError(t, err)
+
+	h := updateQueryHandler(sm)
+	_, _, err = h(context.Background(), nil, UpdateQueryReq{
+		DashboardID: "d1",
+		PanelID:     pRes.PanelID,
+		QueryRef:    "Z",
+		Expr:        "x",
+	})
+	require.Error(t, err)
+}
+
+func TestDeleteQuery(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	panelH := addPanelHandler(sm)
+	_, pRes, err := panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "timeseries"})
+	require.NoError(t, err)
+
+	addQH := addQueryHandler(sm, nil)
+	_, qResA, err := addQH(context.Background(), nil, AddQueryReq{DashboardID: "d1", PanelID: pRes.PanelID, DatasourceUID: "ds1", DatasourceType: "prometheus", Expr: "expr_a"})
+	require.NoError(t, err)
+	_, _, err = addQH(context.Background(), nil, AddQueryReq{DashboardID: "d1", PanelID: pRes.PanelID, DatasourceUID: "ds1", DatasourceType: "prometheus", Expr: "expr_b"})
+	require.NoError(t, err)
+
+	h := deleteQueryHandler(sm)
+	_, _, err = h(context.Background(), nil, DeleteQueryReq{DashboardID: "d1", PanelID: pRes.PanelID, QueryRef: qResA.QueryRef})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	require.Len(t, s.Panels[0].Queries, 1)
+	assert.Equal(t, "expr_b", s.Panels[0].Queries[0].Expr)
+}
+
+func TestUpdatePanel_TypeChange(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	panelH := addPanelHandler(sm)
+	_, pRes, err := panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "timeseries", ReduceCalcs: []string{"mean"}})
+	require.NoError(t, err)
+
+	h := updatePanelHandler(sm)
+	_, _, err = h(context.Background(), nil, UpdatePanelReq{
+		DashboardID: "d1",
+		PanelID:     pRes.PanelID,
+		Type:        "stat",
+	})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	p := s.Panels[0]
+	assert.Equal(t, "stat", p.Type)
+	assert.Empty(t, p.ReduceCalcs, "reduce_calcs must be reset on type change")
+}
+
+func TestMovePanel_ToRow(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	// Add a panel at top-level.
+	panelH := addPanelHandler(sm)
+	_, pRes, err := panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "stat"})
+	require.NoError(t, err)
+
+	// Add a row.
+	rowH := addRowHandler(sm)
+	_, rowRes, err := rowH(context.Background(), nil, AddRowReq{DashboardID: "d1", Title: "R"})
+	require.NoError(t, err)
+
+	h := movePanelHandler(sm)
+	_, _, err = h(context.Background(), nil, MovePanelReq{
+		DashboardID: "d1",
+		PanelID:     pRes.PanelID,
+		RowID:       rowRes.RowID,
+	})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	assert.Empty(t, s.Panels, "panel should have left top-level")
+	require.Len(t, s.Rows[0].Panels, 1)
+	assert.Equal(t, "P", s.Rows[0].Panels[0].Title)
+}
+
+func TestMovePanel_ToTopLevel(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	// Add a row with a panel inside.
+	rowH := addRowHandler(sm)
+	_, rowRes, err := rowH(context.Background(), nil, AddRowReq{DashboardID: "d1", Title: "R"})
+	require.NoError(t, err)
+
+	panelH := addPanelHandler(sm)
+	_, pRes, err := panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "stat", RowID: rowRes.RowID})
+	require.NoError(t, err)
+
+	h := movePanelHandler(sm)
+	_, _, err = h(context.Background(), nil, MovePanelReq{
+		DashboardID: "d1",
+		PanelID:     pRes.PanelID,
+		RowID:       "",
+	})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	assert.Empty(t, s.Rows[0].Panels, "panel should have left the row")
+	require.Len(t, s.Panels, 1)
+	assert.Equal(t, "P", s.Panels[0].Title)
+}
+
+func TestMoveRow(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	rowH := addRowHandler(sm)
+	_, r1, err := rowH(context.Background(), nil, AddRowReq{DashboardID: "d1", Title: "Row1"})
+	require.NoError(t, err)
+	_, r2, err := rowH(context.Background(), nil, AddRowReq{DashboardID: "d1", Title: "Row2"})
+	require.NoError(t, err)
+	_, r3, err := rowH(context.Background(), nil, AddRowReq{DashboardID: "d1", Title: "Row3"})
+	require.NoError(t, err)
+
+	h := moveRowHandler(sm)
+
+	t.Run("move to end", func(t *testing.T) {
+		// Move Row1 to the end.
+		_, _, err := h(context.Background(), nil, MoveRowReq{DashboardID: "d1", RowID: r1.RowID, BeforeRowID: ""})
+		require.NoError(t, err)
+		s, err := sm.Get("d1")
+		require.NoError(t, err)
+		require.Len(t, s.Rows, 3)
+		assert.Equal(t, r2.RowID, s.Rows[0].ID)
+		assert.Equal(t, r3.RowID, s.Rows[1].ID)
+		assert.Equal(t, r1.RowID, s.Rows[2].ID)
+	})
+
+	t.Run("move before another", func(t *testing.T) {
+		// Move Row1 (currently last) before Row2 (currently first).
+		_, _, err := h(context.Background(), nil, MoveRowReq{DashboardID: "d1", RowID: r1.RowID, BeforeRowID: r2.RowID})
+		require.NoError(t, err)
+		s, err := sm.Get("d1")
+		require.NoError(t, err)
+		require.Len(t, s.Rows, 3)
+		assert.Equal(t, r1.RowID, s.Rows[0].ID)
+		assert.Equal(t, r2.RowID, s.Rows[1].ID)
+		assert.Equal(t, r3.RowID, s.Rows[2].ID)
+	})
+}
+
+func TestMoveRow_NotFound(t *testing.T) {
+	sm := newTestSession(t, "T")
+	h := moveRowHandler(sm)
+
+	_, _, err := h(context.Background(), nil, MoveRowReq{DashboardID: "d1", RowID: "nope"})
+	require.Error(t, err)
+}
+
+func TestMovePanel_SameContainer(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	panelH := addPanelHandler(sm)
+	_, pRes, err := panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "stat"})
+	require.NoError(t, err)
+
+	h := movePanelHandler(sm)
+	// Move to same container (top-level → top-level) is a no-op.
+	_, _, err = h(context.Background(), nil, MovePanelReq{DashboardID: "d1", PanelID: pRes.PanelID, RowID: ""})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	require.Len(t, s.Panels, 1)
+}
