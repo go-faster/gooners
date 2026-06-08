@@ -2,8 +2,9 @@ package opencode
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -14,7 +15,7 @@ func parseAgents(body json.RawMessage) ([]Agent, error) {
 		for name, raw := range byName {
 			agents = append(agents, parseAgent(name, raw))
 		}
-		sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
+		slices.SortFunc(agents, func(a, b Agent) int { return cmp.Compare(a.Name, b.Name) })
 		return agents, nil
 	}
 
@@ -26,7 +27,7 @@ func parseAgents(body json.RawMessage) ([]Agent, error) {
 	for _, raw := range list {
 		agents = append(agents, parseAgent("", raw))
 	}
-	sort.Slice(agents, func(i, j int) bool { return agents[i].Name < agents[j].Name })
+	slices.SortFunc(agents, func(a, b Agent) int { return cmp.Compare(a.Name, b.Name) })
 	return agents, nil
 }
 
@@ -59,7 +60,7 @@ func summarizeProviders(body json.RawMessage) []ProviderSummary {
 		for id, raw := range byID {
 			out = append(out, parseProvider(id, raw))
 		}
-		sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+		slices.SortFunc(out, func(a, b ProviderSummary) int { return cmp.Compare(a.ID, b.ID) })
 		return out
 	}
 	var list []json.RawMessage
@@ -70,7 +71,7 @@ func summarizeProviders(body json.RawMessage) []ProviderSummary {
 	for _, raw := range list {
 		out = append(out, parseProvider("", raw))
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	slices.SortFunc(out, func(a, b ProviderSummary) int { return cmp.Compare(a.ID, b.ID) })
 	return out
 }
 
@@ -94,11 +95,11 @@ func summarizeModels(body json.RawMessage) []ModelSummary {
 		for providerID, raw := range byProvider {
 			out = append(out, summarizeProviderModels(providerID, raw)...)
 		}
-		sort.Slice(out, func(i, j int) bool {
-			if out[i].ProviderID == out[j].ProviderID {
-				return out[i].ID < out[j].ID
+		slices.SortFunc(out, func(a, b ModelSummary) int {
+			if n := cmp.Compare(a.ProviderID, b.ProviderID); n != 0 {
+				return n
 			}
-			return out[i].ProviderID < out[j].ProviderID
+			return cmp.Compare(a.ID, b.ID)
 		})
 		return out
 	}

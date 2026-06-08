@@ -2,12 +2,14 @@ package opencode
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -25,10 +27,7 @@ type Client struct {
 
 // NewClient creates an opencode API client.
 func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
-	baseURL := strings.TrimSpace(cfg.BaseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
+	baseURL := cmp.Or(strings.TrimSpace(cfg.BaseURL), defaultBaseURL)
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse opencode URL: %w", err)
@@ -212,10 +211,7 @@ func (c *Client) raw(ctx context.Context, method, path string, loc Location, bod
 }
 
 func (c *Client) applyLocation(req *http.Request, loc Location) error {
-	directory := loc.Directory
-	if directory == "" {
-		directory = c.defaultDirectory
-	}
+	directory := cmp.Or(loc.Directory, c.defaultDirectory)
 	if directory != "" {
 		if invalidHeaderValue(directory) {
 			return fmt.Errorf("directory contains invalid header characters")
@@ -246,10 +242,7 @@ func unwrapData(data []byte) json.RawMessage {
 }
 
 func httpError(status int, method, path string, body []byte) error {
-	msg := strings.TrimSpace(string(body))
-	if msg == "" {
-		msg = http.StatusText(status)
-	}
+	msg := cmp.Or(strings.TrimSpace(string(body)), http.StatusText(status))
 	suggestion := ""
 	switch status {
 	case http.StatusUnauthorized:
@@ -271,7 +264,7 @@ func httpError(status int, method, path string, body []byte) error {
 func sessionsQuery(req SessionsRequest) string {
 	values := url.Values{}
 	if req.Limit > 0 {
-		values.Set("limit", fmt.Sprintf("%d", req.Limit))
+		values.Set("limit", strconv.Itoa(req.Limit))
 	}
 	if req.Order != "" {
 		values.Set("order", req.Order)
