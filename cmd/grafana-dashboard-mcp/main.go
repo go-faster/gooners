@@ -6,9 +6,7 @@ import (
 	_ "embed"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
-	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/common/model"
 
+	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/grafana"
 )
@@ -23,67 +22,33 @@ import (
 //go:embed design-dashboard.md
 var designDashboardPrompt string
 
-func runServer(ctx context.Context, s *mcp.Server, transport, addr string) error {
-	handler := func(*http.Request) *mcp.Server { return s }
-	switch transport {
-	case "stdio", "":
-		slog.Info("starting grafana-dashboard-mcp on stdio transport")
-		return s.Run(ctx, &mcp.StdioTransport{})
-
-	case "streamable-http":
-		handler := mcp.NewStreamableHTTPHandler(handler, &mcp.StreamableHTTPOptions{
-			Logger: slog.Default(),
-		})
-		slog.Info("starting grafana-dashboard-mcp on streamable-http transport", "at", fmt.Sprintf("http://%s/mcp", addr))
-		if err := http.ListenAndServe(addr, handler); err != nil { //nolint:gosec // G114: timeouts not required for local/trusted MCP usage
-			return fmt.Errorf("streamable-http server exited with error: %w", err)
-		}
-
-	case "sse":
-		handler := mcp.NewSSEHandler(handler, nil)
-		slog.Info("starting grafana-dashboard-mcp on SSE transport", "at", fmt.Sprintf("http://%s", addr))
-		if err := http.ListenAndServe(addr, handler); err != nil { //nolint:gosec // G114: timeouts not required for local/trusted MCP usage
-			return fmt.Errorf("sse server exited with error: %w", err)
-		}
-
-	default:
-		return fmt.Errorf("unknown transport: %q", transport)
-	}
-	return nil
-}
-
 func main() {
-	logFile := flag.String("log-file", "", "path to log file (enables structured debug logging)")
-	transport := flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
-	addr := flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
-	sessionsDir := flag.String("sessions-dir", os.Getenv("GRAFANA_SESSIONS_DIR"), "path to dashboard builder sessions directory (env: GRAFANA_SESSIONS_DIR)")
-	var sessionTTL time.Duration // default 0 (disabled)
-	flag.Func("session-ttl", "idle session lifetime before deletion (default: disabled; e.g. 1h, 2d, 1w)", func(s string) error {
-		dur, err := model.ParseDuration(s)
-		if err != nil {
-			return err
-		}
-		sessionTTL = time.Duration(dur)
-		return nil
-	})
-	grafanaURL := flag.String("grafana-url", os.Getenv("GRAFANA_URL"), "Grafana base URL")
-	grafanaToken := flag.String("grafana-token", os.Getenv("GRAFANA_TOKEN"), "Grafana API token or service account token")
-	grafanaUser := flag.String("grafana-user", os.Getenv("GRAFANA_USER"), "Grafana username for basic auth")
-	grafanaPassword := flag.String("grafana-password", os.Getenv("GRAFANA_PASSWORD"), "Grafana password for basic auth")
+	var (
+		logging   cmdutil.LoggingFlags
+		transport cmdutil.TransportFlags
+	)
+	logging.Register(flag.CommandLine)
+	transport.Register(flag.CommandLine)
+
+	var (
+		sessionTTL model.Duration // default 0 (disabled)
+
+		sessionsDir     = flag.String("sessions-dir", os.Getenv("GRAFANA_SESSIONS_DIR"), "path to dashboard builder sessions directory (env: GRAFANA_SESSIONS_DIR)")
+		grafanaURL      = flag.String("grafana-url", os.Getenv("GRAFANA_URL"), "Grafana base URL")
+		grafanaToken    = flag.String("grafana-token", os.Getenv("GRAFANA_TOKEN"), "Grafana API token or service account token")
+		grafanaUser     = flag.String("grafana-user", os.Getenv("GRAFANA_USER"), "Grafana username for basic auth")
+		grafanaPassword = flag.String("grafana-password", os.Getenv("GRAFANA_PASSWORD"), "Grafana password for basic auth")
+	)
+
+	flag.TextVar(&sessionTTL, "session-ttl", &sessionTTL, "idle session lifetime before deletion (default: disabled; e.g. 1h, 2d, 1w)")
 	flag.Parse()
 
-	if *logFile != "" {
-		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			log.Fatalf("opening log file: %v", err)
-		}
-		defer func() { _ = f.Close() }()
-
-		handler := slog.NewTextHandler(f, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})
-		slog.SetDefault(slog.New(handler))
+	cleanup, logger, err := logging.Setup()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%+v\n", err)
+		os.Exit(1)
 	}
+	defer cleanup()
 
 	if *sessionsDir == "" {
 		xdgData := os.Getenv("XDG_DATA_HOME")
@@ -103,11 +68,10 @@ func main() {
 	defer cancel()
 
 	gc := grafana.NewGrafanaClient(*grafanaURL, *grafanaToken, *grafanaUser, *grafanaPassword)
-
 	s := mcputil.NewServer(mcputil.ServerConfig{
 		Name:         "grafana-dashboard-mcp",
 		Instructions: "You are connected to grafana-dashboard-mcp. Use these tools to incrementally build and deploy Grafana dashboards.",
-		Logger:       slog.Default().With("component", "mcp-sdk"),
+		Logger:       logger.With("component", "mcp-sdk"),
 		Prompts: []*mcp.Prompt{
 			{
 				Name:        "design-dashboard",
@@ -136,11 +100,10 @@ func main() {
 	sm.OnEvict = func(id string) {
 		mcputil.BroadcastWarning(s, "grafana-mcp", fmt.Sprintf("Dashboard session %q evicted due to inactivity", id))
 	}
-	go sm.StartCleanupLoop(ctx, sessionTTL)
-
+	go sm.StartCleanupLoop(ctx, time.Duration(sessionTTL))
 	grafana.Register(s, sm, gc)
 
-	if err := runServer(ctx, s, *transport, *addr); err != nil {
+	if err := transport.Run(ctx, "grafana-dashboard-mcp", s, logger.WithGroup("transport")); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}

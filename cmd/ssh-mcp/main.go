@@ -5,14 +5,13 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
 	"log/slog"
-	"net/http"
 	"os"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/tools/core"
@@ -23,44 +22,14 @@ import (
 	"github.com/go-faster/gooners/internal/tools/systemd"
 )
 
-func runServer(ctx context.Context, s *mcp.Server, transport, addr string) error {
-	handler := func(*http.Request) *mcp.Server { return s }
-	switch transport {
-	case "stdio", "":
-		slog.Info("starting ssh-mcp on stdio transport")
-		return s.Run(ctx, &mcp.StdioTransport{})
-
-	case "streamable-http":
-		handler := mcp.NewStreamableHTTPHandler(handler, &mcp.StreamableHTTPOptions{
-			Logger: slog.Default(),
-		})
-		slog.Info("starting ssh-mcp on streamable-http transport", "at", fmt.Sprintf("http://%s/mcp", addr))
-		if err := http.ListenAndServe(addr, handler); err != nil { //nolint:gosec // G114: timeouts not required for local/trusted MCP usage
-			return fmt.Errorf("streamable-http server exited with error: %w", err)
-		}
-
-	case "sse":
-		handler := mcp.NewSSEHandler(handler, nil)
-		slog.Info("starting ssh-mcp on SSE transport", "at", fmt.Sprintf("http://%s", addr))
-		if err := http.ListenAndServe(addr, handler); err != nil { //nolint:gosec // G114: timeouts not required for local/trusted MCP usage
-			return fmt.Errorf("sse server exited with error: %w", err)
-		}
-
-	default:
-		return fmt.Errorf("unknown transport: %q", transport)
-	}
-	return nil
-}
-
 func main() {
-	logLevel := slog.LevelInfo
-	flag.TextVar(&logLevel, "log-level", &logLevel, "log level: debug, info, warn, error")
 	var (
-		logFile   = flag.String("log-file", "", "path to log file (enables structured debug logging)")
-		logFormat = flag.String("log-format", "text", "log format: text, json")
-
-		transport               = flag.String("transport", "stdio", "transport: stdio, streamable-http, sse")
-		addr                    = flag.String("addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
+		logging   cmdutil.LoggingFlags
+		transport cmdutil.TransportFlags
+	)
+	logging.Register(flag.CommandLine)
+	transport.Register(flag.CommandLine)
+	var (
 		disableSudo             = flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
 		disableSpecializedTools = flag.Bool("disable-specialized-tools", false, "register only core SSH tools: session management, exec, and file transfer")
 		passwordFile            = flag.String("password-file", "", "file containing a password for all machines (re-read on each use)")
@@ -71,29 +40,12 @@ func main() {
 	)
 	flag.Parse()
 
-	out := os.Stdout
-	if *logFile != "" {
-		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			log.Fatalf("opening log file: %v", err)
-		}
-		defer func() { _ = f.Close() }()
-		out = f
+	cleanup, logger, err := logging.Setup()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%+v\n", err)
+		os.Exit(1)
 	}
-
-	opts := &slog.HandlerOptions{Level: logLevel}
-	var handler slog.Handler
-	switch *logFormat {
-	case "json":
-		handler = slog.NewJSONHandler(out, opts)
-	case "text", "":
-		handler = slog.NewTextHandler(out, opts)
-	default:
-		log.Fatalf("unknown log format: %q", *logFormat)
-	}
-
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
+	defer cleanup()
 
 	uploadRoot, err := os.Getwd()
 	if err != nil {
@@ -175,7 +127,7 @@ func main() {
 	}
 	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "disable_specialized_tools", *disableSpecializedTools, "upload_root", uploadRoot)
 
-	if err := runServer(ctx, s, *transport, *addr); err != nil {
+	if err := transport.Run(ctx, "ssh-mcp", s, logger.WithGroup("transport")); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}
