@@ -19,6 +19,7 @@ secret.yaml
 
 /ssh-mcp
 /grafana-dashboard-mcp
+/opencode-handoff-mcp
 
 # goreleaser
 dist

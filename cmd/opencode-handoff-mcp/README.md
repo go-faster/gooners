@@ -4,11 +4,13 @@
 
 ## Prerequisites
 
-Start opencode separately before running this MCP server:
+When `-opencode-url` / `OPENCODE_URL` is not set, this MCP server starts `opencode serve` locally and connects to `http://localhost:4096`:
 
 ```bash
-opencode serve
+./opencode-handoff-mcp
 ```
+
+When `-opencode-url` / `OPENCODE_URL` is set, it connects to that already-running opencode server and does not start a local process unless `-mode local` is set explicitly.
 
 The full `handoff_run` and `handoff_fire` create-session flow requires opencode v2 `POST /api/session` support. If the connected opencode server does not expose that route, those tools return an actionable `404` error.
 
@@ -24,6 +26,18 @@ go build ./cmd/opencode-handoff-mcp
 ./opencode-handoff-mcp
 ```
 
+Remote opencode server:
+
+```bash
+./opencode-handoff-mcp -mode remote -opencode-url http://localhost:4096
+```
+
+Local opencode serve with custom environment and arguments:
+
+```bash
+./opencode-handoff-mcp -opencode-env OPENCODE_CONFIG=/path/to/opencode.json -opencode-arg --hostname -opencode-arg 127.0.0.1
+```
+
 HTTP transport:
 
 ```bash
@@ -34,9 +48,12 @@ HTTP transport:
 
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
-| `-opencode-url` | `OPENCODE_URL` | `http://localhost:4096` | opencode server base URL |
+| `-mode` | `OPENCODE_MODE` | auto | `local` starts `opencode serve`; `remote` connects to an existing server |
+| `-opencode-url` | `OPENCODE_URL` | `http://localhost:4096` when auto-selecting local | opencode server base URL; required in explicit remote mode |
 | `-opencode-username` | `OPENCODE_USERNAME` | `opencode` | Basic auth username |
 | `-opencode-password` | `OPENCODE_PASSWORD` | empty | Basic auth password |
+| `-opencode-env` | | empty | Environment variable for local `opencode serve`, in `KEY=VALUE` form; may be repeated |
+| `-opencode-arg` | | empty | Argument passed to local `opencode serve`; may be repeated |
 | `-default-directory` | `OPENCODE_DIRECTORY` | empty | Default `x-opencode-directory` header |
 | `-request-timeout` | | `30s` | Per-request opencode HTTP timeout |
 | `-wait-timeout` | | `10m` | Default `handoff_run` / `handoff_wait` timeout |
