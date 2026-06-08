@@ -271,12 +271,13 @@ func execHandler(p *session.Pool, sudo bool, passwords PasswordProvider, logger 
 		execCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
 		res := p.Exec(execCtx, session.ExecRequest{
-			SessionID:    args.SessionID,
-			Command:      args.Command,
-			Description:  args.Description,
-			Cwd:          args.Cwd,
-			Sudo:         sudo,
-			SudoPassword: sudoPwd,
+			SessionID:          args.SessionID,
+			Command:            args.Command,
+			Description:        args.Description,
+			DescriptionComment: true,
+			Cwd:                args.Cwd,
+			Sudo:               sudo,
+			SudoPassword:       sudoPwd,
 		})
 		if res.Err != nil {
 			logger.Warn("command execution completed with error", "session_id", args.SessionID, "sudo", sudo, "err", res.Err)
@@ -317,10 +318,11 @@ func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, mcputil.ExecRes
 		defer func() { _ = p.Close(ctx, openRes.ID) }() // Use parent context for closing
 
 		res := p.Exec(onceCtx, session.ExecRequest{
-			SessionID:   openRes.ID,
-			Command:     args.Command,
-			Description: args.Description,
-			Cwd:         args.Cwd,
+			SessionID:          openRes.ID,
+			Command:            args.Command,
+			Description:        args.Description,
+			DescriptionComment: true,
+			Cwd:                args.Cwd,
 		})
 		return execResult(res)
 	}

@@ -176,21 +176,31 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 		return 0, ctx.Err()
 	case err := <-errCh:
 		if err != nil {
-			var machine string
-			if p.onDisconnect != nil {
-				machine, _ = p.Machine(ctx, id)
-				if machine == "" {
-					machine = id
-				}
-			}
+			machine := p.disconnectMachine(ctx, id)
 			_ = p.Close(ctx, id)
-			if p.onDisconnect != nil {
-				p.onDisconnect(machine, fmt.Errorf("keepalive failed: %w", err))
-			}
+			p.notifyDisconnect(machine, fmt.Errorf("keepalive failed: %w", err))
 			return 0, err
 		}
 		return time.Since(start), nil
 	}
+}
+
+func (p *Pool) disconnectMachine(ctx context.Context, id string) string {
+	if p.onDisconnect == nil {
+		return ""
+	}
+	machine, _ := p.Machine(ctx, id)
+	if machine == "" {
+		machine = id
+	}
+	return machine
+}
+
+func (p *Pool) notifyDisconnect(machine string, err error) {
+	if p.onDisconnect == nil {
+		return
+	}
+	p.onDisconnect(machine, err)
 }
 
 func (p *Pool) Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error) {
@@ -442,7 +452,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 	start := time.Now()
 
 	cmdText := r.Command
-	if r.Description != "" {
+	if r.DescriptionComment && r.Description != "" {
 		// Prevent command injection via newlines in the description
 		desc := strings.ReplaceAll(r.Description, "\n", " ")
 		desc = strings.ReplaceAll(desc, "\r", " ")

@@ -323,6 +323,7 @@ func (p *Pool) handleExec(sessions map[string]*Session, r ExecRequest) {
 		r.resp <- ExecResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
 		return
 	}
+	r.DescriptionComment = r.DescriptionComment && s.platform == "linux"
 
 	// Run in background so we don't block the event loop
 	go p.executeCommand(s.ctx, s.client, r)
