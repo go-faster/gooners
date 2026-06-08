@@ -224,13 +224,19 @@ type sessionParams struct {
 	Verbose        bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
 }
 
+type checkParams struct {
+	locationParams
+	SessionID string `json:"session_id" jsonschema:"opencode session id."`
+	Verbose   bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
+}
+
 type requestListParams struct {
 	locationParams
 	SessionID string `json:"session_id,omitempty" jsonschema:"Optional opencode session id. Omit to list global pending requests when supported by opencode."`
 }
 
-func checkHandler(client *Client) mcp.ToolHandlerFor[sessionParams, HandoffCheckResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args sessionParams) (*mcp.CallToolResult, HandoffCheckResult, error) {
+func checkHandler(client *Client) mcp.ToolHandlerFor[checkParams, HandoffCheckResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args checkParams) (*mcp.CallToolResult, HandoffCheckResult, error) {
 		res, err := checkSession(ctx, client, args.location(), args.SessionID, args.Verbose)
 		if err != nil {
 			return nil, HandoffCheckResult{}, err

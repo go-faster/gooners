@@ -224,10 +224,9 @@ func summarizeMessages(raw json.RawMessage, limit int) []MessageSummary {
 			continue
 		}
 		out = append(out, MessageSummary{
-			ID:      stringField(item, "id"),
-			Role:    stringField(item, "role"),
-			Text:    text,
-			Preview: preview(text),
+			ID:   stringField(item, "id"),
+			Role: stringField(item, "role"),
+			Text: compactText(text),
 		})
 	}
 	return out
@@ -277,7 +276,7 @@ func collectText(out []string, v any) []string {
 		if text, ok := x["text"].(string); ok && strings.TrimSpace(text) != "" {
 			out = append(out, text)
 		}
-		for _, key := range []string{"content", "parts", "message", "messages", "data"} {
+		for _, key := range []string{"content", "parts", "message", "messages", "data", "tool_result", "tool_use", "input", "output"} {
 			if child, ok := x[key]; ok {
 				out = collectText(out, child)
 			}
@@ -326,11 +325,19 @@ func firstStringField(m map[string]any, keys ...string) string {
 }
 
 func preview(s string) string {
+	return truncateFields(s, 240)
+}
+
+func compactText(s string) string {
+	return truncateFields(s, 1200)
+}
+
+func truncateFields(s string, limit int) string {
 	s = strings.Join(strings.Fields(s), " ")
-	if len(s) <= 240 {
+	if len(s) <= limit {
 		return s
 	}
-	return s[:240] + "..."
+	return s[:limit] + "..."
 }
 
 func compactJSON(raw json.RawMessage) string {

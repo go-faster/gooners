@@ -19,7 +19,7 @@ type Location struct {
 type HealthResult struct {
 	OK      bool            `json:"ok"`
 	BaseURL string          `json:"base_url"`
-	Data    json.RawMessage `json:"data,omitempty"`
+	Data    json.RawMessage `json:"-"`
 	Message string          `json:"message,omitempty"`
 }
 
@@ -75,11 +75,10 @@ type SessionsRequest struct {
 }
 
 type CreateSessionRequest struct {
-	ID       string    `json:"id,omitempty"`
-	Title    string    `json:"title,omitempty"`
-	ParentID string    `json:"parentID,omitempty"`
-	Location *Location `json:"location,omitempty"`
-	Agent    string    `json:"agent,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Title    string `json:"title,omitempty"`
+	ParentID string `json:"parentID,omitempty"`
+	Agent    string `json:"agent,omitempty"`
 }
 
 type PromptRequest struct {
@@ -137,10 +136,9 @@ type HandoffCheckResult struct {
 }
 
 type MessageSummary struct {
-	ID      string `json:"id,omitempty"`
-	Role    string `json:"role,omitempty"`
-	Text    string `json:"text,omitempty"`
-	Preview string `json:"preview,omitempty"`
+	ID   string `json:"id,omitempty"`
+	Role string `json:"role,omitempty"`
+	Text string `json:"text,omitempty"`
 }
 
 type RequestSummary struct {
@@ -154,12 +152,12 @@ type RequestSummary struct {
 
 type PermissionReplyResult struct {
 	OK   bool            `json:"ok"`
-	Data json.RawMessage `json:"data,omitempty"`
+	Data json.RawMessage `json:"-"`
 }
 
 type QuestionReplyResult struct {
 	OK   bool            `json:"ok"`
-	Data json.RawMessage `json:"data,omitempty"`
+	Data json.RawMessage `json:"-"`
 }
 
 type RequestsResult struct {
