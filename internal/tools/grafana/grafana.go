@@ -656,8 +656,12 @@ func (c *GrafanaClient) LookupLabels(ctx context.Context, dsUID, match string) (
 	return resp.Data, nil
 }
 
-func (c *GrafanaClient) LookupLabelValues(ctx context.Context, dsUID, label string) ([]string, error) {
-	path := fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/label/%s/values", dsUID, url.PathEscape(label))
+func (c *GrafanaClient) LookupLabelValues(ctx context.Context, dsUID, label, match string) ([]string, error) {
+	v := url.Values{}
+	if match != "" {
+		v.Add("match[]", match)
+	}
+	path := fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/label/%s/values?%s", dsUID, url.PathEscape(label), v.Encode())
 	var resp PromLabelValuesResponse
 	err := c.getJSON(ctx, path, &resp)
 	if err != nil {
@@ -2112,6 +2116,7 @@ func lookupLabelsHandler(gc *GrafanaClient) mcp.ToolHandlerFor[LookupLabelsReq, 
 type LookupLabelValuesReq struct {
 	DatasourceUID string `json:"datasource_uid" jsonschema:"The UID of the datasource"`
 	Label         string `json:"label" jsonschema:"The label name"`
+	Match         string `json:"match,omitempty" jsonschema:"Optional PromQL series selector to restrict values, e.g. {job='myapp'}"`
 }
 
 type LookupLabelValuesRes struct {
@@ -2123,7 +2128,7 @@ func lookupLabelValuesHandler(gc *GrafanaClient) mcp.ToolHandlerFor[LookupLabelV
 		if gc == nil {
 			return nil, LookupLabelValuesRes{}, fmt.Errorf("grafana client not configured")
 		}
-		values, err := gc.LookupLabelValues(ctx, args.DatasourceUID, args.Label)
+		values, err := gc.LookupLabelValues(ctx, args.DatasourceUID, args.Label, args.Match)
 		if err != nil {
 			return nil, LookupLabelValuesRes{}, err
 		}

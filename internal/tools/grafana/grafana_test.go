@@ -808,7 +808,7 @@ func TestGrafanaClient(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{"job", "instance"}, labels)
 
-	values, err := c.LookupLabelValues(ctx, "prom", "job")
+	values, err := c.LookupLabelValues(ctx, "prom", "job", "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"api", "worker"}, values)
 
