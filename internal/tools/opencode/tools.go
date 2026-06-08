@@ -2,7 +2,6 @@ package opencode
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -279,20 +278,15 @@ func permissionsHandler(client *Client) mcp.ToolHandlerFor[requestListParams, Re
 
 type permissionReplyParams struct {
 	locationParams
-	SessionID string          `json:"session_id" jsonschema:"opencode session id."`
-	RequestID string          `json:"request_id" jsonschema:"permission request id."`
-	Reply     string          `json:"reply" jsonschema:"permission reply value, for example once, always, reject, or deny depending on opencode API."`
-	Message   string          `json:"message,omitempty" jsonschema:"Optional explanation."`
-	Payload   json.RawMessage `json:"payload,omitempty" jsonschema:"Optional raw reply payload. If provided, reply/message are ignored."`
+	SessionID string `json:"session_id" jsonschema:"opencode session id."`
+	RequestID string `json:"request_id" jsonschema:"permission request id."`
+	Reply     string `json:"reply" jsonschema:"permission reply value, for example once, always, reject, or deny depending on opencode API."`
+	Message   string `json:"message,omitempty" jsonschema:"Optional explanation."`
 }
 
 func permissionReplyHandler(client *Client) mcp.ToolHandlerFor[permissionReplyParams, PermissionReplyResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args permissionReplyParams) (*mcp.CallToolResult, PermissionReplyResult, error) {
-		payload := any(map[string]string{"reply": args.Reply, "message": args.Message})
-		if len(args.Payload) > 0 {
-			payload = args.Payload
-		}
-		res, err := client.PermissionReply(ctx, args.location(), args.SessionID, args.RequestID, payload)
+		res, err := client.PermissionReply(ctx, args.location(), args.SessionID, args.RequestID, args.Reply, args.Message)
 		if err != nil {
 			return nil, PermissionReplyResult{}, err
 		}
@@ -313,20 +307,15 @@ func questionsHandler(client *Client) mcp.ToolHandlerFor[requestListParams, Requ
 
 type questionReplyParams struct {
 	locationParams
-	SessionID string          `json:"session_id" jsonschema:"opencode session id."`
-	RequestID string          `json:"request_id" jsonschema:"question request id."`
-	Response  string          `json:"response,omitempty" jsonschema:"Answer to the question."`
-	Reject    bool            `json:"reject,omitempty" jsonschema:"Reject the question instead of answering it."`
-	Payload   json.RawMessage `json:"payload,omitempty" jsonschema:"Optional raw reply/reject payload. If provided, response is ignored."`
+	SessionID string     `json:"session_id" jsonschema:"opencode session id."`
+	RequestID string     `json:"request_id" jsonschema:"question request id."`
+	Answers   [][]string `json:"answers,omitempty" jsonschema:"Answer selections: each inner array is selected labels for one question."`
+	Reject    bool       `json:"reject,omitempty" jsonschema:"Reject the question instead of answering it."`
 }
 
 func questionReplyHandler(client *Client) mcp.ToolHandlerFor[questionReplyParams, QuestionReplyResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args questionReplyParams) (*mcp.CallToolResult, QuestionReplyResult, error) {
-		payload := any(map[string]string{"response": args.Response})
-		if len(args.Payload) > 0 {
-			payload = args.Payload
-		}
-		res, err := client.QuestionReply(ctx, args.location(), args.SessionID, args.RequestID, args.Reject, payload)
+		res, err := client.QuestionReply(ctx, args.location(), args.SessionID, args.RequestID, args.Reject, args.Answers)
 		if err != nil {
 			return nil, QuestionReplyResult{}, err
 		}

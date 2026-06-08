@@ -182,6 +182,7 @@ func (o *opencodeCfg) startLocal(ctx context.Context, lg *slog.Logger) (func(), 
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 
+	setProcAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		return func() {}, fmt.Errorf("start opencode serve: %w", err)
 	}

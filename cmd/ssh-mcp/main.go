@@ -127,7 +127,7 @@ func main() {
 	}
 	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "disable_specialized_tools", *disableSpecializedTools, "upload_root", uploadRoot)
 
-	if err := transport.Run(ctx, "ssh-mcp", s, logger.WithGroup("transport")); err != nil {
+	if err := transport.Run(ctx, "ssh-mcp", s, logger.With("component", "transport")); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}

@@ -11,20 +11,27 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// writeJSON writes a JSON response with application/json Content-Type.
+func writeJSON(w http.ResponseWriter, body string) {
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(body))
+}
+
+// minimalSession is a valid opencode Session JSON response (instance route format).
+const minimalSession = `{"id":"ses_1","title":"task","directory":"/tmp","projectID":"p1","version":"1","time":{"created":1,"updated":2}}`
+
 func TestWaitHandlerReturnsBlockedState(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/session/ses_1/wait":
-			http.Error(w, "still running", http.StatusServiceUnavailable)
-		case "/api/session/ses_1/message":
-			_, _ = w.Write([]byte(`{"data":[{"id":"msg_1","role":"assistant","content":[{"text":"working"}]}]}`))
+		case "/session/ses_1/message":
+			writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"working"}]}]`)
 		case "/api/session/ses_1/context":
-			_, _ = w.Write([]byte(`{"data":{"tokens":1}}`))
-		case "/api/session/ses_1/permission":
-			_, _ = w.Write([]byte(`{"data":[{"id":"perm_1","sessionID":"ses_1","title":"shell"}]}`))
-		case "/api/session/ses_1/question":
-			_, _ = w.Write([]byte(`{"data":[]}`))
+			writeJSON(w, `{"data":{"tokens":1}}`)
+		case "/api/session/ses_1/permission/request":
+			writeJSON(w, `{"data":[{"id":"perm_1","sessionID":"ses_1","title":"shell"}]}`)
+		case "/api/question/request":
+			writeJSON(w, `{"data":[]}`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -34,27 +41,27 @@ func TestWaitHandlerReturnsBlockedState(t *testing.T) {
 
 	_, res, err := waitHandler(client, time.Second)(t.Context(), nil, sessionParams{SessionID: "ses_1"})
 	require.NoError(t, err)
-	require.Equal(t, "blocked_or_running", res.Status)
+	// Wait is a no-op (prompt is synchronous), so it always returns "completed".
+	require.Equal(t, "completed", res.Status)
 	require.Equal(t, 1, res.PendingPermissionCount)
-	require.Contains(t, res.Message, "handoff_wait")
 }
 
 func TestRunHandlerHappyPathCompactResult(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/session":
-			_, _ = w.Write([]byte(`{"data":{"id":"ses_1","title":"task"}}`))
-		case "/api/session/ses_1/prompt":
-			_, _ = w.Write([]byte(`{"data":{"messageID":"msg_prompt"}}`))
-		case "/api/session/ses_1/wait":
-			_, _ = w.Write([]byte(`{"data":{"ok":true}}`))
-		case "/api/session/ses_1/message":
-			_, _ = w.Write([]byte(`{"data":[{"id":"msg_1","role":"assistant","content":[{"text":"done"}]}]}`))
+		case "/session":
+			writeJSON(w, minimalSession)
+		case "/session/ses_1/message":
+			if r.Method == http.MethodPost {
+				writeJSON(w, `{"messageID":"msg_prompt"}`)
+			} else {
+				writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"done"}]}]`)
+			}
 		case "/api/session/ses_1/context":
-			_, _ = w.Write([]byte(`{"data":{"tokens":1}}`))
-		case "/api/session/ses_1/permission", "/api/session/ses_1/question":
-			_, _ = w.Write([]byte(`{"data":[]}`))
+			writeJSON(w, `{"data":{"tokens":1}}`)
+		case "/api/session/ses_1/permission/request", "/api/question/request":
+			writeJSON(w, `{"data":[]}`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -75,10 +82,10 @@ func TestFireHandlerReturnsSessionID(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/session":
-			_, _ = w.Write([]byte(`{"data":{"id":"ses_1","title":"task"}}`))
-		case "/api/session/ses_1/prompt":
-			_, _ = w.Write([]byte(`{"data":{"messageID":"msg_prompt"}}`))
+		case "/session":
+			writeJSON(w, minimalSession)
+		case "/session/ses_1/message":
+			writeJSON(w, `{"messageID":"msg_prompt"}`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -96,14 +103,14 @@ func TestCheckHandlerReportsPendingPermission(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/session/ses_1/message":
-			_, _ = w.Write([]byte(`{"data":[{"id":"msg_1","role":"assistant","content":[{"text":"waiting"}]}]}`))
+		case "/session/ses_1/message":
+			writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"waiting"}]}]`)
 		case "/api/session/ses_1/context":
-			_, _ = w.Write([]byte(`{"data":{"tokens":1}}`))
-		case "/api/session/ses_1/permission":
-			_, _ = w.Write([]byte(`{"data":[{"id":"perm_1","sessionID":"ses_1","title":"shell","text":"approve?"}]}`))
-		case "/api/session/ses_1/question":
-			_, _ = w.Write([]byte(`{"data":[]}`))
+			writeJSON(w, `{"data":{"tokens":1}}`)
+		case "/api/session/ses_1/permission/request":
+			writeJSON(w, `{"data":[{"id":"perm_1","sessionID":"ses_1","title":"shell","text":"approve?"}]}`)
+		case "/api/question/request":
+			writeJSON(w, `{"data":[]}`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -121,18 +128,18 @@ func TestRunHandlerBlockedState(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/session":
-			_, _ = w.Write([]byte(`{"data":{"id":"ses_1","title":"task"}}`))
-		case "/api/session/ses_1/prompt":
-			_, _ = w.Write([]byte(`{"data":{"messageID":"msg_prompt"}}`))
-		case "/api/session/ses_1/wait":
-			http.Error(w, "not idle", http.StatusServiceUnavailable)
-		case "/api/session/ses_1/message":
-			_, _ = w.Write([]byte(`{"data":[{"id":"msg_1","role":"assistant","content":[{"text":"still working"}]}]}`))
+		case "/session":
+			writeJSON(w, minimalSession)
+		case "/session/ses_1/message":
+			if r.Method == http.MethodPost {
+				writeJSON(w, `{"messageID":"msg_prompt"}`)
+			} else {
+				writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"still working"}]}]`)
+			}
 		case "/api/session/ses_1/context":
-			_, _ = w.Write([]byte(`{"data":{"tokens":1}}`))
-		case "/api/session/ses_1/permission", "/api/session/ses_1/question":
-			_, _ = w.Write([]byte(`{"data":[]}`))
+			writeJSON(w, `{"data":{"tokens":1}}`)
+		case "/api/session/ses_1/permission/request", "/api/question/request":
+			writeJSON(w, `{"data":[]}`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -140,10 +147,11 @@ func TestRunHandlerBlockedState(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
 
+	// Wait is a no-op so runHandler always sees "completed" unless prompt itself fails.
 	_, res, err := runHandler(client, time.Second)(t.Context(), nil, runParams{Prompt: "do it"})
 	require.NoError(t, err)
-	require.Equal(t, "blocked_or_running", res.Status)
-	require.Contains(t, res.Message, "handoff_wait")
+	require.Equal(t, "completed", res.Status)
+	require.Equal(t, "still working", res.FinalText)
 }
 
 func TestSummaryOutputOmitsDuplicateAndRawFields(t *testing.T) {

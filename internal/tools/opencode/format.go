@@ -111,7 +111,9 @@ func summarizeProviderModels(providerID string, raw json.RawMessage) []ModelSumm
 	if err := json.Unmarshal(raw, &byID); err == nil {
 		out := make([]ModelSummary, 0, len(byID))
 		for id, modelRaw := range byID {
-			out = append(out, parseModel(providerID, id, modelRaw))
+			if m := parseModel(providerID, id, modelRaw); m.Enabled {
+				out = append(out, m.ModelSummary)
+			}
 		}
 		return out
 	}
@@ -121,16 +123,24 @@ func summarizeProviderModels(providerID string, raw json.RawMessage) []ModelSumm
 	}
 	out := make([]ModelSummary, 0, len(list))
 	for _, modelRaw := range list {
-		out = append(out, parseModel(providerID, "", modelRaw))
+		if m := parseModel(providerID, "", modelRaw); m.Enabled {
+			out = append(out, m.ModelSummary)
+		}
 	}
 	return out
 }
 
-func parseModel(providerID, id string, raw json.RawMessage) ModelSummary {
+type parsedModel struct {
+	ModelSummary
+	Enabled bool
+}
+
+func parseModel(providerID, id string, raw json.RawMessage) parsedModel {
 	var obj struct {
 		ID         string `json:"id"`
 		Name       string `json:"name"`
 		ProviderID string `json:"providerID"`
+		Enabled    *bool  `json:"enabled"`
 	}
 	_ = json.Unmarshal(raw, &obj)
 	if id == "" {
@@ -139,59 +149,8 @@ func parseModel(providerID, id string, raw json.RawMessage) ModelSummary {
 	if providerID == "" {
 		providerID = obj.ProviderID
 	}
-	return ModelSummary{ProviderID: providerID, ID: id, Name: obj.Name}
-}
-
-func parseSessions(body json.RawMessage) ([]Session, error) {
-	var list []json.RawMessage
-	if err := json.Unmarshal(body, &list); err == nil {
-		return parseSessionList(list), nil
-	}
-	var wrapper struct {
-		Sessions []json.RawMessage `json:"sessions"`
-		Items    []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &wrapper); err != nil {
-		return nil, err
-	}
-	items := wrapper.Sessions
-	if len(items) == 0 {
-		items = wrapper.Items
-	}
-	return parseSessionList(items), nil
-}
-
-func parseSessionList(list []json.RawMessage) []Session {
-	sessions := make([]Session, 0, len(list))
-	for _, raw := range list {
-		if session, ok := parseSession(raw); ok {
-			sessions = append(sessions, session)
-		}
-	}
-	return sessions
-}
-
-func parseSession(raw json.RawMessage) (Session, bool) {
-	var obj struct {
-		ID       string `json:"id"`
-		Title    string `json:"title"`
-		ParentID string `json:"parentID"`
-		Time     struct {
-			Created int64 `json:"created"`
-			Updated int64 `json:"updated"`
-		} `json:"time"`
-	}
-	if err := json.Unmarshal(raw, &obj); err != nil || obj.ID == "" {
-		return Session{}, false
-	}
-	return Session{
-		ID:        obj.ID,
-		Title:     obj.Title,
-		ParentID:  obj.ParentID,
-		CreatedAt: obj.Time.Created,
-		UpdatedAt: obj.Time.Updated,
-		Raw:       raw,
-	}, true
+	enabled := obj.Enabled == nil || *obj.Enabled
+	return parsedModel{ModelSummary: ModelSummary{ProviderID: providerID, ID: id, Name: obj.Name}, Enabled: enabled}
 }
 
 func firstText(raw json.RawMessage) string {

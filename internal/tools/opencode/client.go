@@ -8,46 +8,54 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"time"
+
+	opencodesdk "github.com/sst/opencode-sdk-go"
+	"github.com/sst/opencode-sdk-go/option"
 )
 
 const defaultBaseURL = "http://localhost:4096"
 
-// Client calls opencode v2 HTTP API endpoints.
+// Client calls opencode HTTP API endpoints via the official SDK (instance routes)
+// and direct HTTP calls for v2 API endpoints not covered by the SDK.
 type Client struct {
-	baseURL          string
-	username         string
-	password         string
-	defaultDirectory string
+	sdk              *opencodesdk.Client
 	httpClient       *http.Client
+	baseURL          string
+	defaultDirectory string
 }
 
 // NewClient creates an opencode API client.
 func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 	baseURL := cmp.Or(strings.TrimSpace(cfg.BaseURL), defaultBaseURL)
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse opencode URL: %w", err)
-	}
-	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("opencode URL must include scheme and host: %q", baseURL)
-	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
 
+	httpClient := &http.Client{Timeout: timeout}
+	if cfg.Username != "" || cfg.Password != "" {
+		httpClient.Transport = &basicAuthTransport{
+			username: cfg.Username,
+			password: cfg.Password,
+			base:     http.DefaultTransport,
+		}
+	}
+
+	sdk := opencodesdk.NewClient(
+		option.WithBaseURL(baseURL),
+		option.WithHTTPClient(httpClient),
+	)
 	return &Client{
-		baseURL:          strings.TrimRight(u.String(), "/"),
-		username:         cfg.Username,
-		password:         cfg.Password,
+		sdk:              sdk,
+		httpClient:       httpClient,
+		baseURL:          strings.TrimRight(baseURL, "/"),
 		defaultDirectory: cfg.DefaultDirectory,
-		httpClient: &http.Client{
-			Timeout: timeout,
-		},
 	}, nil
+}
+
+func (c *Client) dir(loc Location) string {
+	return cmp.Or(loc.Directory, c.defaultDirectory)
 }
 
 func (c *Client) BaseURL() string {
@@ -55,180 +63,263 @@ func (c *Client) BaseURL() string {
 }
 
 func (c *Client) Health(ctx context.Context) (json.RawMessage, error) {
-	return c.raw(ctx, http.MethodGet, "/api/health", Location{}, nil)
+	return c.v2Get(ctx, "/api/health", "")
 }
 
 func (c *Client) Agents(ctx context.Context, loc Location) ([]Agent, error) {
-	body, err := c.raw(ctx, http.MethodGet, "/api/agent", loc, nil)
+	params := opencodesdk.AgentListParams{}
+	if dir := c.dir(loc); dir != "" {
+		params.Directory = opencodesdk.F(dir)
+	}
+	res, err := c.sdk.Agent.List(ctx, params)
 	if err != nil {
 		return nil, err
 	}
-	return parseAgents(body)
+	raw, err := json.Marshal(res)
+	if err != nil {
+		return nil, err
+	}
+	return parseAgents(unwrapData(raw))
 }
 
 func (c *Client) Providers(ctx context.Context, loc Location) (json.RawMessage, error) {
-	return c.raw(ctx, http.MethodGet, "/api/provider", loc, nil)
+	res, err := c.appProviders(ctx, loc)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(res.Providers)
 }
 
 func (c *Client) Models(ctx context.Context, loc Location) (json.RawMessage, error) {
-	return c.raw(ctx, http.MethodGet, "/api/model", loc, nil)
+	res, err := c.appProviders(ctx, loc)
+	if err != nil {
+		return nil, err
+	}
+	// Build map[providerID]map[modelID]model so summarizeModels handles it correctly.
+	out := make(map[string]map[string]opencodesdk.Model, len(res.Providers))
+	for _, p := range res.Providers {
+		out[p.ID] = p.Models
+	}
+	return json.Marshal(out)
+}
+
+func (c *Client) appProviders(ctx context.Context, loc Location) (*opencodesdk.AppProvidersResponse, error) {
+	params := opencodesdk.AppProvidersParams{}
+	if dir := c.dir(loc); dir != "" {
+		params.Directory = opencodesdk.F(dir)
+	}
+	return c.sdk.App.Providers(ctx, params)
 }
 
 func (c *Client) Sessions(ctx context.Context, req SessionsRequest) (SessionsResult, error) {
-	path := "/api/session" + sessionsQuery(req)
-	body, err := c.raw(ctx, http.MethodGet, path, req.Location, nil)
+	dir := cmp.Or(req.Directory, c.defaultDirectory)
+	params := opencodesdk.SessionListParams{}
+	if dir != "" {
+		params.Directory = opencodesdk.F(dir)
+	}
+	res, err := c.sdk.Session.List(ctx, params)
 	if err != nil {
 		return SessionsResult{}, err
 	}
-	sessions, err := parseSessions(body)
-	if err != nil {
-		return SessionsResult{}, err
+	sessions := make([]Session, 0, len(*res))
+	for _, s := range *res {
+		sessions = append(sessions, sessionFromSDK(s))
 	}
 	return SessionsResult{Sessions: sessions}, nil
 }
 
 func (c *Client) CreateSession(ctx context.Context, loc Location, req CreateSessionRequest) (Session, error) {
-	body, err := c.raw(ctx, http.MethodPost, "/api/session", loc, req)
+	params := opencodesdk.SessionNewParams{
+		Directory: opencodesdk.F(c.dir(loc)),
+	}
+	if req.Title != "" {
+		params.Title = opencodesdk.F(req.Title)
+	}
+	if req.ParentID != "" {
+		params.ParentID = opencodesdk.F(req.ParentID)
+	}
+	res, err := c.sdk.Session.New(ctx, params)
 	if err != nil {
-		return Session{}, err
+		return Session{}, fmt.Errorf("POST /session: %w", err)
 	}
-	sessions, err := parseSessions(body)
-	if err == nil && len(sessions) > 0 {
-		return sessions[0], nil
-	}
-	if one, ok := parseSession(body); ok {
-		return one, nil
-	}
-	return Session{}, fmt.Errorf("opencode create session response does not contain a session id")
+	return sessionFromSDK(*res), nil
 }
 
 func (c *Client) Prompt(ctx context.Context, loc Location, sessionID string, req PromptRequest) (json.RawMessage, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
-	return c.raw(ctx, http.MethodPost, "/api/session/"+url.PathEscape(sessionID)+"/prompt", loc, req)
+	type textPart struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	type modelRef struct {
+		ModelID    string `json:"modelID"`
+		ProviderID string `json:"providerID"`
+	}
+	type promptBody struct {
+		Parts []textPart `json:"parts"`
+		Agent string     `json:"agent,omitempty"`
+		Model *modelRef  `json:"model,omitempty"`
+	}
+	body := promptBody{
+		Parts: []textPart{{Type: "text", Text: req.Prompt.Text}},
+		Agent: req.Agent,
+	}
+	if req.Model != nil && req.Model.ModelID != "" {
+		body.Model = &modelRef{
+			ModelID:    req.Model.ModelID,
+			ProviderID: req.Model.ProviderID,
+		}
+	}
+	return c.instancePost(ctx, fmt.Sprintf("session/%s/message", sessionID), c.dir(loc), body)
 }
 
-func (c *Client) Wait(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
+func (c *Client) Wait(_ context.Context, _ Location, sessionID string) (json.RawMessage, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
-	return c.raw(ctx, http.MethodPost, "/api/session/"+url.PathEscape(sessionID)+"/wait", loc, nil)
-}
-
-func (c *Client) Context(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
-	return c.raw(ctx, http.MethodGet, "/api/session/"+url.PathEscape(sessionID)+"/context", loc, nil)
+	// Prompt via instance route is synchronous; nothing to wait for.
+	return nil, nil
 }
 
 func (c *Client) Messages(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
-	return c.raw(ctx, http.MethodGet, "/api/session/"+url.PathEscape(sessionID)+"/message", loc, nil)
+	return c.instanceGet(ctx, fmt.Sprintf("session/%s/message", sessionID), c.dir(loc))
+}
+
+func (c *Client) Context(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+	return c.v2Get(ctx, fmt.Sprintf("/api/session/%s/context", sessionID), c.dir(loc))
 }
 
 func (c *Client) Permissions(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
 	if sessionID != "" {
-		return c.raw(ctx, http.MethodGet, "/api/session/"+url.PathEscape(sessionID)+"/permission", loc, nil)
+		return c.v2Get(ctx, fmt.Sprintf("/api/session/%s/permission/request", sessionID), c.dir(loc))
 	}
-	return c.raw(ctx, http.MethodGet, "/api/permission/request", loc, nil)
+	return c.v2Get(ctx, "/api/permission/request", c.dir(loc))
 }
 
-func (c *Client) PermissionReply(ctx context.Context, loc Location, sessionID, requestID string, payload any) (json.RawMessage, error) {
+func (c *Client) PermissionReply(ctx context.Context, loc Location, sessionID, requestID, reply, _ string) (json.RawMessage, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
 	if requestID == "" {
 		return nil, fmt.Errorf("request_id is required")
 	}
-	path := "/api/session/" + url.PathEscape(sessionID) + "/permission/" + url.PathEscape(requestID) + "/reply"
-	return c.raw(ctx, http.MethodPost, path, loc, payload)
-}
-
-func (c *Client) Questions(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
-	if sessionID != "" {
-		return c.raw(ctx, http.MethodGet, "/api/session/"+url.PathEscape(sessionID)+"/question", loc, nil)
-	}
-	return c.raw(ctx, http.MethodGet, "/api/question/request", loc, nil)
-}
-
-func (c *Client) QuestionReply(ctx context.Context, loc Location, sessionID, requestID string, reject bool, payload any) (json.RawMessage, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
-	if requestID == "" {
-		return nil, fmt.Errorf("request_id is required")
-	}
-	action := "reply"
-	if reject {
-		action = "reject"
-	}
-	path := "/api/session/" + url.PathEscape(sessionID) + "/question/" + url.PathEscape(requestID) + "/" + action
-	return c.raw(ctx, http.MethodPost, path, loc, payload)
-}
-
-func (c *Client) raw(ctx context.Context, method, path string, loc Location, body any) (json.RawMessage, error) {
-	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("marshal request body: %w", err)
-		}
-		reader = bytes.NewReader(data)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, reader)
+	res, err := c.sdk.Session.Permissions.Respond(ctx, sessionID, requestID,
+		opencodesdk.SessionPermissionRespondParams{
+			Response:  opencodesdk.F(opencodesdk.SessionPermissionRespondParamsResponse(reply)),
+			Directory: opencodesdk.F(c.dir(loc)),
+		})
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, err
+	}
+	return json.Marshal(res)
+}
+
+func (c *Client) Questions(ctx context.Context, loc Location, _ string) (json.RawMessage, error) {
+	return c.v2Get(ctx, "/api/question/request", c.dir(loc))
+}
+
+func (c *Client) QuestionReply(ctx context.Context, loc Location, sessionID, requestID string, reject bool, answers [][]string) (json.RawMessage, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+	if requestID == "" {
+		return nil, fmt.Errorf("request_id is required")
+	}
+	if reject {
+		return c.v2Post(ctx, fmt.Sprintf("/api/session/%s/question/request/%s/reject", sessionID, requestID), c.dir(loc), nil)
+	}
+	type replyBody struct {
+		Answers [][]string `json:"answers"`
+	}
+	return c.v2Post(ctx, fmt.Sprintf("/api/session/%s/question/request/%s/reply", sessionID, requestID), c.dir(loc), replyBody{Answers: answers})
+}
+
+// instanceGet makes a GET request to an instance route (no /api/ prefix).
+func (c *Client) instanceGet(ctx context.Context, path, dir string) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/"+path, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	setDirQuery(req, dir)
+	return c.doRaw(req)
+}
+
+// instancePost makes a POST request to an instance route (no /api/ prefix).
+func (c *Client) instancePost(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
+	return c.v2Post(ctx, "/"+path, dir, body)
+}
+
+// v2Get makes a GET request to a v2 API route (/api/...).
+func (c *Client) v2Get(ctx context.Context, path, dir string) (json.RawMessage, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, http.NoBody)
+	if err != nil {
+		return nil, err
+	}
+	setDirQuery(req, dir)
+	return c.doRaw(req)
+}
+
+// v2Post makes a POST request to a v2 API route (/api/...).
+func (c *Client) v2Post(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
+	var bodyReader io.Reader
+	if body != nil {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		bodyReader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bodyReader)
+	if err != nil {
+		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set("Accept", "application/json")
-	if c.password != "" || c.username != "" {
-		req.SetBasicAuth(c.username, c.password)
-	}
-	if err := c.applyLocation(req, loc); err != nil {
-		return nil, err
-	}
+	setDirQuery(req, dir)
+	return c.doRaw(req)
+}
 
+func setDirQuery(req *http.Request, dir string) {
+	if dir == "" {
+		return
+	}
+	q := req.URL.Query()
+	q.Set("directory", dir)
+	req.URL.RawQuery = q.Encode()
+}
+
+func (c *Client) doRaw(req *http.Request) (json.RawMessage, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("call opencode %s %s: %w", method, path, err)
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read opencode response: %w", err)
+		return nil, err
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, httpError(resp.StatusCode, method, path, data)
-	}
-	return unwrapData(data), nil
+	return json.RawMessage(data), nil
 }
 
-func (c *Client) applyLocation(req *http.Request, loc Location) error {
-	directory := cmp.Or(loc.Directory, c.defaultDirectory)
-	if directory != "" {
-		if invalidHeaderValue(directory) {
-			return fmt.Errorf("directory contains invalid header characters")
-		}
-		req.Header.Set("x-opencode-directory", directory)
+func sessionFromSDK(s opencodesdk.Session) Session {
+	raw, _ := json.Marshal(s)
+	return Session{
+		ID:        s.ID,
+		Title:     s.Title,
+		ParentID:  s.ParentID,
+		CreatedAt: int64(s.Time.Created),
+		UpdatedAt: int64(s.Time.Updated),
+		Raw:       raw,
 	}
-	if loc.Workspace != "" {
-		if invalidHeaderValue(loc.Workspace) {
-			return fmt.Errorf("workspace contains invalid header characters")
-		}
-		req.Header.Set("x-opencode-workspace", loc.Workspace)
-	}
-	return nil
-}
-
-func invalidHeaderValue(s string) bool {
-	return strings.ContainsAny(s, "\x00\r\n")
 }
 
 func unwrapData(data []byte) json.RawMessage {
@@ -241,42 +332,13 @@ func unwrapData(data []byte) json.RawMessage {
 	return json.RawMessage(data)
 }
 
-func httpError(status int, method, path string, body []byte) error {
-	msg := cmp.Or(strings.TrimSpace(string(body)), http.StatusText(status))
-	suggestion := ""
-	switch status {
-	case http.StatusUnauthorized:
-		suggestion = "; check OPENCODE_USERNAME/OPENCODE_PASSWORD"
-	case http.StatusForbidden:
-		suggestion = "; credentials were accepted but are not authorized for this opencode operation"
-	case http.StatusNotFound:
-		if method == http.MethodPost && path == "/api/session" {
-			suggestion = "; this opencode server does not expose v2 POST /api/session yet"
-		}
-	case http.StatusConflict:
-		suggestion = "; check whether the session id already exists or the session is currently busy"
-	case http.StatusServiceUnavailable:
-		suggestion = "; ensure opencode serve is running and ready"
-	}
-	return fmt.Errorf("opencode %s %s returned HTTP %d%s: %s", method, path, status, suggestion, msg)
+type basicAuthTransport struct {
+	username, password string
+	base               http.RoundTripper
 }
 
-func sessionsQuery(req SessionsRequest) string {
-	values := url.Values{}
-	if req.Limit > 0 {
-		values.Set("limit", strconv.Itoa(req.Limit))
-	}
-	if req.Order != "" {
-		values.Set("order", req.Order)
-	}
-	if req.Search != "" {
-		values.Set("search", req.Search)
-	}
-	if req.Cursor != "" {
-		values.Set("cursor", req.Cursor)
-	}
-	if len(values) == 0 {
-		return ""
-	}
-	return "?" + values.Encode()
+func (t *basicAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	r = r.Clone(r.Context())
+	r.SetBasicAuth(t.username, t.password)
+	return t.base.RoundTrip(r)
 }

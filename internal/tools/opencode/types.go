@@ -75,10 +75,13 @@ type SessionsRequest struct {
 }
 
 type CreateSessionRequest struct {
-	ID       string `json:"id,omitempty"`
-	Title    string `json:"title,omitempty"`
-	ParentID string `json:"parentID,omitempty"`
-	Agent    string `json:"agent,omitempty"`
+	ID         string `json:"id,omitempty"`
+	Title      string `json:"title,omitempty"`
+	ParentID   string `json:"parentID,omitempty"`
+	Agent      string `json:"agent,omitempty"`
+	ModelID    string `json:"model_id,omitempty"`
+	ProviderID string `json:"provider_id,omitempty"`
+	Variant    string `json:"variant,omitempty"`
 }
 
 type PromptRequest struct {

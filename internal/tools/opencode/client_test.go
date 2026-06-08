@@ -11,23 +11,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClientLocationAndAuthHeaders(t *testing.T) {
+func TestClientAgentsBasicAuth(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/agent", r.URL.Path)
+		require.Equal(t, "/agent", r.URL.Path)
 		user, pass, ok := r.BasicAuth()
 		require.True(t, ok)
 		require.Equal(t, "opencode", user)
 		require.Equal(t, "secret", pass)
-		require.Equal(t, dir, r.Header.Get("x-opencode-directory"))
-		require.Equal(t, "ws", r.Header.Get("x-opencode-workspace"))
-		_, _ = w.Write([]byte(`{"data":{"build":{"description":"Build things","mode":"subagent"}}}`))
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"name":"build","description":"Build things","mode":"subagent"}]`))
 	}))
 	t.Cleanup(server.Close)
 
 	client := newTestClient(t, Config{BaseURL: server.URL, Username: "opencode", Password: "secret"})
-	agents, err := client.Agents(t.Context(), Location{Directory: dir, Workspace: "ws"})
+	agents, err := client.Agents(t.Context(), Location{Directory: dir})
 	require.NoError(t, err)
 	require.Len(t, agents, 1)
 	require.Equal(t, "build", agents[0].Name)
@@ -39,24 +39,38 @@ func TestClientCreateSessionAndPrompt(t *testing.T) {
 	var sawCreate bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/session":
+		case "/session":
 			require.Equal(t, http.MethodPost, r.Method)
 			sawCreate = true
-			var body CreateSessionRequest
+			var body struct {
+				Title string `json:"title"`
+			}
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			require.Equal(t, "ws", r.Header.Get("x-opencode-workspace"))
 			require.Equal(t, "Fix tests", body.Title)
-			require.Equal(t, "build", body.Agent)
-			_, _ = w.Write([]byte(`{"data":{"id":"ses_1","title":"Fix tests","time":{"created":1,"updated":2}}}`))
-		case "/api/session/ses_1/prompt":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"ses_1","title":"Fix tests","time":{"created":1,"updated":2},"directory":"/tmp","projectID":"p1","version":"1"}`))
+		case "/session/ses_1/message":
 			require.True(t, sawCreate, "prompt called before create")
-			var body PromptRequest
+			require.Equal(t, http.MethodPost, r.Method)
+			var body struct {
+				Parts []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"parts"`
+				Agent string `json:"agent,omitempty"`
+				Model *struct {
+					ModelID    string `json:"modelID"`
+					ProviderID string `json:"providerID"`
+				} `json:"model,omitempty"`
+			}
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			require.Equal(t, "do it", body.Prompt.Text)
+			require.Len(t, body.Parts, 1)
+			require.Equal(t, "text", body.Parts[0].Type)
+			require.Equal(t, "do it", body.Parts[0].Text)
 			require.Equal(t, "build", body.Agent)
 			require.NotNil(t, body.Model)
 			require.Equal(t, "anthropic", body.Model.ProviderID)
-			_, _ = w.Write([]byte(`{"data":{"messageID":"msg_1"}}`))
+			_, _ = w.Write([]byte(`{"messageID":"msg_1"}`))
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -64,7 +78,7 @@ func TestClientCreateSessionAndPrompt(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := newTestClient(t, Config{BaseURL: server.URL})
-	session, err := client.CreateSession(t.Context(), Location{Workspace: "ws"}, CreateSessionRequest{Title: "Fix tests", Agent: "build"})
+	session, err := client.CreateSession(t.Context(), Location{}, CreateSessionRequest{Title: "Fix tests"})
 	require.NoError(t, err)
 	require.Equal(t, "ses_1", session.ID)
 	require.EqualValues(t, 1, session.CreatedAt)
@@ -87,29 +101,31 @@ func TestClientCreateSessionMissingRouteError(t *testing.T) {
 	client := newTestClient(t, Config{BaseURL: server.URL})
 	_, err := client.CreateSession(t.Context(), Location{}, CreateSessionRequest{})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "POST /api/session")
+	require.Contains(t, err.Error(), "POST /session")
 }
 
-func TestClientSessionsPagination(t *testing.T) {
+func TestClientSessionsDirectory(t *testing.T) {
 	t.Parallel()
+	dir := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "10", r.URL.Query().Get("limit"))
-		require.Equal(t, "next", r.URL.Query().Get("cursor"))
-		_, _ = w.Write([]byte(`{"data":[{"id":"ses_1","title":"one"}]}`))
+		require.Equal(t, "/session", r.URL.Path)
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id":"ses_1","title":"one","directory":"/tmp","projectID":"p1","version":"1","time":{"created":1,"updated":2}}]`))
 	}))
 	t.Cleanup(server.Close)
 
 	client := newTestClient(t, Config{BaseURL: server.URL})
-	res, err := client.Sessions(t.Context(), SessionsRequest{Limit: 10, Cursor: "next"})
+	res, err := client.Sessions(t.Context(), SessionsRequest{Location: Location{Directory: dir}})
 	require.NoError(t, err)
 	require.Len(t, res.Sessions, 1)
 	require.Equal(t, "ses_1", res.Sessions[0].ID)
 }
 
-func TestClientQuestionsUsesSessionRoute(t *testing.T) {
+func TestClientQuestionsUsesGlobalRequestRoute(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/session/ses_1/question", r.URL.Path)
+		require.Equal(t, "/api/question/request", r.URL.Path)
 		_, _ = w.Write([]byte(`{"data":[]}`))
 	}))
 	t.Cleanup(server.Close)
@@ -117,19 +133,6 @@ func TestClientQuestionsUsesSessionRoute(t *testing.T) {
 	client := newTestClient(t, Config{BaseURL: server.URL})
 	_, err := client.Questions(t.Context(), Location{}, "ses_1")
 	require.NoError(t, err)
-}
-
-func TestClientInvalidDirectoryHeader(t *testing.T) {
-	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		t.Fatal("server should not be called")
-	}))
-	t.Cleanup(server.Close)
-
-	client := newTestClient(t, Config{BaseURL: server.URL})
-	_, err := client.Agents(t.Context(), Location{Directory: "bad\nvalue"})
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "invalid header")
 }
 
 func TestFirstText(t *testing.T) {
