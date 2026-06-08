@@ -28,7 +28,7 @@ You are designing a production-ready Grafana dashboard. Build the dashboard with
 - OpenMetrics / Prometheus traditionally uses underscores (`http_requests_total`). Prometheus 3.0+ supports UTF-8 metric names including dots (`http.requests_total`) natively; older stacks do not.
 - If you encounter dotted metric names in queries or user input, check whether the connected Prometheus/Grafana stack supports UTF-8 metric names before using them. If it is unclear, ask the user: "Your metrics use dotted names (e.g. `http.requests_total`). Does your Prometheus stack support UTF-8 metric names (Prometheus 3.0+), or should I use the underscore form (`http_requests_total`)?"
 - Do **not** silently rename metrics — dotted and underscore names are different series and converting invents a metric that may not exist. Only use a name you have confirmed exists via `search_metrics` or `lookup_metric_metadata`.
-- In PromQL, dotted metric names require label-selector syntax: `{__name__="http.requests_total"}` — they cannot be used as bare identifiers.
+- In PromQL, dotted metric names can be written as `{"http.requests_total"}` (Prometheus 3.0+ shorthand) or the explicit `{__name__="http.requests_total"}` form. They cannot be used as bare identifiers.
 
 **Rate Function Selection:**
 - **`rate($__rate_interval)`** — per-second throughput trend, smoothed over the interval. Default for most counters: requests, errors, bytes transferred.

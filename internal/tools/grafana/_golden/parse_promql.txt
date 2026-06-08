@@ -1,0 +1,20 @@
+=== simple_rate ===
+input:  rate(http_requests_total{job="api",env="prod"}[5m])
+output: rate(http_requests_total{job="api",env="prod"}[5m])
+
+=== histogram_quantile ===
+input:  histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))
+output: histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by(le))
+
+=== increase_with_label_filter ===
+input:  increase(go_gc_duration_seconds_count{job=~"worker.*"}[5m])
+output: increase(go_gc_duration_seconds_count{job=~"worker.*"}[5m])
+
+=== subquery ===
+input:  max_over_time(rate(http_requests_total[1m])[15m:1m])
+output: max_over_time(rate(http_requests_total[1m])[15m:1m])
+
+=== grafana_template_vars ===
+input:  rate(http_requests_total{job="$job",cluster="$cluster"}[$__rate_interval])
+output: rate(http_requests_total{job="$job",cluster="$cluster"})
+

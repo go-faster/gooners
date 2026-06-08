@@ -900,6 +900,12 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 		Description: "Returns metric type (counter/gauge/histogram) and help string.",
 		Flags:       mcputil.ReadOnly,
 	}, lookupMetricMetadataHandler(gc))
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "parse_promql",
+		Description: "Parses a PromQL/MetricsQL expression offline and returns a syntax error or the normalized expression. Use this to catch syntax errors when Grafana is not configured. Note: Grafana duration macros like $__rate_interval are not valid PromQL durations and will be stripped by the parser — substitute real values (e.g. 5m) before calling this tool.",
+		Flags:       mcputil.ReadOnly,
+	}, parsePromQLHandler())
 }
 
 // Handler implementations
@@ -2151,5 +2157,19 @@ func lookupMetricMetadataHandler(gc *GrafanaClient) mcp.ToolHandlerFor[LookupMet
 			return nil, mcputil.CommandResult{}, err
 		}
 		return nil, mcputil.CommandResult{Text: res}, nil
+	}
+}
+
+type ParsePromQLReq struct {
+	Query string `json:"query" jsonschema:"The PromQL/MetricsQL expression to parse"`
+}
+
+func parsePromQLHandler() mcp.ToolHandlerFor[ParsePromQLReq, mcputil.CommandResult] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args ParsePromQLReq) (*mcp.CallToolResult, mcputil.CommandResult, error) {
+		expr, err := metricsql.Parse(args.Query)
+		if err != nil {
+			return nil, mcputil.CommandResult{}, fmt.Errorf("parse error: %w", err)
+		}
+		return nil, mcputil.CommandResult{Text: string(expr.AppendString(nil))}, nil
 	}
 }

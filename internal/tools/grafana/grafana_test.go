@@ -1056,6 +1056,54 @@ func TestDiscoveryHandlers(t *testing.T) {
 	require.ErrorContains(t, err, "not configured")
 }
 
+func TestParsePromQL(t *testing.T) {
+	ctx := context.Background()
+	handler := parsePromQLHandler()
+
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{
+			name:  "simple_rate",
+			query: `rate(http_requests_total{job="api",env="prod"}[5m])`,
+		},
+		{
+			name:  "histogram_quantile",
+			query: `histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket[5m])))`,
+		},
+		{
+			name:  "increase_with_label_filter",
+			query: `increase(go_gc_duration_seconds_count{job=~"worker.*"}[5m])`,
+		},
+		{
+			name:  "subquery",
+			query: `max_over_time(rate(http_requests_total[1m])[15m:1m])`,
+		},
+		{
+			name:  "grafana_template_vars",
+			query: `rate(http_requests_total{job="$job",cluster="$cluster"}[$__rate_interval])`,
+		},
+	}
+
+	var sb strings.Builder
+	for _, tc := range cases {
+		_, res, err := handler(ctx, nil, ParsePromQLReq{Query: tc.query})
+		fmt.Fprintf(&sb, "=== %s ===\ninput:  %s\n", tc.name, tc.query)
+		if err != nil {
+			fmt.Fprintf(&sb, "error:  %v\n\n", err)
+		} else {
+			fmt.Fprintf(&sb, "output: %s\n\n", res.Text)
+		}
+	}
+
+	// Syntax error case.
+	_, _, err := handler(ctx, nil, ParsePromQLReq{Query: `not valid +++`})
+	require.Error(t, err)
+
+	gold.Str(t, sb.String(), "parse_promql.txt")
+}
+
 func TestBuildPanelVariants(t *testing.T) {
 	threshold := 80.0
 	for _, tt := range []struct {
