@@ -3,6 +3,7 @@ package grafana
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -126,13 +127,9 @@ func moveRowHandler(sm *SessionManager) mcp.ToolHandlerFor[MoveRowReq, mcputil.S
 				return nil
 			}
 
-			dstIdx := -1
-			for i, r := range without {
-				if r.ID == args.BeforeRowID {
-					dstIdx = i
-					break
-				}
-			}
+			dstIdx := slices.IndexFunc(without, func(r *RowEntry) bool {
+				return r.ID == args.BeforeRowID
+			})
 			if dstIdx < 0 {
 				return fmt.Errorf("before_row_id %s not found", args.BeforeRowID)
 			}

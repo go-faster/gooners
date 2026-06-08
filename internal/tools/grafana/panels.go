@@ -203,12 +203,7 @@ func addPanelHandler(sm *SessionManager) mcp.ToolHandlerFor[AddPanelReq, AddPane
 		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
 			var r *RowEntry
 			if args.RowID != "" {
-				for _, row := range s.Rows {
-					if row.ID == args.RowID {
-						r = row
-						break
-					}
-				}
+				r = s.findRow(args.RowID)
 				if r == nil {
 					return fmt.Errorf("row_id %s not found in dashboard", args.RowID)
 				}
@@ -274,12 +269,7 @@ func addPanelsBatchHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandle
 		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
 			var r *RowEntry
 			if args.RowID != "" {
-				for _, row := range s.Rows {
-					if row.ID == args.RowID {
-						r = row
-						break
-					}
-				}
+				r = s.findRow(args.RowID)
 				if r == nil {
 					return fmt.Errorf("row_id %s not found in dashboard", args.RowID)
 				}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/VictoriaMetrics/metricsql"
@@ -187,25 +188,25 @@ func updateQueryHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateQueryReq, m
 			if p == nil {
 				return fmt.Errorf("panel_id %s not found", args.PanelID)
 			}
-			for i := range p.Queries {
-				if p.Queries[i].RefID != args.QueryRef {
-					continue
-				}
-				if args.Expr != "" {
-					p.Queries[i].Expr = args.Expr
-				}
-				if args.LegendFormat != "" {
-					p.Queries[i].LegendFormat = args.LegendFormat
-				}
-				if args.DatasourceUID != "" {
-					p.Queries[i].DatasourceUID = args.DatasourceUID
-				}
-				if args.DatasourceType != "" {
-					p.Queries[i].DatasourceType = args.DatasourceType
-				}
-				return nil
+			idx := slices.IndexFunc(p.Queries, func(q QueryEntry) bool {
+				return q.RefID == args.QueryRef
+			})
+			if idx < 0 {
+				return fmt.Errorf("query_ref %s not found on panel %s", args.QueryRef, args.PanelID)
 			}
-			return fmt.Errorf("query_ref %s not found on panel %s", args.QueryRef, args.PanelID)
+			if args.Expr != "" {
+				p.Queries[idx].Expr = args.Expr
+			}
+			if args.LegendFormat != "" {
+				p.Queries[idx].LegendFormat = args.LegendFormat
+			}
+			if args.DatasourceUID != "" {
+				p.Queries[idx].DatasourceUID = args.DatasourceUID
+			}
+			if args.DatasourceType != "" {
+				p.Queries[idx].DatasourceType = args.DatasourceType
+			}
+			return nil
 		})
 		if err != nil {
 			return nil, mcputil.SuccessResult{OK: false}, err
@@ -227,13 +228,14 @@ func deleteQueryHandler(sm *SessionManager) mcp.ToolHandlerFor[DeleteQueryReq, m
 			if p == nil {
 				return fmt.Errorf("panel_id %s not found", args.PanelID)
 			}
-			for i, q := range p.Queries {
-				if q.RefID == args.QueryRef {
-					p.Queries = append(p.Queries[:i], p.Queries[i+1:]...)
-					return nil
-				}
+			idx := slices.IndexFunc(p.Queries, func(q QueryEntry) bool {
+				return q.RefID == args.QueryRef
+			})
+			if idx < 0 {
+				return fmt.Errorf("query_ref %s not found on panel %s", args.QueryRef, args.PanelID)
 			}
-			return fmt.Errorf("query_ref %s not found on panel %s", args.QueryRef, args.PanelID)
+			p.Queries = append(p.Queries[:idx], p.Queries[idx+1:]...)
+			return nil
 		})
 		if err != nil {
 			return nil, mcputil.SuccessResult{OK: false}, err

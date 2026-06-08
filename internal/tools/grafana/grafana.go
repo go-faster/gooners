@@ -2,12 +2,13 @@
 package grafana
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/google/uuid"
@@ -87,37 +88,35 @@ type QueryEntry struct {
 }
 
 func (s *DashboardSession) findPanel(panelID string) (*PanelEntry, *RowEntry, int) {
-	for i, p := range s.Panels {
-		if p.ID == panelID {
-			return p, nil, i
-		}
+	idx := slices.IndexFunc(s.Panels, func(p *PanelEntry) bool {
+		return p.ID == panelID
+	})
+	if idx >= 0 {
+		return s.Panels[idx], nil, idx
 	}
 	for _, r := range s.Rows {
-		for i, p := range r.Panels {
-			if p.ID == panelID {
-				return p, r, i
-			}
+		idx := slices.IndexFunc(r.Panels, func(p *PanelEntry) bool {
+			return p.ID == panelID
+		})
+		if idx >= 0 {
+			return r.Panels[idx], r, idx
 		}
 	}
 	return nil, nil, -1
 }
 
 func (s *DashboardSession) findRow(rowID string) *RowEntry {
-	for _, r := range s.Rows {
-		if r.ID == rowID {
-			return r
-		}
+	idx := s.findRowIndex(rowID)
+	if idx < 0 {
+		return nil
 	}
-	return nil
+	return s.Rows[idx]
 }
 
 func (s *DashboardSession) findRowIndex(rowID string) int {
-	for i, r := range s.Rows {
-		if r.ID == rowID {
-			return i
-		}
-	}
-	return -1
+	return slices.IndexFunc(s.Rows, func(r *RowEntry) bool {
+		return r.ID == rowID
+	})
 }
 
 func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSession, error) {
@@ -927,14 +926,17 @@ func buildPanel(p *PanelEntry) cog.Builder[dashboard.Panel] {
 
 	var thresholdsConfig cog.Builder[dashboard.ThresholdsConfig]
 	if len(p.Thresholds) > 0 {
-		sort.Slice(p.Thresholds, func(i, j int) bool {
-			if p.Thresholds[i].Value == nil {
-				return true
+		slices.SortFunc(p.Thresholds, func(a, b dashboard.Threshold) int {
+			if a.Value == nil {
+				if b.Value == nil {
+					return 0
+				}
+				return -1
 			}
-			if p.Thresholds[j].Value == nil {
-				return false
+			if b.Value == nil {
+				return 1
 			}
-			return *p.Thresholds[i].Value < *p.Thresholds[j].Value
+			return cmp.Compare(*a.Value, *b.Value)
 		})
 		thresholdsConfig = dashboard.NewThresholdsConfigBuilder().
 			Mode(dashboard.ThresholdsModeAbsolute).
