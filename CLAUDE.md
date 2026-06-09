@@ -113,6 +113,28 @@ skills/
 - Use `golangci-lint fmt ./...` for formatting (not `gofmt` or `goimports` directly).
 - We use golangci-lint v2; do **not ever** `go install` golangci-lint (or any variant) — assume the binary is already available in $PATH (via nix, system package, or dev env).
 - Avoid loading generated files into context; use search tools or gopls instead.
+- Pass optional constructor parameters as a dedicated options struct, not as individual arguments. Use the `<Type>Options` + `(<Type>Options).setDefaults()` pattern:
+
+```go
+type FooOptions struct {
+    Timeout time.Duration
+    Logger  *slog.Logger
+}
+
+func (o *FooOptions) setDefaults() {
+    if o.Timeout == 0 {
+        o.Timeout = 30 * time.Second
+    }
+    if o.Logger == nil {
+        o.Logger = slog.Default()
+    }
+}
+
+func NewFoo(ctx context.Context, opts FooOptions) *Foo {
+    opts.setDefaults()
+    // ...
+}
+```
 
 ## README
 
