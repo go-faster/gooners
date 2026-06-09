@@ -48,7 +48,7 @@ func TestRunHandlerHappyPathCompactResult(t *testing.T) {
 	mgr := NewManager(t.Context(), client, nil)
 	_, res, err := runHandler(client, mgr)(t.Context(), nil, runParams{Prompt: "do it"})
 	require.NoError(t, err)
-	require.Equal(t, "completed", res.Status)
+	require.Equal(t, "done", res.Status)
 	require.Equal(t, "msg_prompt", res.PromptMessageID)
 	require.Equal(t, "done", res.FinalText)
 	require.Empty(t, res.RawMessages)
@@ -257,11 +257,11 @@ func TestRunHandlerBlockedState(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
 
-	// Wait is a no-op so runHandler always sees "completed" unless prompt itself fails.
+	// Wait is a no-op so runHandler always sees "done" unless prompt itself fails.
 	mgr := NewManager(t.Context(), client, nil)
 	_, res, err := runHandler(client, mgr)(t.Context(), nil, runParams{Prompt: "do it"})
 	require.NoError(t, err)
-	require.Equal(t, "completed", res.Status)
+	require.Equal(t, "done", res.Status)
 	require.Equal(t, "still working", res.FinalText)
 }
 

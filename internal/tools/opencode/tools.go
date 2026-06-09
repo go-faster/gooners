@@ -173,9 +173,9 @@ func runHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[runParams, Hand
 			}
 
 			if !ok || job.Status != JobRunning || isFinished {
-				status := "completed"
+				status := string(JobDone)
 				if ok && job.Status == JobError {
-					status = "error"
+					status = string(JobError)
 				}
 				return nil, runResultFromCheck(session.ID, status, promptMsgID, res, ""), nil
 			}
