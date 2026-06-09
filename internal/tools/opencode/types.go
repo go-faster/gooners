@@ -1,7 +1,10 @@
 // Package opencode registers MCP tools that delegate work to an opencode server.
 package opencode
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Config contains connection settings for an opencode HTTP server.
 type Config struct {
@@ -9,6 +12,9 @@ type Config struct {
 	Username         string
 	Password         string
 	DefaultDirectory string
+	// SyncTimeout is the timeout for blocking prompt calls (session message POST).
+	// If zero, the general request timeout is used.
+	SyncTimeout time.Duration
 }
 
 type Location struct {

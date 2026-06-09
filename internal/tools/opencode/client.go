@@ -23,6 +23,7 @@ const defaultBaseURL = "http://localhost:4096"
 type Client struct {
 	sdk              *opencodesdk.Client
 	httpClient       *http.Client
+	syncHTTPClient   *http.Client
 	baseURL          string
 	defaultDirectory string
 }
@@ -34,13 +35,23 @@ func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 		timeout = 30 * time.Second
 	}
 
-	httpClient := &http.Client{Timeout: timeout}
-	if cfg.Username != "" || cfg.Password != "" {
-		httpClient.Transport = &basicAuthTransport{
-			username: cfg.Username,
-			password: cfg.Password,
-			base:     http.DefaultTransport,
+	newHTTPClient := func(t time.Duration) *http.Client {
+		c := &http.Client{Timeout: t}
+		if cfg.Username != "" || cfg.Password != "" {
+			c.Transport = &basicAuthTransport{
+				username: cfg.Username,
+				password: cfg.Password,
+				base:     http.DefaultTransport,
+			}
 		}
+		return c
+	}
+
+	httpClient := newHTTPClient(timeout)
+	syncTimeout := cmp.Or(cfg.SyncTimeout, timeout)
+	syncHTTPClient := httpClient
+	if syncTimeout != timeout {
+		syncHTTPClient = newHTTPClient(syncTimeout)
 	}
 
 	sdk := opencodesdk.NewClient(
@@ -50,6 +61,7 @@ func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 	return &Client{
 		sdk:              sdk,
 		httpClient:       httpClient,
+		syncHTTPClient:   syncHTTPClient,
 		baseURL:          strings.TrimRight(baseURL, "/"),
 		defaultDirectory: cfg.DefaultDirectory,
 	}, nil
@@ -176,7 +188,7 @@ func (c *Client) Prompt(ctx context.Context, loc Location, sessionID string, req
 			ProviderID: req.Model.ProviderID,
 		}
 	}
-	return c.instancePost(ctx, fmt.Sprintf("session/%s/message", sessionID), c.dir(loc), body)
+	return c.syncPost(ctx, fmt.Sprintf("session/%s/message", sessionID), c.dir(loc), body)
 }
 
 func (c *Client) Messages(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
@@ -248,9 +260,9 @@ func (c *Client) instanceGet(ctx context.Context, path, dir string) (json.RawMes
 	return c.doRaw(req)
 }
 
-// instancePost makes a POST request to an instance route (no /api/ prefix).
-func (c *Client) instancePost(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
-	return c.v2Post(ctx, "/"+path, dir, body)
+// syncPost makes a POST request to an instance route using the sync HTTP client (longer timeout).
+func (c *Client) syncPost(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
+	return c.doPost(ctx, c.syncHTTPClient, "/"+path, dir, body)
 }
 
 // v2Get makes a GET request to a v2 API route (/api/...).
@@ -265,6 +277,10 @@ func (c *Client) v2Get(ctx context.Context, path, dir string) (json.RawMessage, 
 
 // v2Post makes a POST request to a v2 API route (/api/...).
 func (c *Client) v2Post(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
+	return c.doPost(ctx, c.httpClient, path, dir, body)
+}
+
+func (c *Client) doPost(ctx context.Context, hc *http.Client, path, dir string, body any) (json.RawMessage, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		payload, err := json.Marshal(body)
@@ -281,7 +297,7 @@ func (c *Client) v2Post(ctx context.Context, path, dir string, body any) (json.R
 		req.Header.Set("Content-Type", "application/json")
 	}
 	setDirQuery(req, dir)
-	return c.doRaw(req)
+	return c.doRawWith(hc, req)
 }
 
 func setDirQuery(req *http.Request, dir string) {
@@ -294,7 +310,11 @@ func setDirQuery(req *http.Request, dir string) {
 }
 
 func (c *Client) doRaw(req *http.Request) (json.RawMessage, error) {
-	resp, err := c.httpClient.Do(req)
+	return c.doRawWith(c.httpClient, req)
+}
+
+func (c *Client) doRawWith(hc *http.Client, req *http.Request) (json.RawMessage, error) {
+	resp, err := hc.Do(req)
 	if err != nil {
 		return nil, err
 	}

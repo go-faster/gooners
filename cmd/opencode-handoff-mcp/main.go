@@ -81,6 +81,7 @@ type opencodeCfg struct {
 	Mode             string
 	DefaultDirectory string
 	RequestTimeout   time.Duration
+	SyncTimeout      time.Duration
 
 	BaseURL  string
 	Username string
@@ -93,7 +94,8 @@ type opencodeCfg struct {
 func (o *opencodeCfg) Register(_ *flag.FlagSet) {
 	flag.StringVar(&o.Mode, "mode", os.Getenv("OPENCODE_MODE"), "opencode connection mode: local or remote; auto-selects local when -opencode-url is empty (env: OPENCODE_MODE)")
 	flag.StringVar(&o.DefaultDirectory, "default-directory", os.Getenv("OPENCODE_DIRECTORY"), "default x-opencode-directory value (env: OPENCODE_DIRECTORY)")
-	flag.DurationVar(&o.RequestTimeout, "request-timeout", 30*time.Second, "per-request timeout for opencode HTTP calls")
+	flag.DurationVar(&o.RequestTimeout, "request-timeout", 30*time.Second, "timeout for regular opencode HTTP calls")
+	flag.DurationVar(&o.SyncTimeout, "sync-timeout", 5*time.Minute, "timeout for blocking prompt calls (session message POST) used by handoff_run and handoff_fire")
 	flag.StringVar(&o.BaseURL, "opencode-url", os.Getenv("OPENCODE_URL"), "opencode server base URL (env: OPENCODE_URL); defaults to http://localhost:4096 in local mode")
 	flag.StringVar(&o.Username, "opencode-username", envDefault("OPENCODE_USERNAME", "opencode"), "opencode basic auth username (env: OPENCODE_USERNAME)")
 	flag.StringVar(&o.Password, "opencode-password", os.Getenv("OPENCODE_PASSWORD"), "opencode basic auth password (env: OPENCODE_PASSWORD)")
@@ -143,6 +145,7 @@ func (o *opencodeCfg) createRemote(_ context.Context, baseURL string) (*opencode
 			Username:         o.Username,
 			Password:         o.Password,
 			DefaultDirectory: o.DefaultDirectory,
+			SyncTimeout:      o.SyncTimeout,
 		},
 		o.RequestTimeout,
 	)
@@ -165,6 +168,7 @@ func (o *opencodeCfg) createLocal(ctx context.Context, baseURL string, lg *slog.
 			Username:         o.Username,
 			Password:         o.Password,
 			DefaultDirectory: o.DefaultDirectory,
+			SyncTimeout:      o.SyncTimeout,
 		},
 		o.RequestTimeout,
 	)
