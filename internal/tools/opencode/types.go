@@ -104,8 +104,8 @@ type HandoffRunResult struct {
 	PendingPermissionCount int              `json:"pending_permission_count"`
 	PendingQuestionCount   int              `json:"pending_question_count"`
 	MessagesReturned       int              `json:"messages_returned"`
-	RawMessages            any              `json:"raw_messages,omitempty"`
-	RawContext             any              `json:"raw_context,omitempty"`
+	RawMessages            []map[string]any `json:"raw_messages,omitempty"`
+	RawContext             map[string]any   `json:"raw_context,omitempty"`
 	Message                string           `json:"message,omitempty"`
 }
 
@@ -126,8 +126,8 @@ type HandoffCheckResult struct {
 	PendingPermissionCount int              `json:"pending_permission_count"`
 	PendingQuestionCount   int              `json:"pending_question_count"`
 	MessagesReturned       int              `json:"messages_returned"`
-	RawMessages            any              `json:"raw_messages,omitempty"`
-	RawContext             any              `json:"raw_context,omitempty"`
+	RawMessages            []map[string]any `json:"raw_messages,omitempty"`
+	RawContext             map[string]any   `json:"raw_context,omitempty"`
 	Error                  string           `json:"error,omitempty"`
 	Message                string           `json:"message,omitempty"`
 }

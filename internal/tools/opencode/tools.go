@@ -309,13 +309,13 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 		res.MessagesReturned = len(res.Messages)
 		res.FinalText = firstText(msg)
 		if verbose {
-			res.RawMessages = rawJSON(msg)
+			res.RawMessages = rawJSONArray(msg)
 		}
 	}
 	ctxData, ctxErr := client.Context(ctx, loc, sessionID)
 	if ctxErr == nil {
 		if verbose {
-			res.RawContext = rawJSON(ctxData)
+			res.RawContext = rawJSONObject(ctxData)
 		}
 		if res.FinalText == "" {
 			res.FinalText = firstText(ctxData)
@@ -329,11 +329,15 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 	return res, nil
 }
 
-func rawJSON(raw json.RawMessage) any {
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return string(raw)
-	}
+func rawJSONArray(raw json.RawMessage) []map[string]any {
+	var v []map[string]any
+	_ = json.Unmarshal(raw, &v)
+	return v
+}
+
+func rawJSONObject(raw json.RawMessage) map[string]any {
+	var v map[string]any
+	_ = json.Unmarshal(raw, &v)
 	return v
 }
 

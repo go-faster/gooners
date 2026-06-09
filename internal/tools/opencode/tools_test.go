@@ -137,7 +137,7 @@ func TestCheckHandlerVerboseReturnsDecodedRawJSON(t *testing.T) {
 
 	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1", Verbose: true})
 	require.NoError(t, err)
-	require.IsType(t, []any{}, res.RawMessages)
+	require.IsType(t, []map[string]any{}, res.RawMessages)
 	require.IsType(t, map[string]any{}, res.RawContext)
 
 	data, err := json.Marshal(res)
