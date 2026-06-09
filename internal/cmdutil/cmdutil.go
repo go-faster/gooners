@@ -3,12 +3,16 @@ package cmdutil
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -84,19 +88,37 @@ func (flags TransportFlags) Run(ctx context.Context, name string, s *mcp.Server,
 	case "streamable-http":
 		h := mcp.NewStreamableHTTPHandler(handler, &mcp.StreamableHTTPOptions{Logger: slog.Default()})
 		lg.Info("starting MCP server on streamable-http transport", "server", name, "at", fmt.Sprintf("http://%s/mcp", flags.Addr))
-		if err := http.ListenAndServe(flags.Addr, h); err != nil { //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
-			return fmt.Errorf("streamable-http server exited with error: %w", err)
-		}
+		return runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: h}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
 
 	case "sse":
 		h := mcp.NewSSEHandler(handler, nil)
 		lg.Info("starting MCP server on SSE transport", "server", name, "at", fmt.Sprintf("http://%s", flags.Addr))
-		if err := http.ListenAndServe(flags.Addr, h); err != nil { //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
-			return fmt.Errorf("sse server exited with error: %w", err)
-		}
+		return runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: h}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
 
 	default:
 		return fmt.Errorf("unknown transport: %q", flags.Transport)
 	}
-	return nil
+}
+
+func runHTTPServer(ctx context.Context, srv *http.Server, lg *slog.Logger) error {
+	parentCtx := ctx
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		<-ctx.Done()
+		lg.Info("shutting down HTTP server")
+		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutCtx)
+	})
+	g.Go(func() error {
+		if err := srv.ListenAndServe(); err != nil {
+			if errors.Is(err, http.ErrServerClosed) && parentCtx.Err() != nil {
+				lg.Info("HTTP server closed gracefully")
+				return nil
+			}
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
+	})
+	return g.Wait()
 }
