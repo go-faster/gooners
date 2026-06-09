@@ -146,7 +146,12 @@ func (m *Manager) saveJob(job *Job) {
 		m.logger.Warn("failed to marshal job", "session_id", job.SessionID, "err", err)
 		return
 	}
-	path := filepath.Join(m.stateDir, job.SessionID+".json")
+	if err := validateSessionID(job.SessionID); err != nil {
+		m.logger.Warn("invalid session id, skipping save", "session_id", job.SessionID)
+		return
+	}
+	clean := filepath.Clean(job.SessionID)
+	path := filepath.Join(m.stateDir, clean+".json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		m.logger.Warn("failed to write job file", "path", path, "err", err)
 	}
@@ -155,6 +160,9 @@ func (m *Manager) saveJob(job *Job) {
 func (m *Manager) Submit(ctx context.Context, loc Location, sessionID string, createReq CreateSessionRequest, req PromptRequest) (string, error) {
 	if req.Prompt.Text == "" {
 		return "", fmt.Errorf("prompt is required")
+	}
+	if err := validateSessionID(sessionID); err != nil {
+		return "", err
 	}
 	if sessionID == "" {
 		session, err := m.client.CreateSession(ctx, loc, createReq)
