@@ -45,7 +45,8 @@ func TestRunHandlerHappyPathCompactResult(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
 
-	_, res, err := runHandler(client)(t.Context(), nil, runParams{Prompt: "do it"})
+	mgr := NewManager(t.Context(), client, nil)
+	_, res, err := runHandler(client, mgr)(t.Context(), nil, runParams{Prompt: "do it"})
 	require.NoError(t, err)
 	require.Equal(t, "completed", res.Status)
 	require.Equal(t, "msg_prompt", res.PromptMessageID)
@@ -151,6 +152,10 @@ func TestCheckHandlerReportsRunningJob(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/session/ses_1/message":
+			writeJSON(w, `[]`)
+		case "/api/session/ses_1/context":
+			writeJSON(w, `{}`)
 		case "/api/session/ses_1/permission/request", "/api/question/request":
 			writeJSON(w, `{"data":[]}`)
 		default:
@@ -253,7 +258,8 @@ func TestRunHandlerBlockedState(t *testing.T) {
 	client := newTestClient(t, Config{BaseURL: server.URL})
 
 	// Wait is a no-op so runHandler always sees "completed" unless prompt itself fails.
-	_, res, err := runHandler(client)(t.Context(), nil, runParams{Prompt: "do it"})
+	mgr := NewManager(t.Context(), client, nil)
+	_, res, err := runHandler(client, mgr)(t.Context(), nil, runParams{Prompt: "do it"})
 	require.NoError(t, err)
 	require.Equal(t, "completed", res.Status)
 	require.Equal(t, "still working", res.FinalText)
@@ -275,6 +281,33 @@ func TestSummaryOutputOmitsDuplicateAndRawFields(t *testing.T) {
 	encoded := string(data)
 	require.NotContains(t, encoded, "preview")
 	require.NotContains(t, encoded, "raw")
+}
+
+func TestIsSessionFinishedJSON(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"v2 finished", `[{"info":{"role":"assistant","finish":"stop"}}]`, true},
+		{"v2 no finish", `[{"info":{"role":"assistant"}}]`, false},
+		{"v2 empty finish", `[{"info":{"role":"assistant","finish":""}}]`, false},
+		{"flat finished", `[{"role":"assistant","finish":"stop"}]`, true},
+		{"flat no finish", `[{"role":"assistant"}]`, false},
+		{"flat empty finish", `[{"role":"assistant","finish":""}]`, false},
+		{"empty array", `[]`, false},
+		{"not assistant v2", `[{"info":{"role":"user","finish":"stop"}}]`, false},
+		{"not assistant flat", `[{"role":"user","finish":"stop"}]`, false},
+		{"last assistant wins v2", `[{"info":{"role":"assistant","finish":"stop"}},{"info":{"role":"assistant"}}]`, false},
+		{"last assistant wins flat", `[{"role":"assistant","finish":"stop"},{"role":"assistant"}]`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, isSessionFinishedJSON(json.RawMessage(tc.input)))
+		})
+	}
 }
 
 func TestCollectTextTraversesToolBlocks(t *testing.T) {

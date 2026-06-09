@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -39,7 +40,7 @@ func Register(s *mcp.Server, client *Client, mgr *Manager) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_run",
 		Description: "Blocking handoff: create an opencode session, submit a prompt to an agent, wait for completion, and return a compact result.",
-	}, runHandler(client))
+	}, runHandler(client, mgr))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_fire",
@@ -140,7 +141,7 @@ type fireParams struct {
 	SessionID string `json:"session_id,omitempty" jsonschema:"Existing session id to reuse; omitted means create a new session."`
 }
 
-func runHandler(client *Client) mcp.ToolHandlerFor[runParams, HandoffRunResult] {
+func runHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[runParams, HandoffRunResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args runParams) (*mcp.CallToolResult, HandoffRunResult, error) {
 		if args.Prompt == "" {
 			return nil, HandoffRunResult{}, fmt.Errorf("prompt is required")
@@ -150,15 +151,40 @@ func runHandler(client *Client) mcp.ToolHandlerFor[runParams, HandoffRunResult] 
 		if err != nil {
 			return nil, HandoffRunResult{}, err
 		}
-		prompt, err := client.Prompt(ctx, loc, session.ID, promptRequest(args))
+		_, err = mgr.Submit(ctx, loc, session.ID, CreateSessionRequest{}, promptRequest(args))
 		if err != nil {
 			return nil, HandoffRunResult{}, err
 		}
-		check, err := checkSession(ctx, client, loc, session.ID, args.Verbose)
-		if err != nil {
-			return nil, HandoffRunResult{}, err
+
+		for {
+			res, isFinished, err := checkSession(ctx, client, loc, session.ID, args.Verbose)
+			if err != nil {
+				return nil, HandoffRunResult{}, err
+			}
+			job, ok := mgr.Job(session.ID)
+			var promptMsgID string
+			if ok {
+				promptMsgID = extractMessageID(job.PromptResult)
+			}
+
+			if res.PendingPermissionCount > 0 || res.PendingQuestionCount > 0 {
+				return nil, runResultFromCheck(session.ID, "paused", promptMsgID, res, "paused for permission or question"), nil
+			}
+
+			if !ok || job.Status != JobRunning || isFinished {
+				status := "completed"
+				if ok && job.Status == JobError {
+					status = "error"
+				}
+				return nil, runResultFromCheck(session.ID, status, promptMsgID, res, ""), nil
+			}
+
+			select {
+			case <-ctx.Done():
+				return nil, HandoffRunResult{}, ctx.Err()
+			case <-time.After(1 * time.Second):
+			}
 		}
-		return nil, runResultFromCheck(session.ID, "completed", extractMessageID(prompt), check, ""), nil
 	}
 }
 
@@ -183,6 +209,7 @@ type checkParams struct {
 	locationParams
 	SessionID string `json:"session_id" jsonschema:"opencode session id."`
 	Verbose   bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
+	Wait      bool   `json:"wait,omitempty" jsonschema:"If true, block until the session asks for permission, a question, or finishes. Returns immediately if the session is not tracked by this server instance."`
 }
 
 type requestListParams struct {
@@ -192,41 +219,69 @@ type requestListParams struct {
 
 func checkHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[checkParams, HandoffCheckResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args checkParams) (*mcp.CallToolResult, HandoffCheckResult, error) {
-		loc := args.location()
-		job, ok := mgr.Job(args.SessionID)
-		if !ok {
-			res, err := checkSession(ctx, client, loc, args.SessionID, args.Verbose)
+		for {
+			res, err := doCheck(ctx, client, mgr, args)
 			if err != nil {
 				return nil, HandoffCheckResult{}, err
 			}
-			res.Status = "unknown"
-			return nil, res, nil
-		}
 
-		if job.Status == JobRunning {
-			res := HandoffCheckResult{SessionID: args.SessionID, Status: string(JobRunning)}
-			fillPendingRequests(ctx, client, loc, &res)
-			res.Message = checkMessage(res)
-			if res.Message == "session state loaded" {
+			if !args.Wait {
+				return nil, res, nil
+			}
+
+			if res.PendingPermissionCount > 0 || res.PendingQuestionCount > 0 || res.Status != string(JobRunning) {
+				return nil, res, nil
+			}
+
+			select {
+			case <-ctx.Done():
+				return nil, HandoffCheckResult{}, ctx.Err()
+			case <-time.After(1 * time.Second):
+			}
+		}
+	}
+}
+
+func doCheck(ctx context.Context, client *Client, mgr *Manager, args checkParams) (HandoffCheckResult, error) {
+	loc := args.location()
+	job, ok := mgr.Job(args.SessionID)
+
+	res, isFinished, err := checkSession(ctx, client, loc, args.SessionID, args.Verbose)
+	if err != nil {
+		return HandoffCheckResult{}, err
+	}
+
+	if !ok {
+		res.Status = "unknown"
+		return res, nil
+	}
+
+	if job.Status == JobRunning {
+		if isFinished {
+			res.Status = "done"
+		} else {
+			res.Status = string(JobRunning)
+		}
+		res.Message = checkMessage(res)
+		if res.Message == "session state loaded" {
+			if res.Status == "done" {
+				res.Message = "handoff completed"
+			} else {
 				res.Message = "handoff is still running"
 			}
-			return nil, res, nil
 		}
-
-		res, err := checkSession(ctx, client, loc, args.SessionID, args.Verbose)
-		if err != nil {
-			return nil, HandoffCheckResult{}, err
-		}
-		res.Status = string(job.Status)
-		res.PromptMessageID = extractMessageID(job.PromptResult)
-		if job.Err != nil {
-			res.Error = job.Err.Error()
-			if res.Message == "session state loaded" {
-				res.Message = "handoff failed"
-			}
-		}
-		return nil, res, nil
+		return res, nil
 	}
+
+	res.Status = string(job.Status)
+	res.PromptMessageID = extractMessageID(job.PromptResult)
+	if job.Err != nil {
+		res.Error = job.Err.Error()
+		if res.Message == "session state loaded" {
+			res.Message = "handoff failed"
+		}
+	}
+	return res, nil
 }
 
 func permissionsHandler(client *Client) mcp.ToolHandlerFor[requestListParams, RequestsResult] {
@@ -298,11 +353,12 @@ func promptRequest(args runParams) PromptRequest {
 	return req
 }
 
-func checkSession(ctx context.Context, client *Client, loc Location, sessionID string, verbose bool) (HandoffCheckResult, error) {
+func checkSession(ctx context.Context, client *Client, loc Location, sessionID string, verbose bool) (HandoffCheckResult, bool, error) {
 	if sessionID == "" {
-		return HandoffCheckResult{}, fmt.Errorf("session_id is required")
+		return HandoffCheckResult{}, false, fmt.Errorf("session_id is required")
 	}
 	res := HandoffCheckResult{SessionID: sessionID}
+	var isFinished bool
 	msg, msgErr := client.Messages(ctx, loc, sessionID)
 	if msgErr == nil {
 		res.Messages = summarizeMessages(msg, 6)
@@ -311,6 +367,7 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 		if verbose {
 			res.RawMessages = rawJSONArray(msg)
 		}
+		isFinished = isSessionFinishedJSON(msg)
 	}
 	ctxData, ctxErr := client.Context(ctx, loc, sessionID)
 	if ctxErr == nil {
@@ -323,10 +380,10 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 	}
 	fillPendingRequests(ctx, client, loc, &res)
 	if msgErr != nil && ctxErr != nil {
-		return HandoffCheckResult{}, fmt.Errorf("read session %q messages: %w; context: %w", sessionID, msgErr, ctxErr)
+		return HandoffCheckResult{}, false, fmt.Errorf("read session %q messages: %w; context: %w", sessionID, msgErr, ctxErr)
 	}
 	res.Message = checkMessage(res)
-	return res, nil
+	return res, isFinished, nil
 }
 
 func rawJSONArray(raw json.RawMessage) []map[string]any {

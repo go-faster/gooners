@@ -8,8 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -152,8 +154,8 @@ func (o *opencodeCfg) createRemote(_ context.Context, baseURL string) (*opencode
 	)
 }
 
-func (o *opencodeCfg) createLocal(ctx context.Context, baseURL string, lg *slog.Logger) (_ *opencode.Client, _ func(), rerr error) {
-	cleanup, err := o.startLocal(ctx, lg)
+func (o *opencodeCfg) createLocal(ctx context.Context, defaultBaseURL string, lg *slog.Logger) (_ *opencode.Client, _ func(), rerr error) {
+	baseURL, cleanup, err := o.startLocal(ctx, defaultBaseURL, lg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -179,16 +181,35 @@ func (o *opencodeCfg) createLocal(ctx context.Context, baseURL string, lg *slog.
 	return client, cleanup, nil
 }
 
-func (o *opencodeCfg) startLocal(ctx context.Context, lg *slog.Logger) (func(), error) {
+func (o *opencodeCfg) startLocal(ctx context.Context, defaultBaseURL string, lg *slog.Logger) (baseURL string, stop func(), _ error) {
+	baseURL = defaultBaseURL
 	argv := append([]string{"serve"}, o.Args...)
+	env := append([]string(nil), o.Env...)
+
+	if baseURL == defaultLocalOpencodeURL {
+		// Find a free port. There is a small TOCTOU window between Close and
+		// opencode's Listen; in practice this is acceptable since port conflicts
+		// are rare and opencode will fail to start with a clear error.
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return "", nil, fmt.Errorf("listen for random port: %w", err)
+		}
+		port := l.Addr().(*net.TCPAddr).Port
+		_ = l.Close()
+		baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
+
+		argv = append(argv, "--port", strconv.Itoa(port), "--mdns-domain", fmt.Sprintf("opencode-handoff-%d.local", port))
+		env = append(env, fmt.Sprintf("OPENCODE_MCP_INSTANCE=opencode-handoff-%d", port))
+	}
+
 	cmd := exec.CommandContext(ctx, "opencode", argv...) //nolint:gosec // Operator-controlled local opencode invocation.
-	cmd.Env = append(os.Environ(), o.Env...)
+	cmd.Env = append(os.Environ(), env...)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 
 	setProcAttr(cmd)
 	if err := cmd.Start(); err != nil {
-		return func() {}, fmt.Errorf("start opencode serve: %w", err)
+		return "", func() {}, fmt.Errorf("start opencode serve: %w", err)
 	}
 	lg.Info("started local opencode serve", "pid", cmd.Process.Pid, "args", argv)
 
@@ -197,7 +218,7 @@ func (o *opencodeCfg) startLocal(ctx context.Context, lg *slog.Logger) (func(), 
 		done <- cmd.Wait()
 	}()
 
-	stop := func() {
+	stop = func() {
 		if cmd.Process == nil {
 			return
 		}
@@ -215,5 +236,5 @@ func (o *opencodeCfg) startLocal(ctx context.Context, lg *slog.Logger) (func(), 
 		}
 	}
 
-	return stop, nil
+	return baseURL, stop, nil
 }
