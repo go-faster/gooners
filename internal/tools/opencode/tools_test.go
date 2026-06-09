@@ -520,7 +520,6 @@ func TestQuestionReplyHandler(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
@@ -599,8 +598,8 @@ func TestManagerStateDirPersistence(t *testing.T) {
 	require.Equal(t, JobError, job.Status)
 	require.EqualError(t, job.Err, "server restarted before job completed")
 	require.Equal(t, running.PromptResult, job.PromptResult)
-	require.Equal(t, running.CreatedAt, job.CreatedAt)
-	require.NotEqual(t, running.UpdatedAt, job.UpdatedAt)
+	require.True(t, running.CreatedAt.Equal(job.CreatedAt))
+	require.True(t, job.UpdatedAt.After(running.UpdatedAt))
 
 	valid := &Job{
 		SessionID:    "ses_2",
