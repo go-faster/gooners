@@ -157,6 +157,7 @@ func runHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[runParams, Hand
 			return nil, HandoffRunResult{}, err
 		}
 
+		deadline := time.Now().Add(client.SyncTimeout())
 		for {
 			res, isFinished, err := checkSession(ctx, client, loc, session.ID, args.Verbose)
 			if err != nil {
@@ -178,6 +179,10 @@ func runHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[runParams, Hand
 					status = string(JobError)
 				}
 				return nil, runResultFromCheck(session.ID, status, promptMsgID, res, ""), nil
+			}
+
+			if time.Now().After(deadline) {
+				return nil, runResultFromCheck(session.ID, string(JobRunning), promptMsgID, res, "handoff still running; use handoff_check to continue monitoring"), nil
 			}
 
 			select {

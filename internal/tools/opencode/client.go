@@ -24,6 +24,7 @@ type Client struct {
 	sdk              *opencodesdk.Client
 	httpClient       *http.Client
 	syncHTTPClient   *http.Client
+	syncTimeout      time.Duration
 	baseURL          string
 	defaultDirectory string
 }
@@ -81,6 +82,7 @@ func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 		sdk:              sdk,
 		httpClient:       httpClient,
 		syncHTTPClient:   syncHTTPClient,
+		syncTimeout:      syncTimeout,
 		baseURL:          strings.TrimRight(baseURL, "/"),
 		defaultDirectory: cfg.DefaultDirectory,
 	}, nil
@@ -92,6 +94,10 @@ func (c *Client) dir(loc Location) string {
 
 func (c *Client) BaseURL() string {
 	return c.baseURL
+}
+
+func (c *Client) SyncTimeout() time.Duration {
+	return c.syncTimeout
 }
 
 func (c *Client) Health(ctx context.Context) (json.RawMessage, error) {
