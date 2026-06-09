@@ -135,17 +135,34 @@ func TestClientQuestionsUsesGlobalRequestRoute(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestFirstText(t *testing.T) {
+func TestFirstTextReturnsLastText(t *testing.T) {
 	t.Parallel()
+	// firstText returns the last text (final answer), not all texts joined.
 	got := firstText(json.RawMessage(`{"data":[{"role":"assistant","content":[{"type":"text","text":"first"},{"text":"second"}]}]}`))
-	require.Equal(t, "first\nsecond", got)
+	require.Equal(t, "second", got)
 }
 
-func TestRawFieldsDoNotSerialize(t *testing.T) {
+func TestIntermediatePartsExcludedFromSummary(t *testing.T) {
 	t.Parallel()
-	data, err := json.Marshal(AgentsResult{Agents: []Agent{{Name: "build", Raw: json.RawMessage(`{"large":true}`)}}})
+	// Parts without a role (intermediate model steps) must not appear in message summaries.
+	// final_text should be the last text, not everything concatenated.
+	raw := json.RawMessage(`[
+		{"id":"msg_1","role":"user","content":[{"text":"hello"}]},
+		{"id":"prt_1","text":"internal step"},
+		{"id":"msg_2","role":"assistant","content":[{"text":"Hello."}]}
+	]`)
+	require.Equal(t, "Hello.", firstText(raw))
+	msgs := summarizeMessages(raw, 10)
+	require.Len(t, msgs, 2)
+	require.Equal(t, "user", msgs[0].Role)
+	require.Equal(t, "assistant", msgs[1].Role)
+}
+
+func TestAgentsResultSerializes(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(AgentsResult{Agents: []Agent{{Name: "build", Mode: "subagent"}}})
 	require.NoError(t, err)
-	require.NotContains(t, string(data), "large")
+	require.Contains(t, string(data), "build")
 	require.NotContains(t, string(data), "raw")
 }
 

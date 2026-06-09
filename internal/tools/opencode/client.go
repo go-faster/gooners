@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,32 +76,35 @@ func (c *Client) Agents(ctx context.Context, loc Location) ([]Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err := json.Marshal(res)
-	if err != nil {
-		return nil, err
+	agents := make([]Agent, 0, len(*res))
+	for _, a := range *res {
+		agents = append(agents, Agent{Name: a.Name, Description: a.Description, Mode: string(a.Mode)})
 	}
-	return parseAgents(unwrapData(raw))
+	slices.SortFunc(agents, func(a, b Agent) int { return cmp.Compare(a.Name, b.Name) })
+	return agents, nil
 }
 
-func (c *Client) Providers(ctx context.Context, loc Location) (json.RawMessage, error) {
+func (c *Client) ProvidersAndModels(ctx context.Context, loc Location) (ModelsResult, error) {
 	res, err := c.appProviders(ctx, loc)
 	if err != nil {
-		return nil, err
+		return ModelsResult{}, err
 	}
-	return json.Marshal(res.Providers)
-}
-
-func (c *Client) Models(ctx context.Context, loc Location) (json.RawMessage, error) {
-	res, err := c.appProviders(ctx, loc)
-	if err != nil {
-		return nil, err
-	}
-	// Build map[providerID]map[modelID]model so summarizeModels handles it correctly.
-	out := make(map[string]map[string]opencodesdk.Model, len(res.Providers))
+	providers := make([]ProviderSummary, 0, len(res.Providers))
+	var models []ModelSummary
 	for _, p := range res.Providers {
-		out[p.ID] = p.Models
+		providers = append(providers, ProviderSummary{ID: p.ID, Name: p.Name, Models: len(p.Models)})
+		for id, m := range p.Models {
+			models = append(models, ModelSummary{ProviderID: p.ID, ID: id, Name: m.Name})
+		}
 	}
-	return json.Marshal(out)
+	slices.SortFunc(providers, func(a, b ProviderSummary) int { return cmp.Compare(a.ID, b.ID) })
+	slices.SortFunc(models, func(a, b ModelSummary) int {
+		if n := cmp.Compare(a.ProviderID, b.ProviderID); n != 0 {
+			return n
+		}
+		return cmp.Compare(a.ID, b.ID)
+	})
+	return ModelsResult{Providers: providers, Models: models}, nil
 }
 
 func (c *Client) appProviders(ctx context.Context, loc Location) (*opencodesdk.AppProvidersResponse, error) {
@@ -173,14 +177,6 @@ func (c *Client) Prompt(ctx context.Context, loc Location, sessionID string, req
 		}
 	}
 	return c.instancePost(ctx, fmt.Sprintf("session/%s/message", sessionID), c.dir(loc), body)
-}
-
-func (c *Client) Wait(_ context.Context, _ Location, sessionID string) (json.RawMessage, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
-	// Prompt via instance route is synchronous; nothing to wait for.
-	return nil, nil
 }
 
 func (c *Client) Messages(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
@@ -320,16 +316,6 @@ func sessionFromSDK(s opencodesdk.Session) Session {
 		UpdatedAt: int64(s.Time.Updated),
 		Raw:       raw,
 	}
-}
-
-func unwrapData(data []byte) json.RawMessage {
-	var wrapper struct {
-		Data json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(data, &wrapper); err == nil && len(wrapper.Data) > 0 && string(wrapper.Data) != "null" {
-		return wrapper.Data
-	}
-	return json.RawMessage(data)
 }
 
 type basicAuthTransport struct {

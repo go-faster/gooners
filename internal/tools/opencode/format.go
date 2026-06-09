@@ -1,157 +1,9 @@
 package opencode
 
 import (
-	"bytes"
-	"cmp"
 	"encoding/json"
-	"slices"
 	"strings"
 )
-
-func parseAgents(body json.RawMessage) ([]Agent, error) {
-	var byName map[string]json.RawMessage
-	if err := json.Unmarshal(body, &byName); err == nil {
-		agents := make([]Agent, 0, len(byName))
-		for name, raw := range byName {
-			agents = append(agents, parseAgent(name, raw))
-		}
-		slices.SortFunc(agents, func(a, b Agent) int { return cmp.Compare(a.Name, b.Name) })
-		return agents, nil
-	}
-
-	var list []json.RawMessage
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, err
-	}
-	agents := make([]Agent, 0, len(list))
-	for _, raw := range list {
-		agents = append(agents, parseAgent("", raw))
-	}
-	slices.SortFunc(agents, func(a, b Agent) int { return cmp.Compare(a.Name, b.Name) })
-	return agents, nil
-}
-
-func parseAgent(name string, raw json.RawMessage) Agent {
-	var obj struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		Mode        string          `json:"mode"`
-		Model       json.RawMessage `json:"model"`
-		Permission  json.RawMessage `json:"permission"`
-	}
-	_ = json.Unmarshal(raw, &obj)
-	if name == "" {
-		name = obj.Name
-	}
-	return Agent{
-		Name:        name,
-		Description: obj.Description,
-		Mode:        obj.Mode,
-		Model:       compactJSON(obj.Model),
-		Permission:  compactJSON(obj.Permission),
-		Raw:         raw,
-	}
-}
-
-func summarizeProviders(body json.RawMessage) []ProviderSummary {
-	var byID map[string]json.RawMessage
-	if err := json.Unmarshal(body, &byID); err == nil {
-		out := make([]ProviderSummary, 0, len(byID))
-		for id, raw := range byID {
-			out = append(out, parseProvider(id, raw))
-		}
-		slices.SortFunc(out, func(a, b ProviderSummary) int { return cmp.Compare(a.ID, b.ID) })
-		return out
-	}
-	var list []json.RawMessage
-	if err := json.Unmarshal(body, &list); err != nil {
-		return []ProviderSummary{}
-	}
-	out := make([]ProviderSummary, 0, len(list))
-	for _, raw := range list {
-		out = append(out, parseProvider("", raw))
-	}
-	slices.SortFunc(out, func(a, b ProviderSummary) int { return cmp.Compare(a.ID, b.ID) })
-	return out
-}
-
-func parseProvider(id string, raw json.RawMessage) ProviderSummary {
-	var obj struct {
-		ID     string          `json:"id"`
-		Name   string          `json:"name"`
-		Models json.RawMessage `json:"models"`
-	}
-	_ = json.Unmarshal(raw, &obj)
-	if id == "" {
-		id = obj.ID
-	}
-	return ProviderSummary{ID: id, Name: obj.Name, Models: countJSONItems(obj.Models)}
-}
-
-func summarizeModels(body json.RawMessage) []ModelSummary {
-	var byProvider map[string]json.RawMessage
-	if err := json.Unmarshal(body, &byProvider); err == nil {
-		out := []ModelSummary{}
-		for providerID, raw := range byProvider {
-			out = append(out, summarizeProviderModels(providerID, raw)...)
-		}
-		slices.SortFunc(out, func(a, b ModelSummary) int {
-			if n := cmp.Compare(a.ProviderID, b.ProviderID); n != 0 {
-				return n
-			}
-			return cmp.Compare(a.ID, b.ID)
-		})
-		return out
-	}
-	return summarizeProviderModels("", body)
-}
-
-func summarizeProviderModels(providerID string, raw json.RawMessage) []ModelSummary {
-	var byID map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &byID); err == nil {
-		out := make([]ModelSummary, 0, len(byID))
-		for id, modelRaw := range byID {
-			if m := parseModel(providerID, id, modelRaw); m.Enabled {
-				out = append(out, m.ModelSummary)
-			}
-		}
-		return out
-	}
-	var list []json.RawMessage
-	if err := json.Unmarshal(raw, &list); err != nil {
-		return []ModelSummary{}
-	}
-	out := make([]ModelSummary, 0, len(list))
-	for _, modelRaw := range list {
-		if m := parseModel(providerID, "", modelRaw); m.Enabled {
-			out = append(out, m.ModelSummary)
-		}
-	}
-	return out
-}
-
-type parsedModel struct {
-	ModelSummary
-	Enabled bool
-}
-
-func parseModel(providerID, id string, raw json.RawMessage) parsedModel {
-	var obj struct {
-		ID         string `json:"id"`
-		Name       string `json:"name"`
-		ProviderID string `json:"providerID"`
-		Enabled    *bool  `json:"enabled"`
-	}
-	_ = json.Unmarshal(raw, &obj)
-	if id == "" {
-		id = obj.ID
-	}
-	if providerID == "" {
-		providerID = obj.ProviderID
-	}
-	enabled := obj.Enabled == nil || *obj.Enabled
-	return parsedModel{ModelSummary: ModelSummary{ProviderID: providerID, ID: id, Name: obj.Name}, Enabled: enabled}
-}
 
 func firstText(raw json.RawMessage) string {
 	var v any
@@ -162,7 +14,8 @@ func firstText(raw json.RawMessage) string {
 	if len(texts) == 0 {
 		return ""
 	}
-	return strings.Join(texts, "\n")
+	// Return the last text — the final assistant response, not intermediate parts.
+	return texts[len(texts)-1]
 }
 
 func summarizeMessages(raw json.RawMessage, limit int) []MessageSummary {
@@ -173,16 +26,20 @@ func summarizeMessages(raw json.RawMessage, limit int) []MessageSummary {
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return []MessageSummary{}
 	}
+	// Only include role-bearing message objects, not individual parts.
 	items := collectObjects(nil, v)
-	if len(items) > limit {
-		items = items[len(items)-limit:]
-	}
-	out := make([]MessageSummary, 0, len(items))
+	var roleItems []map[string]any
 	for _, item := range items {
-		text := strings.Join(collectText(nil, item), "\n")
-		if text == "" && item["role"] == nil {
-			continue
+		if item["role"] != nil {
+			roleItems = append(roleItems, item)
 		}
+	}
+	if len(roleItems) > limit {
+		roleItems = roleItems[len(roleItems)-limit:]
+	}
+	out := make([]MessageSummary, 0, len(roleItems))
+	for _, item := range roleItems {
+		text := strings.Join(collectText(nil, item), "\n")
 		out = append(out, MessageSummary{
 			ID:   stringField(item, "id"),
 			Role: stringField(item, "role"),
@@ -298,30 +155,4 @@ func truncateFields(s string, limit int) string {
 		return s
 	}
 	return s[:limit] + "..."
-}
-
-func compactJSON(raw json.RawMessage) string {
-	if len(raw) == 0 || string(raw) == "null" {
-		return ""
-	}
-	var buf bytes.Buffer
-	if err := json.Compact(&buf, raw); err != nil {
-		return string(raw)
-	}
-	return buf.String()
-}
-
-func countJSONItems(raw json.RawMessage) int {
-	if len(raw) == 0 || string(raw) == "null" {
-		return 0
-	}
-	var list []any
-	if err := json.Unmarshal(raw, &list); err == nil {
-		return len(list)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err == nil {
-		return len(m)
-	}
-	return 0
 }

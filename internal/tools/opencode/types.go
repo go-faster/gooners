@@ -24,12 +24,9 @@ type HealthResult struct {
 }
 
 type Agent struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Mode        string          `json:"mode,omitempty"`
-	Model       string          `json:"model,omitempty"`
-	Permission  string          `json:"permission,omitempty"`
-	Raw         json.RawMessage `json:"-"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Mode        string `json:"mode,omitempty"`
 }
 
 type AgentsResult struct {
@@ -68,28 +65,17 @@ type SessionsResult struct {
 
 type SessionsRequest struct {
 	Location
-	Limit  int    `json:"limit,omitempty" jsonschema:"Maximum number of sessions to return."`
-	Order  string `json:"order,omitempty" jsonschema:"Optional sort order accepted by opencode, for example asc or desc."`
-	Search string `json:"search,omitempty" jsonschema:"Optional search string."`
-	Cursor string `json:"cursor,omitempty" jsonschema:"Optional pagination cursor."`
 }
 
 type CreateSessionRequest struct {
-	ID         string `json:"id,omitempty"`
-	Title      string `json:"title,omitempty"`
-	ParentID   string `json:"parentID,omitempty"`
-	Agent      string `json:"agent,omitempty"`
-	ModelID    string `json:"model_id,omitempty"`
-	ProviderID string `json:"provider_id,omitempty"`
-	Variant    string `json:"variant,omitempty"`
+	Title    string `json:"title,omitempty"`
+	ParentID string `json:"parentID,omitempty"`
 }
 
 type PromptRequest struct {
-	Prompt   PromptPayload `json:"prompt"`
-	Delivery string        `json:"delivery,omitempty"`
-	Resume   *bool         `json:"resume,omitempty"`
-	Agent    string        `json:"agent,omitempty"`
-	Model    *ModelRef     `json:"model,omitempty"`
+	Prompt PromptPayload `json:"prompt"`
+	Agent  string        `json:"agent,omitempty"`
+	Model  *ModelRef     `json:"model,omitempty"`
 }
 
 type PromptPayload struct {
@@ -99,7 +85,6 @@ type PromptPayload struct {
 type ModelRef struct {
 	ProviderID string `json:"providerID,omitempty"`
 	ModelID    string `json:"modelID,omitempty"`
-	Variant    string `json:"variant,omitempty"`
 }
 
 type HandoffRunResult struct {

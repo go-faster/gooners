@@ -3,24 +3,14 @@ package opencode
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
-// RegisterOptions controls opencode handoff tool behavior.
-type RegisterOptions struct {
-	WaitTimeout time.Duration
-}
-
 // Register adds opencode handoff tools to an MCP server.
-func Register(s *mcp.Server, client *Client, opts RegisterOptions) {
-	if opts.WaitTimeout <= 0 {
-		opts.WaitTimeout = 10 * time.Minute
-	}
-
+func Register(s *mcp.Server, client *Client) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_health",
 		Description: "Check connectivity to the configured opencode HTTP server. Call this if other handoff tools return connection or authentication errors.",
@@ -47,8 +37,8 @@ func Register(s *mcp.Server, client *Client, opts RegisterOptions) {
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_run",
-		Description: "Blocking handoff: create an opencode session, submit a prompt to an agent, wait for completion, and return a compact result. Requires opencode v2 POST /api/session.",
-	}, runHandler(client, opts.WaitTimeout))
+		Description: "Blocking handoff: create an opencode session, submit a prompt to an agent, wait for completion, and return a compact result.",
+	}, runHandler(client))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_fire",
@@ -57,14 +47,9 @@ func Register(s *mcp.Server, client *Client, opts RegisterOptions) {
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_check",
-		Description: "Poll progress for a session_id returned by handoff_fire, or inspect blocked handoff_run/handoff_wait sessions for pending permissions/questions.",
+		Description: "Poll progress for a session_id returned by handoff_fire, or inspect sessions for pending permissions/questions.",
 		Flags:       mcputil.ReadOnly,
 	}, checkHandler(client))
-
-	mcputil.Register(s, mcputil.ToolDef{
-		Name:        "handoff_wait",
-		Description: "Wait for an existing opencode session to become idle. If it times out or is blocked, returns compact session state and next-step hints instead of discarding progress.",
-	}, waitHandler(client, opts.WaitTimeout))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_permissions",
@@ -120,16 +105,11 @@ func agentsHandler(client *Client) mcp.ToolHandlerFor[locationParams, AgentsResu
 
 func modelsHandler(client *Client) mcp.ToolHandlerFor[locationParams, ModelsResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args locationParams) (*mcp.CallToolResult, ModelsResult, error) {
-		loc := args.location()
-		providers, err := client.Providers(ctx, loc)
+		res, err := client.ProvidersAndModels(ctx, args.location())
 		if err != nil {
 			return nil, ModelsResult{}, err
 		}
-		models, err := client.Models(ctx, loc)
-		if err != nil {
-			return nil, ModelsResult{}, err
-		}
-		return nil, ModelsResult{Providers: summarizeProviders(providers), Models: summarizeModels(models)}, nil
+		return nil, res, nil
 	}
 }
 
@@ -150,11 +130,7 @@ type runParams struct {
 	Agent           string `json:"agent,omitempty" jsonschema:"Optional opencode agent name."`
 	ProviderID      string `json:"provider_id,omitempty" jsonschema:"Optional model provider id."`
 	ModelID         string `json:"model_id,omitempty" jsonschema:"Optional model id."`
-	Variant         string `json:"variant,omitempty" jsonschema:"Optional model variant."`
-	Delivery        string `json:"delivery,omitempty" jsonschema:"Prompt delivery mode, usually queue."`
 	ParentSessionID string `json:"parent_session_id,omitempty" jsonschema:"Optional parent session id."`
-	TimeoutSeconds  int    `json:"timeout_seconds,omitempty" jsonschema:"Wait timeout in seconds."`
-	Resume          *bool  `json:"resume,omitempty" jsonschema:"Whether opencode should resume interrupted prompt execution."`
 	Verbose         bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
 }
 
@@ -163,28 +139,19 @@ type fireParams struct {
 	SessionID string `json:"session_id,omitempty" jsonschema:"Existing session id to reuse; omitted means create a new session."`
 }
 
-func runHandler(client *Client, defaultWait time.Duration) mcp.ToolHandlerFor[runParams, HandoffRunResult] {
+func runHandler(client *Client) mcp.ToolHandlerFor[runParams, HandoffRunResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args runParams) (*mcp.CallToolResult, HandoffRunResult, error) {
 		if args.Prompt == "" {
 			return nil, HandoffRunResult{}, fmt.Errorf("prompt is required")
 		}
 		loc := args.location()
-		session, err := client.CreateSession(ctx, loc, CreateSessionRequest{Title: args.Title, ParentID: args.ParentSessionID, Agent: args.Agent})
+		session, err := client.CreateSession(ctx, loc, CreateSessionRequest{Title: args.Title, ParentID: args.ParentSessionID})
 		if err != nil {
 			return nil, HandoffRunResult{}, err
 		}
 		prompt, err := client.Prompt(ctx, loc, session.ID, promptRequest(args))
 		if err != nil {
 			return nil, HandoffRunResult{}, err
-		}
-		waitCtx, cancel := waitContext(ctx, args.TimeoutSeconds, defaultWait)
-		defer cancel()
-		if _, err := client.Wait(waitCtx, loc, session.ID); err != nil {
-			check, checkErr := checkSession(ctx, client, loc, session.ID, args.Verbose)
-			if checkErr != nil {
-				return nil, HandoffRunResult{}, fmt.Errorf("wait for session %q: %w", session.ID, err)
-			}
-			return nil, runResultFromCheck(session.ID, "blocked_or_running", extractMessageID(prompt), check, fmt.Sprintf("session did not finish cleanly: %v; call handoff_wait with session_id to retry, or handoff_permissions if the session is blocked", err)), nil
 		}
 		check, err := checkSession(ctx, client, loc, session.ID, args.Verbose)
 		if err != nil {
@@ -202,7 +169,7 @@ func fireHandler(client *Client) mcp.ToolHandlerFor[fireParams, HandoffFireResul
 		loc := args.location()
 		sessionID := args.SessionID
 		if sessionID == "" {
-			session, err := client.CreateSession(ctx, loc, CreateSessionRequest{Title: args.Title, ParentID: args.ParentSessionID, Agent: args.Agent})
+			session, err := client.CreateSession(ctx, loc, CreateSessionRequest{Title: args.Title, ParentID: args.ParentSessionID})
 			if err != nil {
 				return nil, HandoffFireResult{}, err
 			}
@@ -212,15 +179,8 @@ func fireHandler(client *Client) mcp.ToolHandlerFor[fireParams, HandoffFireResul
 		if err != nil {
 			return nil, HandoffFireResult{}, err
 		}
-		return nil, HandoffFireResult{SessionID: sessionID, PromptMessageID: extractMessageID(prompt), Message: "prompt submitted; use handoff_check or handoff_wait with this session_id"}, nil
+		return nil, HandoffFireResult{SessionID: sessionID, PromptMessageID: extractMessageID(prompt), Message: "prompt submitted; use handoff_check with this session_id"}, nil
 	}
-}
-
-type sessionParams struct {
-	locationParams
-	SessionID      string `json:"session_id" jsonschema:"opencode session id."`
-	TimeoutSeconds int    `json:"timeout_seconds,omitempty" jsonschema:"Wait timeout in seconds."`
-	Verbose        bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
 }
 
 type checkParams struct {
@@ -241,27 +201,6 @@ func checkHandler(client *Client) mcp.ToolHandlerFor[checkParams, HandoffCheckRe
 			return nil, HandoffCheckResult{}, err
 		}
 		return nil, res, nil
-	}
-}
-
-func waitHandler(client *Client, defaultWait time.Duration) mcp.ToolHandlerFor[sessionParams, HandoffRunResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args sessionParams) (*mcp.CallToolResult, HandoffRunResult, error) {
-		loc := args.location()
-		waitCtx, cancel := waitContext(ctx, args.TimeoutSeconds, defaultWait)
-		defer cancel()
-		if _, err := client.Wait(waitCtx, loc, args.SessionID); err != nil {
-			check, checkErr := checkSession(ctx, client, loc, args.SessionID, args.Verbose)
-			if checkErr != nil {
-				return nil, HandoffRunResult{}, fmt.Errorf("wait for session %q: %w", args.SessionID, err)
-			}
-			msg := fmt.Sprintf("session did not finish cleanly: %v; call handoff_wait with session_id to retry, or handoff_permissions if the session is blocked", err)
-			return nil, runResultFromCheck(args.SessionID, "blocked_or_running", "", check, msg), nil
-		}
-		check, err := checkSession(ctx, client, loc, args.SessionID, args.Verbose)
-		if err != nil {
-			return nil, HandoffRunResult{}, err
-		}
-		return nil, runResultFromCheck(args.SessionID, "completed", "", check, ""), nil
 	}
 }
 
@@ -325,23 +264,13 @@ func questionReplyHandler(client *Client) mcp.ToolHandlerFor[questionReplyParams
 
 func promptRequest(args runParams) PromptRequest {
 	req := PromptRequest{
-		Prompt:   PromptPayload{Text: args.Prompt},
-		Delivery: args.Delivery,
-		Resume:   args.Resume,
-		Agent:    args.Agent,
+		Prompt: PromptPayload{Text: args.Prompt},
+		Agent:  args.Agent,
 	}
-	if args.ProviderID != "" || args.ModelID != "" || args.Variant != "" {
-		req.Model = &ModelRef{ProviderID: args.ProviderID, ModelID: args.ModelID, Variant: args.Variant}
+	if args.ProviderID != "" || args.ModelID != "" {
+		req.Model = &ModelRef{ProviderID: args.ProviderID, ModelID: args.ModelID}
 	}
 	return req
-}
-
-func waitContext(ctx context.Context, timeoutSeconds int, defaultWait time.Duration) (context.Context, context.CancelFunc) {
-	timeout := defaultWait
-	if timeoutSeconds > 0 {
-		timeout = time.Duration(timeoutSeconds) * time.Second
-	}
-	return context.WithTimeout(ctx, timeout)
 }
 
 func checkSession(ctx context.Context, client *Client, loc Location, sessionID string, verbose bool) (HandoffCheckResult, error) {

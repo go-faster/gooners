@@ -45,22 +45,13 @@ func main() {
 
 	// Send prompt
 	prompt, err := client.Prompt(ctx, opencode.Location{}, session.ID, opencode.PromptRequest{
-		Prompt:   opencode.PromptPayload{Text: "Reply with exactly: Hello from debug test"},
-		Delivery: "queue",
+		Prompt: opencode.PromptPayload{Text: "Reply with exactly: Hello from debug test"},
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "prompt: %v\n", err)
 		os.Exit(1)
 	}
 	pretty("prompt response", prompt)
-
-	// Wait (no-op now since prompt is synchronous)
-	waitRes, waitErr := client.Wait(ctx, opencode.Location{}, session.ID)
-	if waitErr != nil {
-		fmt.Printf("wait error: %v\n\n", waitErr)
-	} else {
-		fmt.Printf("=== wait (no-op) ===\nwaitRes=%s\n\n", waitRes)
-	}
 
 	// Messages
 	msgs, err := client.Messages(ctx, opencode.Location{}, session.ID)

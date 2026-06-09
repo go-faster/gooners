@@ -41,7 +41,6 @@ func main() {
 	transport.Register(flag.CommandLine)
 	ocode.Register(flag.CommandLine)
 
-	waitTimeout := flag.Duration("wait-timeout", 10*time.Minute, "default timeout for handoff_run and handoff_wait")
 	flag.Parse()
 
 	closeLog, logger, err := logging.Setup()
@@ -66,7 +65,7 @@ func main() {
 		Instructions: "You are connected to opencode-handoff-mcp. Use these tools to delegate coding tasks to opencode agents, monitor their sessions, and answer permission or clarification requests when needed.",
 		Logger:       logger.With("component", "mcp-sdk"),
 	})
-	opencode.Register(s, client, opencode.RegisterOptions{WaitTimeout: *waitTimeout})
+	opencode.Register(s, client)
 
 	if err := transport.Run(ctx, "opencode-handoff-mcp", s, logger.WithGroup("transport")); err != nil {
 		slog.Error("failed to run server", "err", err)
@@ -91,7 +90,7 @@ type opencodeCfg struct {
 	Args repeatFlag
 }
 
-func (o *opencodeCfg) Register(set *flag.FlagSet) {
+func (o *opencodeCfg) Register(_ *flag.FlagSet) {
 	flag.StringVar(&o.Mode, "mode", os.Getenv("OPENCODE_MODE"), "opencode connection mode: local or remote; auto-selects local when -opencode-url is empty (env: OPENCODE_MODE)")
 	flag.StringVar(&o.DefaultDirectory, "default-directory", os.Getenv("OPENCODE_DIRECTORY"), "default x-opencode-directory value (env: OPENCODE_DIRECTORY)")
 	flag.DurationVar(&o.RequestTimeout, "request-timeout", 30*time.Second, "per-request timeout for opencode HTTP calls")
@@ -134,7 +133,7 @@ func (o *opencodeCfg) Create(ctx context.Context, lg *slog.Logger) (*opencode.Cl
 	}
 }
 
-func (o *opencodeCfg) createRemote(ctx context.Context, baseURL string) (*opencode.Client, error) {
+func (o *opencodeCfg) createRemote(_ context.Context, baseURL string) (*opencode.Client, error) {
 	if o.BaseURL == "" {
 		return nil, errors.New("remote mode requires -opencode-url or OPENCODE_URL")
 	}
