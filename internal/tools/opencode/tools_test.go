@@ -3,13 +3,17 @@ package opencode
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 )
 
@@ -352,4 +356,341 @@ func TestCollectTextTraversesToolBlocks(t *testing.T) {
 	raw := json.RawMessage(`{"data":[{"role":"assistant","tool_result":{"output":{"text":"tool output"}},"tool_use":{"input":{"text":"tool input"}}}]}`)
 	got := firstText(raw)
 	require.NotEmpty(t, got)
+}
+
+func TestHealthHandler(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/health", r.URL.Path)
+		writeJSON(w, `{"ok":true}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL + "/"})
+	_, got, err := healthHandler(client)(t.Context(), nil, struct{}{})
+	require.NoError(t, err)
+	require.True(t, got.OK)
+	require.Equal(t, server.URL, got.BaseURL)
+	require.Equal(t, "opencode server is reachable", got.Message)
+	require.JSONEq(t, `{"ok":true}`, string(got.Data))
+}
+
+func TestAgentsHandler(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/agent", r.URL.Path)
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+		writeJSON(w, `[{"name":"build","description":"Build things","mode":"subagent"}]`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	_, got, err := agentsHandler(client)(t.Context(), nil, locationParams{Directory: dir})
+	require.NoError(t, err)
+	require.Equal(t, AgentsResult{Agents: []Agent{{Name: "build", Description: "Build things", Mode: "subagent"}}}, got)
+}
+
+func TestModelsHandler(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/provider", r.URL.Path)
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+		writeJSON(w, `{"data":[{"id":"anthropic","name":"Anthropic","models":{"claude-3-5-sonnet":{"name":"Sonnet"}}}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	_, got, err := modelsHandler(client)(t.Context(), nil, locationParams{Directory: dir})
+	require.NoError(t, err)
+	require.Equal(t, ModelsResult{
+		Providers: []ProviderSummary{{ID: "anthropic", Name: "Anthropic", Models: 1}},
+		Models:    []ModelSummary{{ProviderID: "anthropic", ID: "claude-3-5-sonnet", Name: "Sonnet"}},
+	}, got)
+}
+
+func TestSessionsHandler(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/session", r.URL.Path)
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+		writeJSON(w, "["+minimalSession+"]")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	_, got, err := sessionsHandler(client)(t.Context(), nil, SessionsRequest{Location: Location{Directory: dir}})
+	require.NoError(t, err)
+	require.Len(t, got.Sessions, 1)
+	require.Equal(t, "ses_1", got.Sessions[0].ID)
+	require.Equal(t, "task", got.Sessions[0].Title)
+	require.Equal(t, int64(1), got.Sessions[0].CreatedAt)
+	require.Equal(t, int64(2), got.Sessions[0].UpdatedAt)
+}
+
+func TestPermissionsHandler(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/session/ses_1/permission/request", r.URL.Path)
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+		writeJSON(w, `{"data":[{"id":"perm_1","sessionID":"ses_1","title":"shell","text":"approve?"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	_, got, err := permissionsHandler(client)(t.Context(), nil, requestListParams{locationParams: locationParams{Directory: dir}, SessionID: "ses_1"})
+	require.NoError(t, err)
+	require.Equal(t, RequestsResult{
+		Requests: []RequestSummary{{ID: "perm_1", SessionID: "ses_1", Kind: "permission", Title: "shell", Text: "approve?", Preview: "approve?"}},
+		Count:    1,
+	}, got)
+}
+
+func TestPermissionReplyHandler(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, http.MethodPost, r.Method)
+		require.Equal(t, "/session/ses_1/permissions/perm_1", r.URL.Path)
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+
+		var body struct {
+			Response string `json:"response"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		require.Equal(t, "always", body.Response)
+		writeJSON(w, "true")
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	_, got, err := permissionReplyHandler(client)(t.Context(), nil, permissionReplyParams{
+		locationParams: locationParams{Directory: dir},
+		SessionID:      "ses_1",
+		RequestID:      "perm_1",
+		Reply:          "always",
+	})
+	require.NoError(t, err)
+	require.True(t, got.OK)
+	require.Equal(t, json.RawMessage("true"), got.Data)
+}
+
+func TestQuestionsHandler(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/question/request", r.URL.Path)
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+		writeJSON(w, `{"data":[{"id":"q_1","sessionID":"ses_1","title":"which?","text":"pick one"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	_, got, err := questionsHandler(client)(t.Context(), nil, requestListParams{locationParams: locationParams{Directory: dir}})
+	require.NoError(t, err)
+	require.Equal(t, RequestsResult{
+		Requests: []RequestSummary{{ID: "q_1", SessionID: "ses_1", Kind: "question", Title: "which?", Text: "pick one", Preview: "pick one"}},
+		Count:    1,
+	}, got)
+}
+
+func TestQuestionReplyHandler(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		reject   bool
+		path     string
+		wantBody string
+	}{
+		{
+			name:     "reply",
+			reject:   false,
+			path:     "/api/session/ses_1/question/request/q_1/reply",
+			wantBody: `{"answers":[["yes","no"]]}`,
+		},
+		{
+			name:     "reject",
+			reject:   true,
+			path:     "/api/session/ses_1/question/request/q_1/reject",
+			wantBody: "",
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				require.Equal(t, http.MethodPost, r.Method)
+				require.Equal(t, tc.path, r.URL.Path)
+				require.Equal(t, dir, r.URL.Query().Get("directory"))
+
+				body, err := io.ReadAll(r.Body)
+				require.NoError(t, err)
+				require.Equal(t, tc.wantBody, string(body))
+				writeJSON(w, `{"data":{"ok":true}}`)
+			}))
+			t.Cleanup(server.Close)
+
+			client := newTestClient(t, Config{BaseURL: server.URL})
+			_, got, err := questionReplyHandler(client)(t.Context(), nil, questionReplyParams{
+				locationParams: locationParams{Directory: dir},
+				SessionID:      "ses_1",
+				RequestID:      "q_1",
+				Answers:        [][]string{{"yes", "no"}},
+				Reject:         tc.reject,
+			})
+			require.NoError(t, err)
+			require.True(t, got.OK)
+			require.JSONEq(t, `{"data":{"ok":true}}`, string(got.Data))
+		})
+	}
+}
+
+func TestManagerJobsReturnsSnapshots(t *testing.T) {
+	t.Parallel()
+	mgr := NewManager(t.Context(), nil, nil)
+	mgr.jobs["ses_1"] = &Job{
+		SessionID:    "ses_1",
+		Status:       JobRunning,
+		PromptResult: json.RawMessage(`{"messageID":"msg_1"}`),
+		Err:          errors.New("boom"),
+		CreatedAt:    time.Unix(1, 0),
+		UpdatedAt:    time.Unix(2, 0),
+	}
+
+	jobs := mgr.Jobs()
+	require.Len(t, jobs, 1)
+	require.Equal(t, "ses_1", jobs[0].SessionID)
+	require.Equal(t, JobRunning, jobs[0].Status)
+	require.Equal(t, json.RawMessage(`{"messageID":"msg_1"}`), jobs[0].PromptResult)
+	require.EqualError(t, jobs[0].Err, "boom")
+	require.Equal(t, time.Unix(1, 0), jobs[0].CreatedAt)
+	require.Equal(t, time.Unix(2, 0), jobs[0].UpdatedAt)
+
+	mgr.jobs["ses_1"].Status = JobDone
+	require.Equal(t, JobRunning, jobs[0].Status)
+}
+
+func TestManagerStateDirPersistence(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	running := jobRecord{
+		SessionID:    "ses_1",
+		Status:       JobRunning,
+		PromptResult: json.RawMessage(`{"messageID":"msg_1"}`),
+		CreatedAt:    time.Unix(1, 0),
+		UpdatedAt:    time.Unix(2, 0),
+	}
+	raw, err := json.Marshal(running)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "ses_1.json"), raw, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "bad.json"), []byte(`{`), 0o600))
+	require.NoError(t, os.Mkdir(filepath.Join(stateDir, "nested.json"), 0o700))
+
+	mgr := NewManagerWithStateDir(t.Context(), nil, nil, stateDir)
+	job, ok := mgr.Job("ses_1")
+	require.True(t, ok)
+	require.Equal(t, "ses_1", job.SessionID)
+	require.Equal(t, JobError, job.Status)
+	require.EqualError(t, job.Err, "server restarted before job completed")
+	require.Equal(t, running.PromptResult, job.PromptResult)
+	require.Equal(t, running.CreatedAt, job.CreatedAt)
+	require.NotEqual(t, running.UpdatedAt, job.UpdatedAt)
+
+	valid := &Job{
+		SessionID:    "ses_2",
+		Status:       JobDone,
+		PromptResult: json.RawMessage(`{"ok":true}`),
+		CreatedAt:    time.Unix(3, 0),
+		UpdatedAt:    time.Unix(4, 0),
+	}
+	mgr.saveJob(valid)
+	saved, err := os.ReadFile(filepath.Join(stateDir, "ses_2.json"))
+	require.NoError(t, err)
+	require.Contains(t, string(saved), `"session_id":"ses_2"`)
+	require.Contains(t, string(saved), `"status":"done"`)
+	require.NotContains(t, string(saved), "err_message")
+
+	invalid := &Job{SessionID: "../bad", Status: JobDone}
+	mgr.saveJob(invalid)
+	_, err = os.Stat(filepath.Join(stateDir, "bad.json"))
+	require.NoError(t, err)
+}
+
+func TestClientBaseURL(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL + "/"})
+	require.Equal(t, server.URL, client.BaseURL())
+}
+
+func TestRegister(t *testing.T) {
+	t.Parallel()
+	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "test"}, nil)
+	client := newTestClient(t, Config{BaseURL: "http://127.0.0.1:1"})
+	mgr := NewManager(t.Context(), client, nil)
+
+	require.NotPanics(t, func() {
+		Register(server, client, mgr)
+	})
+}
+
+func TestClientValidationErrors(t *testing.T) {
+	t.Parallel()
+	client := newTestClient(t, Config{BaseURL: "http://127.0.0.1:1"})
+
+	_, err := client.Messages(t.Context(), Location{}, "")
+	require.EqualError(t, err, "session_id is required")
+
+	_, err = client.Context(t.Context(), Location{}, "")
+	require.EqualError(t, err, "session_id is required")
+
+	_, err = client.Prompt(t.Context(), Location{}, "", PromptRequest{})
+	require.EqualError(t, err, "session_id is required")
+
+	_, err = client.PermissionReply(t.Context(), Location{}, "", "perm_1", "always", "")
+	require.EqualError(t, err, "session_id is required")
+
+	_, err = client.PermissionReply(t.Context(), Location{}, "ses_1", "", "always", "")
+	require.EqualError(t, err, "request_id is required")
+
+	_, err = client.QuestionReply(t.Context(), Location{}, "", "q_1", false, nil)
+	require.EqualError(t, err, "session_id is required")
+
+	_, err = client.QuestionReply(t.Context(), Location{}, "ses_1", "", false, nil)
+	require.EqualError(t, err, "request_id is required")
+
+	mgr := NewManager(t.Context(), client, nil)
+	_, err = mgr.Submit(t.Context(), Location{}, "", CreateSessionRequest{}, PromptRequest{})
+	require.EqualError(t, err, "prompt is required")
+
+	_, err = mgr.Submit(t.Context(), Location{}, "../bad", CreateSessionRequest{}, PromptRequest{Prompt: PromptPayload{Text: "do it"}})
+	require.ErrorContains(t, err, "invalid sessionID")
+}
+
+func TestHandlerErrors(t *testing.T) {
+	t.Parallel()
+	client := newTestClient(t, Config{BaseURL: "http://127.0.0.1:1"})
+
+	_, _, err := permissionReplyHandler(client)(t.Context(), nil, permissionReplyParams{SessionID: "ses_1"})
+	require.EqualError(t, err, "request_id is required")
+
+	_, _, err = questionReplyHandler(client)(t.Context(), nil, questionReplyParams{RequestID: "q_1"})
+	require.EqualError(t, err, "session_id is required")
+
+	_, _, err = runHandler(client, NewManager(t.Context(), client, nil))(t.Context(), nil, runParams{})
+	require.EqualError(t, err, "prompt is required")
+
+	_, _, err = fireHandler(NewManager(t.Context(), client, nil))(t.Context(), nil, fireParams{})
+	require.EqualError(t, err, "prompt is required")
+
+	_, _, err = checkHandler(client, NewManager(t.Context(), client, nil))(t.Context(), nil, checkParams{})
+	require.EqualError(t, err, "session_id is required")
 }
