@@ -28,6 +28,25 @@ type Client struct {
 	defaultDirectory string
 }
 
+type apiModel struct {
+	Name string `json:"name"`
+}
+
+type apiProvider struct {
+	ID     string              `json:"id"`
+	Name   string              `json:"name"`
+	Models map[string]apiModel `json:"models"`
+}
+
+type apiProviderList struct {
+	All       []apiProvider `json:"all"`
+	Connected []string      `json:"connected"`
+}
+
+type apiDataProviderList struct {
+	Data []apiProvider `json:"data"`
+}
+
 // NewClient creates an opencode API client.
 func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 	baseURL := cmp.Or(strings.TrimSpace(cfg.BaseURL), defaultBaseURL)
@@ -97,26 +116,85 @@ func (c *Client) Agents(ctx context.Context, loc Location) ([]Agent, error) {
 }
 
 func (c *Client) ProvidersAndModels(ctx context.Context, loc Location) (ModelsResult, error) {
+	if res, ok, err := c.apiProvidersAndModels(ctx, loc); err != nil {
+		return ModelsResult{}, err
+	} else if ok {
+		return res, nil
+	}
+
 	res, err := c.appProviders(ctx, loc)
 	if err != nil {
 		return ModelsResult{}, err
 	}
-	providers := make([]ProviderSummary, 0, len(res.Providers))
+	return modelsResultFromProviders(res.Providers), nil
+}
+
+func (c *Client) apiProvidersAndModels(ctx context.Context, loc Location) (ModelsResult, bool, error) {
+	raw, err := c.v2Get(ctx, "/api/provider", c.dir(loc))
+	if err != nil {
+		return ModelsResult{}, false, err
+	}
+
+	// opencode exposes two response shapes for /api/provider depending on version:
+	//   {all:[...], connected:[...]} — filter to connected providers only
+	//   {data:[...]}                 — all providers, no connected filter
+	// If neither shape matches, return (_, false, nil) so the caller falls back
+	// to the SDK app-route path.
+	var list apiProviderList
+	if err := json.Unmarshal(raw, &list); err == nil && (list.All != nil || list.Connected != nil) {
+		connected := make(map[string]bool, len(list.Connected))
+		for _, id := range list.Connected {
+			connected[id] = true
+		}
+		providers := make([]apiProvider, 0, len(list.All))
+		for _, p := range list.All {
+			if connected[p.ID] {
+				providers = append(providers, p)
+			}
+		}
+		return modelsResultFromAPIProviders(providers), true, nil
+	}
+
+	var dataList apiDataProviderList
+	if err := json.Unmarshal(raw, &dataList); err == nil && dataList.Data != nil {
+		return modelsResultFromAPIProviders(dataList.Data), true, nil
+	}
+	return ModelsResult{}, false, nil
+}
+
+func modelsResultFromProviders(input []opencodesdk.Provider) ModelsResult {
+	converted := make([]apiProvider, 0, len(input))
+	for _, p := range input {
+		models := make(map[string]apiModel, len(p.Models))
+		for id, m := range p.Models {
+			models[id] = apiModel{Name: m.Name}
+		}
+		converted = append(converted, apiProvider{ID: p.ID, Name: p.Name, Models: models})
+	}
+	return modelsResultFromAPIProviders(converted)
+}
+
+func modelsResultFromAPIProviders(input []apiProvider) ModelsResult {
+	providers := make([]ProviderSummary, 0, len(input))
 	var models []ModelSummary
-	for _, p := range res.Providers {
+	for _, p := range input {
 		providers = append(providers, ProviderSummary{ID: p.ID, Name: p.Name, Models: len(p.Models)})
 		for id, m := range p.Models {
 			models = append(models, ModelSummary{ProviderID: p.ID, ID: id, Name: m.Name})
 		}
 	}
-	slices.SortFunc(providers, func(a, b ProviderSummary) int { return cmp.Compare(a.ID, b.ID) })
-	slices.SortFunc(models, func(a, b ModelSummary) int {
+	return sortModelsResult(ModelsResult{Providers: providers, Models: models})
+}
+
+func sortModelsResult(res ModelsResult) ModelsResult {
+	slices.SortFunc(res.Providers, func(a, b ProviderSummary) int { return cmp.Compare(a.ID, b.ID) })
+	slices.SortFunc(res.Models, func(a, b ModelSummary) int {
 		if n := cmp.Compare(a.ProviderID, b.ProviderID); n != 0 {
 			return n
 		}
 		return cmp.Compare(a.ID, b.ID)
 	})
-	return ModelsResult{Providers: providers, Models: models}, nil
+	return res
 }
 
 func (c *Client) appProviders(ctx context.Context, loc Location) (*opencodesdk.AppProvidersResponse, error) {

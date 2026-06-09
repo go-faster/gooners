@@ -11,6 +11,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+type createSessionRequestBody struct {
+	Title string `json:"title"`
+}
+
+type promptRequestBody struct {
+	Parts []promptRequestPart `json:"parts"`
+	Agent string              `json:"agent,omitempty"`
+	Model *promptRequestModel `json:"model,omitempty"`
+}
+
+type promptRequestPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type promptRequestModel struct {
+	ModelID    string `json:"modelID"`
+	ProviderID string `json:"providerID"`
+}
+
 func TestClientAgentsBasicAuth(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -42,9 +62,7 @@ func TestClientCreateSessionAndPrompt(t *testing.T) {
 		case "/session":
 			require.Equal(t, http.MethodPost, r.Method)
 			sawCreate = true
-			var body struct {
-				Title string `json:"title"`
-			}
+			var body createSessionRequestBody
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			require.Equal(t, "Fix tests", body.Title)
 			w.Header().Set("Content-Type", "application/json")
@@ -52,17 +70,7 @@ func TestClientCreateSessionAndPrompt(t *testing.T) {
 		case "/session/ses_1/message":
 			require.True(t, sawCreate, "prompt called before create")
 			require.Equal(t, http.MethodPost, r.Method)
-			var body struct {
-				Parts []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"parts"`
-				Agent string `json:"agent,omitempty"`
-				Model *struct {
-					ModelID    string `json:"modelID"`
-					ProviderID string `json:"providerID"`
-				} `json:"model,omitempty"`
-			}
+			var body promptRequestBody
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 			require.Len(t, body.Parts, 1)
 			require.Equal(t, "text", body.Parts[0].Type)
@@ -89,6 +97,51 @@ func TestClientCreateSessionAndPrompt(t *testing.T) {
 		Model:  &ModelRef{ProviderID: "anthropic", ModelID: "claude"},
 	})
 	require.NoError(t, err)
+}
+
+func TestClientProvidersAndModelsFiltersConnectedProviders(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/provider", r.URL.Path)
+		writeJSON(w, `{
+			"all":[
+				{"id":"anthropic","name":"Anthropic","models":{"claude":{"name":"Claude"}}},
+				{"id":"openai","name":"OpenAI","models":{"gpt":{"name":"GPT"}}}
+			],
+			"connected":["anthropic"]
+		}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	res, err := client.ProvidersAndModels(t.Context(), Location{})
+	require.NoError(t, err)
+	require.Equal(t, []ProviderSummary{{ID: "anthropic", Name: "Anthropic", Models: 1}}, res.Providers)
+	require.Equal(t, []ModelSummary{{ProviderID: "anthropic", ID: "claude", Name: "Claude"}}, res.Models)
+}
+
+func TestClientProvidersAndModelsFallsBackToAppProviders(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/provider":
+			http.NotFound(w, r)
+		case "/config/providers":
+			writeJSON(w, `{
+				"default":{"anthropic":"claude"},
+				"providers":[{"id":"anthropic","name":"Anthropic","env":[],"models":{"claude":{"id":"claude","name":"Claude"}}}]
+			}`)
+		default:
+			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	res, err := client.ProvidersAndModels(t.Context(), Location{})
+	require.NoError(t, err)
+	require.Equal(t, []ProviderSummary{{ID: "anthropic", Name: "Anthropic", Models: 1}}, res.Providers)
+	require.Equal(t, []ModelSummary{{ProviderID: "anthropic", ID: "claude", Name: "Claude"}}, res.Models)
 }
 
 func TestClientCreateSessionMissingRouteError(t *testing.T) {
