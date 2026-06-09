@@ -30,7 +30,7 @@ func summarizeMessages(raw json.RawMessage, limit int) []MessageSummary {
 	items := collectObjects(nil, v)
 	var roleItems []map[string]any
 	for _, item := range items {
-		if item["role"] != nil {
+		if messageRole(item) != "" {
 			roleItems = append(roleItems, item)
 		}
 	}
@@ -41,8 +41,8 @@ func summarizeMessages(raw json.RawMessage, limit int) []MessageSummary {
 	for _, item := range roleItems {
 		text := strings.Join(collectText(nil, item), "\n")
 		out = append(out, MessageSummary{
-			ID:   stringField(item, "id"),
-			Role: stringField(item, "role"),
+			ID:   messageID(item),
+			Role: messageRole(item),
 			Text: compactText(text),
 		})
 	}
@@ -109,7 +109,7 @@ func collectText(out []string, v any) []string {
 func collectObjects(out []map[string]any, v any) []map[string]any {
 	switch x := v.(type) {
 	case map[string]any:
-		if x["id"] != nil || x["role"] != nil || x["requestID"] != nil || x["messageID"] != nil {
+		if x["id"] != nil || x["role"] != nil || x["requestID"] != nil || x["messageID"] != nil || messageRole(x) != "" {
 			out = append(out, x)
 		}
 		for _, key := range []string{"data", "items", "messages", "requests", "permissions", "questions", "content", "parts"} {
@@ -137,6 +137,26 @@ func firstStringField(m map[string]any, keys ...string) string {
 		if v := stringField(m, key); v != "" {
 			return v
 		}
+	}
+	return ""
+}
+
+func messageID(m map[string]any) string {
+	if id := stringField(m, "id"); id != "" {
+		return id
+	}
+	if info, ok := m["info"].(map[string]any); ok {
+		return stringField(info, "id")
+	}
+	return ""
+}
+
+func messageRole(m map[string]any) string {
+	if role := stringField(m, "role"); role != "" {
+		return role
+	}
+	if info, ok := m["info"].(map[string]any); ok {
+		return stringField(info, "role")
 	}
 	return ""
 }

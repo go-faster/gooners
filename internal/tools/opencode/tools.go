@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -10,7 +11,7 @@ import (
 )
 
 // Register adds opencode handoff tools to an MCP server.
-func Register(s *mcp.Server, client *Client) {
+func Register(s *mcp.Server, client *Client, mgr *Manager) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_health",
 		Description: "Check connectivity to the configured opencode HTTP server. Call this if other handoff tools return connection or authentication errors.",
@@ -43,13 +44,13 @@ func Register(s *mcp.Server, client *Client) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_fire",
 		Description: "Background handoff: create or reuse an opencode session, submit a prompt, and return immediately. Use handoff_check with the returned session_id to poll progress.",
-	}, fireHandler(client))
+	}, fireHandler(mgr))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_check",
 		Description: "Poll progress for a session_id returned by handoff_fire, or inspect sessions for pending permissions/questions.",
 		Flags:       mcputil.ReadOnly,
-	}, checkHandler(client))
+	}, checkHandler(client, mgr))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_permissions",
@@ -161,25 +162,20 @@ func runHandler(client *Client) mcp.ToolHandlerFor[runParams, HandoffRunResult] 
 	}
 }
 
-func fireHandler(client *Client) mcp.ToolHandlerFor[fireParams, HandoffFireResult] {
+func fireHandler(mgr *Manager) mcp.ToolHandlerFor[fireParams, HandoffFireResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args fireParams) (*mcp.CallToolResult, HandoffFireResult, error) {
 		if args.Prompt == "" {
 			return nil, HandoffFireResult{}, fmt.Errorf("prompt is required")
 		}
 		loc := args.location()
-		sessionID := args.SessionID
-		if sessionID == "" {
-			session, err := client.CreateSession(ctx, loc, CreateSessionRequest{Title: args.Title, ParentID: args.ParentSessionID})
-			if err != nil {
-				return nil, HandoffFireResult{}, err
-			}
-			sessionID = session.ID
-		}
-		prompt, err := client.Prompt(ctx, loc, sessionID, promptRequest(args.runParams))
+		sessionID, err := mgr.Submit(ctx, loc, args.SessionID,
+			CreateSessionRequest{Title: args.Title, ParentID: args.ParentSessionID},
+			promptRequest(args.runParams),
+		)
 		if err != nil {
 			return nil, HandoffFireResult{}, err
 		}
-		return nil, HandoffFireResult{SessionID: sessionID, PromptMessageID: extractMessageID(prompt), Message: "prompt submitted; use handoff_check with this session_id"}, nil
+		return nil, HandoffFireResult{SessionID: sessionID, Message: "prompt submitted; use handoff_check with this session_id"}, nil
 	}
 }
 
@@ -194,11 +190,40 @@ type requestListParams struct {
 	SessionID string `json:"session_id,omitempty" jsonschema:"Optional opencode session id. Omit to list global pending requests when supported by opencode."`
 }
 
-func checkHandler(client *Client) mcp.ToolHandlerFor[checkParams, HandoffCheckResult] {
+func checkHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[checkParams, HandoffCheckResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args checkParams) (*mcp.CallToolResult, HandoffCheckResult, error) {
-		res, err := checkSession(ctx, client, args.location(), args.SessionID, args.Verbose)
+		loc := args.location()
+		job, ok := mgr.Job(args.SessionID)
+		if !ok {
+			res, err := checkSession(ctx, client, loc, args.SessionID, args.Verbose)
+			if err != nil {
+				return nil, HandoffCheckResult{}, err
+			}
+			res.Status = "unknown"
+			return nil, res, nil
+		}
+
+		if job.Status == JobRunning {
+			res := HandoffCheckResult{SessionID: args.SessionID, Status: string(JobRunning)}
+			fillPendingRequests(ctx, client, loc, &res)
+			res.Message = checkMessage(res)
+			if res.Message == "session state loaded" {
+				res.Message = "handoff is still running"
+			}
+			return nil, res, nil
+		}
+
+		res, err := checkSession(ctx, client, loc, args.SessionID, args.Verbose)
 		if err != nil {
 			return nil, HandoffCheckResult{}, err
+		}
+		res.Status = string(job.Status)
+		res.PromptMessageID = extractMessageID(job.PromptResult)
+		if job.Err != nil {
+			res.Error = job.Err.Error()
+			if res.Message == "session state loaded" {
+				res.Message = "handoff failed"
+			}
 		}
 		return nil, res, nil
 	}
@@ -284,29 +309,41 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 		res.MessagesReturned = len(res.Messages)
 		res.FinalText = firstText(msg)
 		if verbose {
-			res.RawMessages = msg
+			res.RawMessages = rawJSON(msg)
 		}
 	}
 	ctxData, ctxErr := client.Context(ctx, loc, sessionID)
 	if ctxErr == nil {
 		if verbose {
-			res.RawContext = ctxData
+			res.RawContext = rawJSON(ctxData)
 		}
 		if res.FinalText == "" {
 			res.FinalText = firstText(ctxData)
 		}
 	}
-	perms, _ := client.Permissions(ctx, loc, sessionID)
-	res.PendingPermissions = summarizeRequests(perms, "permission", sessionID)
-	res.PendingPermissionCount = len(res.PendingPermissions)
-	questions, _ := client.Questions(ctx, loc, sessionID)
-	res.PendingQuestions = summarizeRequests(questions, "question", sessionID)
-	res.PendingQuestionCount = len(res.PendingQuestions)
+	fillPendingRequests(ctx, client, loc, &res)
 	if msgErr != nil && ctxErr != nil {
 		return HandoffCheckResult{}, fmt.Errorf("read session %q messages: %w; context: %w", sessionID, msgErr, ctxErr)
 	}
 	res.Message = checkMessage(res)
 	return res, nil
+}
+
+func rawJSON(raw json.RawMessage) any {
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return string(raw)
+	}
+	return v
+}
+
+func fillPendingRequests(ctx context.Context, client *Client, loc Location, res *HandoffCheckResult) {
+	perms, _ := client.Permissions(ctx, loc, res.SessionID)
+	res.PendingPermissions = summarizeRequests(perms, "permission", res.SessionID)
+	res.PendingPermissionCount = len(res.PendingPermissions)
+	questions, _ := client.Questions(ctx, loc, res.SessionID)
+	res.PendingQuestions = summarizeRequests(questions, "question", res.SessionID)
+	res.PendingQuestionCount = len(res.PendingQuestions)
 }
 
 func runResultFromCheck(sessionID, status, promptMessageID string, check HandoffCheckResult, message string) HandoffRunResult {

@@ -2,10 +2,13 @@ package opencode
 
 import (
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -53,23 +56,38 @@ func TestRunHandlerHappyPathCompactResult(t *testing.T) {
 
 func TestFireHandlerReturnsSessionID(t *testing.T) {
 	t.Parallel()
+	releasePrompt := make(chan struct{})
+	promptStarted := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/session":
 			writeJSON(w, minimalSession)
 		case "/session/ses_1/message":
+			close(promptStarted)
+			<-releasePrompt
 			writeJSON(w, `{"messageID":"msg_prompt"}`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
 	}))
 	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(releasePrompt) })
 	client := newTestClient(t, Config{BaseURL: server.URL})
+	mgr := NewManager(t.Context(), client, slog.Default())
 
-	_, res, err := fireHandler(client)(t.Context(), nil, fireParams{runParams: runParams{Prompt: "do it"}})
+	_, res, err := fireHandler(mgr)(t.Context(), nil, fireParams{runParams: runParams{Prompt: "do it"}})
 	require.NoError(t, err)
 	require.Equal(t, "ses_1", res.SessionID)
-	require.Equal(t, "msg_prompt", res.PromptMessageID)
+	require.Empty(t, res.PromptMessageID)
+
+	select {
+	case <-promptStarted:
+	case <-time.After(time.Second):
+		t.Fatal("prompt was not submitted")
+	}
+	job, ok := mgr.Job("ses_1")
+	require.True(t, ok)
+	require.Equal(t, JobRunning, job.Status)
 }
 
 func TestCheckHandlerReportsPendingPermission(t *testing.T) {
@@ -90,11 +108,125 @@ func TestCheckHandlerReportsPendingPermission(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
+	mgr := NewManager(t.Context(), client, slog.Default())
 
-	_, res, err := checkHandler(client)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
 	require.NoError(t, err)
+	require.Equal(t, "unknown", res.Status)
 	require.Equal(t, 1, res.PendingPermissionCount)
 	require.Contains(t, res.Message, "handoff_permissions")
+}
+
+func TestCheckHandlerVerboseReturnsDecodedRawJSON(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/ses_1/message":
+			writeJSON(w, `[{"info":{"id":"msg_1","role":"assistant"},"parts":[{"text":"done"}]}]`)
+		case "/api/session/ses_1/context":
+			writeJSON(w, `{"data":{"tokens":1}}`)
+		case "/api/session/ses_1/permission/request", "/api/question/request":
+			writeJSON(w, `{"data":[]}`)
+		default:
+			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	mgr := NewManager(t.Context(), client, slog.Default())
+
+	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1", Verbose: true})
+	require.NoError(t, err)
+	require.IsType(t, []any{}, res.RawMessages)
+	require.IsType(t, map[string]any{}, res.RawContext)
+
+	data, err := json.Marshal(res)
+	require.NoError(t, err)
+	encoded := string(data)
+	require.Contains(t, encoded, `"raw_messages":[`)
+	require.NotContains(t, encoded, `"raw_messages":[123`)
+}
+
+func TestCheckHandlerReportsRunningJob(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/session/ses_1/permission/request", "/api/question/request":
+			writeJSON(w, `{"data":[]}`)
+		default:
+			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	mgr := NewManager(t.Context(), client, slog.Default())
+	mgr.jobs["ses_1"] = &Job{SessionID: "ses_1", Status: JobRunning}
+
+	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+	require.NoError(t, err)
+	require.Equal(t, string(JobRunning), res.Status)
+	require.Equal(t, "handoff is still running", res.Message)
+}
+
+func TestCheckHandlerReportsDoneJob(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/ses_1/message":
+			writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"all done"}]}]`)
+		case "/api/session/ses_1/context":
+			writeJSON(w, `{"data":{"tokens":1}}`)
+		case "/api/session/ses_1/permission/request", "/api/question/request":
+			writeJSON(w, `{"data":[]}`)
+		default:
+			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	mgr := NewManager(t.Context(), client, slog.Default())
+	mgr.jobs["ses_1"] = &Job{
+		SessionID:    "ses_1",
+		Status:       JobDone,
+		PromptResult: json.RawMessage(`{"messageID":"msg_prompt"}`),
+	}
+
+	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+	require.NoError(t, err)
+	require.Equal(t, string(JobDone), res.Status)
+	require.Equal(t, "msg_prompt", res.PromptMessageID)
+	require.Equal(t, "all done", res.FinalText)
+	require.Empty(t, res.Error)
+}
+
+func TestCheckHandlerReportsErrorJob(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/session/ses_1/message":
+			writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"partial"}]}]`)
+		case "/api/session/ses_1/context":
+			writeJSON(w, `{"data":{"tokens":1}}`)
+		case "/api/session/ses_1/permission/request", "/api/question/request":
+			writeJSON(w, `{"data":[]}`)
+		default:
+			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	mgr := NewManager(t.Context(), client, slog.Default())
+	mgr.jobs["ses_1"] = &Job{
+		SessionID: "ses_1",
+		Status:    JobError,
+		Err:       errors.New("context deadline exceeded"),
+	}
+
+	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+	require.NoError(t, err)
+	require.Equal(t, string(JobError), res.Status)
+	require.Equal(t, "context deadline exceeded", res.Error)
+	require.Equal(t, "handoff failed", res.Message)
 }
 
 func TestRunHandlerBlockedState(t *testing.T) {

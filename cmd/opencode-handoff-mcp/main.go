@@ -65,7 +65,8 @@ func main() {
 		Instructions: "You are connected to opencode-handoff-mcp. Use these tools to delegate coding tasks to opencode agents, monitor their sessions, and answer permission or clarification requests when needed.",
 		Logger:       logger.With("component", "mcp-sdk"),
 	})
-	opencode.Register(s, client)
+	mgr := opencode.NewManager(ctx, client, logger.With("component", "opencode-manager"))
+	opencode.Register(s, client, mgr)
 
 	if err := transport.Run(ctx, "opencode-handoff-mcp", s, logger.WithGroup("transport")); err != nil {
 		slog.Error("failed to run server", "err", err)

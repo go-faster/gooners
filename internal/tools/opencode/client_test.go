@@ -158,6 +158,22 @@ func TestIntermediatePartsExcludedFromSummary(t *testing.T) {
 	require.Equal(t, "assistant", msgs[1].Role)
 }
 
+func TestMessageSummaryUsesNestedInfoRole(t *testing.T) {
+	t.Parallel()
+	raw := json.RawMessage(`{
+		"data":[
+			{"info":{"id":"msg_1","role":"user"},"parts":[{"text":"hello"}]},
+			{"id":"prt_1","text":"internal step"},
+			{"info":{"id":"msg_2","role":"assistant"},"parts":[{"text":"done"}]}
+		]
+	}`)
+
+	msgs := summarizeMessages(raw, 10)
+	require.Len(t, msgs, 2)
+	require.Equal(t, MessageSummary{ID: "msg_1", Role: "user", Text: "hello"}, msgs[0])
+	require.Equal(t, MessageSummary{ID: "msg_2", Role: "assistant", Text: "done"}, msgs[1])
+}
+
 func TestAgentsResultSerializes(t *testing.T) {
 	t.Parallel()
 	data, err := json.Marshal(AgentsResult{Agents: []Agent{{Name: "build", Mode: "subagent"}}})

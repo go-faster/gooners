@@ -104,8 +104,8 @@ type HandoffRunResult struct {
 	PendingPermissionCount int              `json:"pending_permission_count"`
 	PendingQuestionCount   int              `json:"pending_question_count"`
 	MessagesReturned       int              `json:"messages_returned"`
-	RawMessages            json.RawMessage  `json:"raw_messages,omitempty"`
-	RawContext             json.RawMessage  `json:"raw_context,omitempty"`
+	RawMessages            any              `json:"raw_messages,omitempty"`
+	RawContext             any              `json:"raw_context,omitempty"`
 	Message                string           `json:"message,omitempty"`
 }
 
@@ -117,15 +117,18 @@ type HandoffFireResult struct {
 
 type HandoffCheckResult struct {
 	SessionID              string           `json:"session_id"`
+	Status                 string           `json:"status,omitempty"`
 	FinalText              string           `json:"final_text,omitempty"`
+	PromptMessageID        string           `json:"prompt_message_id,omitempty"`
 	Messages               []MessageSummary `json:"messages,omitempty"`
 	PendingPermissions     []RequestSummary `json:"pending_permissions,omitempty"`
 	PendingQuestions       []RequestSummary `json:"pending_questions,omitempty"`
 	PendingPermissionCount int              `json:"pending_permission_count"`
 	PendingQuestionCount   int              `json:"pending_question_count"`
 	MessagesReturned       int              `json:"messages_returned"`
-	RawMessages            json.RawMessage  `json:"raw_messages,omitempty"`
-	RawContext             json.RawMessage  `json:"raw_context,omitempty"`
+	RawMessages            any              `json:"raw_messages,omitempty"`
+	RawContext             any              `json:"raw_context,omitempty"`
+	Error                  string           `json:"error,omitempty"`
 	Message                string           `json:"message,omitempty"`
 }
 
