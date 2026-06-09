@@ -28,12 +28,23 @@ type LoggingFlags struct {
 func (flags *LoggingFlags) Register(fs *flag.FlagSet) {
 	flags.LogLevel = slog.LevelInfo
 	fs.TextVar(&flags.LogLevel, "log-level", &flags.LogLevel, "log level: debug, info, warn, error")
-	fs.StringVar(&flags.LogFile, "log-file", "", "path to log file; stdout is used when empty")
+	fs.StringVar(&flags.LogFile, "log-file", "", "path to log file; stderr is used when empty")
 	fs.StringVar(&flags.LogFormat, "log-format", "text", "log format: text, json")
 }
 
 // Setup configures slog from common logging flags.
 func (flags *LoggingFlags) Setup() (func(), *slog.Logger, error) {
+	// Validate format before creating the log file to avoid leaking the fd.
+	var newHandler func(io.Writer, *slog.HandlerOptions) slog.Handler
+	switch flags.LogFormat {
+	case "json":
+		newHandler = func(w io.Writer, o *slog.HandlerOptions) slog.Handler { return slog.NewJSONHandler(w, o) }
+	case "text", "":
+		newHandler = func(w io.Writer, o *slog.HandlerOptions) slog.Handler { return slog.NewTextHandler(w, o) }
+	default:
+		return func() {}, slog.Default(), fmt.Errorf("unknown log format: %q", flags.LogFormat)
+	}
+
 	var (
 		out     = io.Writer(os.Stderr)
 		cleanup = func() {}
@@ -49,15 +60,7 @@ func (flags *LoggingFlags) Setup() (func(), *slog.Logger, error) {
 	}
 
 	opts := &slog.HandlerOptions{Level: flags.LogLevel}
-	var handler slog.Handler
-	switch flags.LogFormat {
-	case "json":
-		handler = slog.NewJSONHandler(out, opts)
-	case "text", "":
-		handler = slog.NewTextHandler(out, opts)
-	default:
-		return cleanup, slog.Default(), fmt.Errorf("unknown log format: %q", flags.LogFormat)
-	}
+	handler := newHandler(out, opts)
 	logger := slog.New(handler)
 	slog.SetDefault(logger)
 
