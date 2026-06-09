@@ -206,32 +206,68 @@ func TestCheckHandlerReportsDoneJob(t *testing.T) {
 
 func TestCheckHandlerReportsErrorJob(t *testing.T) {
 	t.Parallel()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/session/ses_1/message":
-			writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"partial"}]}]`)
-		case "/api/session/ses_1/context":
-			writeJSON(w, `{"data":{"tokens":1}}`)
-		case "/api/session/ses_1/permission/request", "/api/question/request":
-			writeJSON(w, `{"data":[]}`)
-		default:
-			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
-		}
-	}))
-	t.Cleanup(server.Close)
-	client := newTestClient(t, Config{BaseURL: server.URL})
-	mgr := NewManager(t.Context(), client, slog.Default())
-	mgr.jobs["ses_1"] = &Job{
-		SessionID: "ses_1",
-		Status:    JobError,
-		Err:       errors.New("context deadline exceeded"),
-	}
 
-	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
-	require.NoError(t, err)
-	require.Equal(t, string(JobError), res.Status)
-	require.Equal(t, "context deadline exceeded", res.Error)
-	require.Equal(t, "handoff failed", res.Message)
+	// With messages present: submit timed out while session was running.
+	t.Run("with messages", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/session/ses_1/message":
+				writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"partial"}]}]`)
+			case "/api/session/ses_1/context":
+				writeJSON(w, `{"data":{"tokens":1}}`)
+			case "/api/session/ses_1/permission/request", "/api/question/request":
+				writeJSON(w, `{"data":[]}`)
+			default:
+				require.Failf(t, "unexpected request", "path %s", r.URL.Path)
+			}
+		}))
+		t.Cleanup(server.Close)
+		client := newTestClient(t, Config{BaseURL: server.URL})
+		mgr := NewManager(t.Context(), client, slog.Default())
+		mgr.jobs["ses_1"] = &Job{
+			SessionID: "ses_1",
+			Status:    JobError,
+			Err:       errors.New("context deadline exceeded"),
+		}
+
+		_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+		require.NoError(t, err)
+		require.Equal(t, string(JobError), res.Status)
+		require.Equal(t, "context deadline exceeded", res.Error)
+		require.Contains(t, res.Message, "may still be running")
+	})
+
+	// Without messages: clean error, session never produced output.
+	t.Run("no messages", func(t *testing.T) {
+		t.Parallel()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/session/ses_1/message":
+				writeJSON(w, `[]`)
+			case "/api/session/ses_1/context":
+				writeJSON(w, `{}`)
+			case "/api/session/ses_1/permission/request", "/api/question/request":
+				writeJSON(w, `{"data":[]}`)
+			default:
+				require.Failf(t, "unexpected request", "path %s", r.URL.Path)
+			}
+		}))
+		t.Cleanup(server.Close)
+		client := newTestClient(t, Config{BaseURL: server.URL})
+		mgr := NewManager(t.Context(), client, slog.Default())
+		mgr.jobs["ses_1"] = &Job{
+			SessionID: "ses_1",
+			Status:    JobError,
+			Err:       errors.New("connection refused"),
+		}
+
+		_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+		require.NoError(t, err)
+		require.Equal(t, string(JobError), res.Status)
+		require.Equal(t, "connection refused", res.Error)
+		require.Equal(t, "handoff failed", res.Message)
+	})
 }
 
 func TestRunHandlerBlockedState(t *testing.T) {

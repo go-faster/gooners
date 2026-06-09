@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -67,7 +68,7 @@ func main() {
 		Instructions: "You are connected to opencode-handoff-mcp. Use these tools to delegate coding tasks to opencode agents, monitor their sessions, and answer permission or clarification requests when needed.",
 		Logger:       logger.With("component", "mcp-sdk"),
 	})
-	mgr := opencode.NewManager(ctx, client, logger.With("component", "opencode-manager"))
+	mgr := opencode.NewManagerWithStateDir(ctx, client, logger.With("component", "opencode-manager"), ocode.StateDir)
 	opencode.Register(s, client, mgr)
 
 	if err := transport.Run(ctx, "opencode-handoff-mcp", s, logger.WithGroup("transport")); err != nil {
@@ -80,11 +81,19 @@ func envDefault(name, fallback string) string {
 	return cmp.Or(os.Getenv(name), fallback)
 }
 
+func defaultStateDir() string {
+	if dir, err := os.UserCacheDir(); err == nil {
+		return filepath.Join(dir, "opencode-handoff-mcp", "jobs")
+	}
+	return ""
+}
+
 type opencodeCfg struct {
 	Mode             string
 	DefaultDirectory string
 	RequestTimeout   time.Duration
 	SyncTimeout      time.Duration
+	StateDir         string
 
 	BaseURL  string
 	Username string
@@ -99,6 +108,7 @@ func (o *opencodeCfg) Register(_ *flag.FlagSet) {
 	flag.StringVar(&o.DefaultDirectory, "default-directory", os.Getenv("OPENCODE_DIRECTORY"), "default x-opencode-directory value (env: OPENCODE_DIRECTORY)")
 	flag.DurationVar(&o.RequestTimeout, "request-timeout", 30*time.Second, "timeout for regular opencode HTTP calls")
 	flag.DurationVar(&o.SyncTimeout, "sync-timeout", 5*time.Minute, "timeout for blocking prompt calls (session message POST) used by handoff_run and handoff_fire")
+	flag.StringVar(&o.StateDir, "state-dir", envDefault("OPENCODE_HANDOFF_STATE_DIR", defaultStateDir()), "directory for persisting job state across restarts (env: OPENCODE_HANDOFF_STATE_DIR)")
 	flag.StringVar(&o.BaseURL, "opencode-url", os.Getenv("OPENCODE_URL"), "opencode server base URL (env: OPENCODE_URL); defaults to http://localhost:4096 in local mode")
 	flag.StringVar(&o.Username, "opencode-username", envDefault("OPENCODE_USERNAME", "opencode"), "opencode basic auth username (env: OPENCODE_USERNAME)")
 	flag.StringVar(&o.Password, "opencode-password", os.Getenv("OPENCODE_PASSWORD"), "opencode basic auth password (env: OPENCODE_PASSWORD)")

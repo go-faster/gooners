@@ -3,8 +3,11 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -27,26 +30,125 @@ type Job struct {
 	mu           sync.Mutex
 }
 
+// jobRecord is the on-disk representation of a Job. Err is stored as a string
+// because the error interface is not JSON-serializable.
+type jobRecord struct {
+	SessionID    string          `json:"session_id"`
+	Status       JobStatus       `json:"status"`
+	PromptResult json.RawMessage `json:"prompt_result,omitempty"`
+	ErrMessage   string          `json:"err_message,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
 type Manager struct {
-	ctx    context.Context
-	client *Client
-	jobs   map[string]*Job
-	mu     sync.Mutex
-	logger *slog.Logger
+	ctx      context.Context
+	client   *Client
+	jobs     map[string]*Job
+	mu       sync.Mutex
+	logger   *slog.Logger
+	stateDir string
 }
 
 func NewManager(ctx context.Context, client *Client, logger *slog.Logger) *Manager {
+	return NewManagerWithStateDir(ctx, client, logger, "")
+}
+
+// NewManagerWithStateDir creates a Manager that persists job state to stateDir.
+// An empty stateDir disables persistence (suitable for tests).
+func NewManagerWithStateDir(ctx context.Context, client *Client, logger *slog.Logger, stateDir string) *Manager {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Manager{
-		ctx:    ctx,
-		client: client,
-		jobs:   make(map[string]*Job),
-		logger: logger,
+	m := &Manager{
+		ctx:      ctx,
+		client:   client,
+		jobs:     make(map[string]*Job),
+		logger:   logger,
+		stateDir: stateDir,
+	}
+	if stateDir != "" {
+		m.loadJobs()
+	}
+	return m
+}
+
+// loadJobs reads persisted job records from stateDir on startup.
+// Jobs found in "running" state are marked as error: the server crashed before
+// they could finish, so we don't know the outcome.
+func (m *Manager) loadJobs() {
+	entries, err := os.ReadDir(m.stateDir)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			m.logger.Warn("failed to read state dir", "dir", m.stateDir, "err", err)
+		}
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".json" {
+			continue
+		}
+		path := filepath.Join(m.stateDir, e.Name())
+		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from operator-controlled state dir + filename from ReadDir
+		if err != nil {
+			m.logger.Warn("failed to read job file", "path", path, "err", err)
+			continue
+		}
+		var rec jobRecord
+		if err := json.Unmarshal(data, &rec); err != nil {
+			m.logger.Warn("failed to parse job file", "path", path, "err", err)
+			continue
+		}
+		job := &Job{
+			SessionID:    rec.SessionID,
+			Status:       rec.Status,
+			PromptResult: rec.PromptResult,
+			CreatedAt:    rec.CreatedAt,
+			UpdatedAt:    rec.UpdatedAt,
+		}
+		if rec.ErrMessage != "" {
+			job.Err = errors.New(rec.ErrMessage)
+		}
+		// A job persisted as "running" means the server crashed before it finished.
+		if job.Status == JobRunning {
+			job.Status = JobError
+			job.Err = errors.New("server restarted before job completed")
+			job.UpdatedAt = time.Now()
+		}
+		m.jobs[rec.SessionID] = job
+		m.logger.Debug("loaded persisted job", "session_id", rec.SessionID, "status", job.Status)
+	}
+}
+
+func (m *Manager) saveJob(job *Job) {
+	if m.stateDir == "" {
+		return
+	}
+	if err := os.MkdirAll(m.stateDir, 0o700); err != nil {
+		m.logger.Warn("failed to create state dir", "dir", m.stateDir, "err", err)
+		return
+	}
+	rec := jobRecord{
+		SessionID:    job.SessionID,
+		Status:       job.Status,
+		PromptResult: job.PromptResult,
+		CreatedAt:    job.CreatedAt,
+		UpdatedAt:    job.UpdatedAt,
+	}
+	if job.Err != nil {
+		rec.ErrMessage = job.Err.Error()
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		m.logger.Warn("failed to marshal job", "session_id", job.SessionID, "err", err)
+		return
+	}
+	path := filepath.Join(m.stateDir, job.SessionID+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		m.logger.Warn("failed to write job file", "path", path, "err", err)
 	}
 }
 
@@ -82,6 +184,7 @@ func (m *Manager) Submit(ctx context.Context, loc Location, sessionID string, cr
 	m.jobs[sessionID] = job
 	m.mu.Unlock()
 
+	m.saveJob(job)
 	go m.run(job, loc, req)
 	return sessionID, nil
 }
@@ -121,10 +224,11 @@ func (m *Manager) run(job *Job, loc Location, req PromptRequest) {
 		job.Status = JobError
 		job.Err = err
 		m.logger.Warn("opencode handoff job failed", "session_id", job.SessionID, "err", err)
-		return
+	} else {
+		job.Status = JobDone
+		m.logger.Debug("opencode handoff job completed", "session_id", job.SessionID)
 	}
-	job.Status = JobDone
-	m.logger.Debug("opencode handoff job completed", "session_id", job.SessionID)
+	m.saveJob(job)
 }
 
 func snapshotJob(job *Job) *Job {

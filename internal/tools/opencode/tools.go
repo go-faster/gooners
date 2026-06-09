@@ -279,12 +279,30 @@ func doCheck(ctx context.Context, client *Client, mgr *Manager, args checkParams
 		return res, nil
 	}
 
+	// A job may be in error state because the HTTP POST timed out, yet the
+	// opencode session may have continued. Trust the message stream over the
+	// job error when the session is demonstrably finished.
+	if isFinished {
+		res.Status = string(JobDone)
+		res.PromptMessageID = extractMessageID(job.PromptResult)
+		if res.Message == "session state loaded" {
+			res.Message = "handoff completed"
+		}
+		return res, nil
+	}
+
 	res.Status = string(job.Status)
 	res.PromptMessageID = extractMessageID(job.PromptResult)
 	if job.Err != nil {
 		res.Error = job.Err.Error()
+		msg := "handoff failed"
+		if job.Status == JobError && res.MessagesReturned > 0 {
+			// Messages exist but the session isn't marked finished — the submit
+			// POST may have timed out while opencode was still processing.
+			msg = "submit timed out; session may still be running — use handoff_check to monitor"
+		}
 		if res.Message == "session state loaded" {
-			res.Message = "handoff failed"
+			res.Message = msg
 		}
 	}
 	return res, nil
