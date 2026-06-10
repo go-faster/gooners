@@ -18,6 +18,9 @@ type QuerySpec struct {
 	DatasourceType string `json:"datasource_type,omitempty" jsonschema:"Optional type of the datasource (e.g. prometheus, loki)"`
 	Expr           string `json:"expr" jsonschema:"The query expression"`
 	LegendFormat   string `json:"legend_format,omitempty" jsonschema:"Optional legend format"`
+	Instant        bool   `json:"instant,omitempty" jsonschema:"Use instant query (for table panels etc.)"`
+	Format         string `json:"format,omitempty" jsonschema:"Query format: time_series, table, heatmap"`
+	Hide           bool   `json:"hide,omitempty" jsonschema:"Hide the query from visualization"`
 }
 
 type AddQueryReq struct {
@@ -27,6 +30,9 @@ type AddQueryReq struct {
 	DatasourceType string `json:"datasource_type,omitempty" jsonschema:"Optional type of the datasource (e.g. prometheus, loki)"`
 	Expr           string `json:"expr" jsonschema:"The query expression"`
 	LegendFormat   string `json:"legend_format,omitempty" jsonschema:"Optional legend format"`
+	Instant        bool   `json:"instant,omitempty" jsonschema:"Use instant query (for table panels etc.)"`
+	Format         string `json:"format,omitempty" jsonschema:"Query format: time_series, table, heatmap"`
+	Hide           bool   `json:"hide,omitempty" jsonschema:"Hide the query from visualization"`
 }
 
 type AddQueryRes struct {
@@ -161,6 +167,9 @@ func addQueryHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandlerFor[A
 				DatasourceType: dsType,
 				Expr:           args.Expr,
 				LegendFormat:   args.LegendFormat,
+				Instant:        args.Instant,
+				Format:         args.Format,
+				Hide:           args.Hide,
 			})
 			return nil
 		})
@@ -179,6 +188,9 @@ type UpdateQueryReq struct {
 	LegendFormat   string `json:"legend_format,omitempty" jsonschema:"Optional new legend format"`
 	DatasourceUID  string `json:"datasource_uid,omitempty" jsonschema:"Optional new datasource UID"`
 	DatasourceType string `json:"datasource_type,omitempty" jsonschema:"Optional new datasource type"`
+	Instant        bool   `json:"instant,omitempty" jsonschema:"Use instant query (true sets instant; false clears it)"`
+	Format         string `json:"format,omitempty" jsonschema:"Query format: time_series, table, heatmap"`
+	Hide           bool   `json:"hide,omitempty" jsonschema:"Hide the query (true hides; false shows it)"`
 }
 
 func updateQueryHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateQueryReq, mcputil.SuccessResult] {
@@ -194,18 +206,24 @@ func updateQueryHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateQueryReq, m
 			if idx < 0 {
 				return fmt.Errorf("query_ref %s not found on panel %s", args.QueryRef, args.PanelID)
 			}
+			q := &p.Queries[idx]
 			if args.Expr != "" {
-				p.Queries[idx].Expr = args.Expr
+				q.Expr = args.Expr
 			}
 			if args.LegendFormat != "" {
-				p.Queries[idx].LegendFormat = args.LegendFormat
+				q.LegendFormat = args.LegendFormat
 			}
 			if args.DatasourceUID != "" {
-				p.Queries[idx].DatasourceUID = args.DatasourceUID
+				q.DatasourceUID = args.DatasourceUID
 			}
 			if args.DatasourceType != "" {
-				p.Queries[idx].DatasourceType = args.DatasourceType
+				q.DatasourceType = args.DatasourceType
 			}
+			q.Instant = args.Instant
+			if args.Format != "" {
+				q.Format = args.Format
+			}
+			q.Hide = args.Hide
 			return nil
 		})
 		if err != nil {

@@ -1459,3 +1459,111 @@ func TestMovePanel_SameContainer(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, s.Panels, 1)
 }
+
+func TestUpdateQuery_InstantHideToggle(t *testing.T) {
+	sm := newTestSession(t, "T")
+
+	panelH := addPanelHandler(sm)
+	_, pRes, err := panelH(context.Background(), nil, AddPanelReq{DashboardID: "d1", Title: "P", Type: "table"})
+	require.NoError(t, err)
+
+	addQH := addQueryHandler(sm, nil)
+	_, qRes, err := addQH(context.Background(), nil, AddQueryReq{
+		DashboardID: "d1", PanelID: pRes.PanelID, DatasourceUID: "ds1", Expr: "up",
+	})
+	require.NoError(t, err)
+
+	// Set instant + hide
+	h := updateQueryHandler(sm)
+	_, _, err = h(context.Background(), nil, UpdateQueryReq{
+		DashboardID: "d1", PanelID: pRes.PanelID, QueryRef: qRes.QueryRef,
+		Instant: true, Hide: true, Format: "table",
+	})
+	require.NoError(t, err)
+
+	s, err := sm.Get("d1")
+	require.NoError(t, err)
+	q := s.Panels[0].Queries[0]
+	assert.True(t, q.Instant)
+	assert.True(t, q.Hide)
+	assert.Equal(t, "table", q.Format)
+
+	// Clear instant + hide (false must take effect)
+	_, _, err = h(context.Background(), nil, UpdateQueryReq{
+		DashboardID: "d1", PanelID: pRes.PanelID, QueryRef: qRes.QueryRef,
+		Instant: false, Hide: false,
+	})
+	require.NoError(t, err)
+
+	s, err = sm.Get("d1")
+	require.NoError(t, err)
+	q = s.Panels[0].Queries[0]
+	assert.False(t, q.Instant)
+	assert.False(t, q.Hide)
+}
+
+func TestBuildPanel_VisualFields_Roundtrip(t *testing.T) {
+	// Build a timeseries with fill/line/stacking/axis/legend + gauge min/max + legend fields,
+	// export, parse back, and verify fields survive roundtrip.
+	tempDir := t.TempDir()
+	sm := NewSessionManager(tempDir)
+	s := &DashboardSession{
+		DashboardID: "dash-vis",
+		Title:       "Visual Roundtrip",
+	}
+	fo, lw, smin, smax, gmin, gmax := 10.0, 2.0, 0.0, 100.0, 0.0, 1.0
+	s.Panels = []*PanelEntry{
+		{
+			ID: "ts1", Title: "TS", Type: "timeseries",
+			GridPos:     dashboard.GridPos{W: 12, H: 8},
+			FillOpacity: &fo, LineWidth: &lw, Stacking: "normal",
+			AxisSoftMin: &smin, AxisSoftMax: &smax,
+			LegendDisplayMode: "table", LegendPlacement: "bottom",
+			ReduceCalcs: []string{"mean", "lastNotNull"},
+			Queries:     []QueryEntry{{RefID: "A", Expr: "rate(x[1m])"}},
+		},
+		{
+			ID: "g1", Title: "G", Type: "gauge",
+			GridPos:  dashboard.GridPos{W: 6, H: 4},
+			GaugeMin: &gmin, GaugeMax: &gmax,
+			ReduceCalcs: []string{"lastNotNull"},
+			Queries:     []QueryEntry{{RefID: "A", Expr: "up"}},
+		},
+	}
+	sm.Add(s)
+
+	outPath := filepath.Join(tempDir, "vis.json")
+	_, res, err := exportDashboardHandler(sm, nil)(context.Background(), nil, ExportDashboardReq{
+		DashboardID: "dash-vis", OutputPath: outPath,
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(res.OutputPath)
+	require.NoError(t, err)
+
+	imported, err := parseDashboardToSession(data, "imp-vis")
+	require.NoError(t, err)
+	require.Len(t, imported.Panels, 2)
+
+	p0 := imported.Panels[0]
+	assert.Equal(t, "timeseries", p0.Type)
+	require.NotNil(t, p0.FillOpacity)
+	assert.Equal(t, 10.0, *p0.FillOpacity)
+	require.NotNil(t, p0.LineWidth)
+	assert.Equal(t, 2.0, *p0.LineWidth)
+	assert.Equal(t, "normal", p0.Stacking)
+	require.NotNil(t, p0.AxisSoftMin)
+	assert.Equal(t, 0.0, *p0.AxisSoftMin)
+	require.NotNil(t, p0.AxisSoftMax)
+	assert.Equal(t, 100.0, *p0.AxisSoftMax)
+	assert.Equal(t, "table", p0.LegendDisplayMode)
+	assert.Equal(t, "bottom", p0.LegendPlacement)
+	assert.Equal(t, []string{"mean", "lastNotNull"}, p0.ReduceCalcs)
+
+	p1 := imported.Panels[1]
+	assert.Equal(t, "gauge", p1.Type)
+	require.NotNil(t, p1.GaugeMin)
+	assert.Equal(t, 0.0, *p1.GaugeMin)
+	require.NotNil(t, p1.GaugeMax)
+	assert.Equal(t, 1.0, *p1.GaugeMax)
+}

@@ -37,6 +37,9 @@ type DashboardSession struct {
 	Tags        []string       `json:"tags,omitempty"`
 	TimeFrom    string         `json:"time_from,omitempty"`
 	TimeTo      string         `json:"time_to,omitempty"`
+	Description string         `json:"description,omitempty"`
+	Refresh     string         `json:"refresh,omitempty"`
+	Tooltip     int            `json:"tooltip,omitempty"`
 	Variables   []VariableSpec `json:"variables,omitempty"`
 	Rows        []*RowEntry    `json:"rows,omitempty"`
 	Panels      []*PanelEntry  `json:"panels,omitempty"`
@@ -53,6 +56,11 @@ type VariableSpec struct {
 	Query          string `json:"query,omitempty"`
 	DatasourceUID  string `json:"datasource_uid,omitempty"`
 	DatasourceType string `json:"datasource_type,omitempty"`
+	Label          string `json:"label,omitempty"`
+	Multi          bool   `json:"multi,omitempty"`
+	IncludeAll     bool   `json:"include_all,omitempty"`
+	Regex          string `json:"regex,omitempty"`
+	Sort           int    `json:"sort,omitempty"`
 }
 
 type RowEntry struct {
@@ -77,6 +85,18 @@ type PanelEntry struct {
 	Queries     []QueryEntry          `json:"queries,omitempty"`
 	Thresholds  []dashboard.Threshold `json:"thresholds,omitempty"`
 	ReduceCalcs []string              `json:"reduce_calcs,omitempty"`
+	// timeseries visual
+	FillOpacity *float64 `json:"fill_opacity,omitempty"`
+	LineWidth   *float64 `json:"line_width,omitempty"`
+	Stacking    string   `json:"stacking,omitempty"` // "none" | "normal" | "percent"
+	AxisSoftMin *float64 `json:"axis_soft_min,omitempty"`
+	AxisSoftMax *float64 `json:"axis_soft_max,omitempty"`
+	// gauge field-level bounds
+	GaugeMin *float64 `json:"gauge_min,omitempty"`
+	GaugeMax *float64 `json:"gauge_max,omitempty"`
+	// legend (all types)
+	LegendDisplayMode string `json:"legend_display_mode,omitempty"` // "list" | "table" | "hidden"
+	LegendPlacement   string `json:"legend_placement,omitempty"`    // "bottom" | "right"
 }
 
 type QueryEntry struct {
@@ -85,6 +105,9 @@ type QueryEntry struct {
 	DatasourceType string `json:"datasource_type"`
 	Expr           string `json:"expr"`
 	LegendFormat   string `json:"legend_format,omitempty"`
+	Instant        bool   `json:"instant,omitempty"`
+	Format         string `json:"format,omitempty"` // "time_series" | "table" | "heatmap"
+	Hide           bool   `json:"hide,omitempty"`
 }
 
 func (s *DashboardSession) findPanel(panelID string) (*PanelEntry, *RowEntry, int) {
@@ -129,8 +152,13 @@ func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSessi
 		Title:       getString(dash, "title"),
 		UID:         getString(dash, "uid"),
 		Tags:        getStringSlice(dash, "tags"),
+		Description: getString(dash, "description"),
+		Refresh:     getString(dash, "refresh"),
 		CreatedAt:   time.Now(),
 		TouchedAt:   time.Now(),
+	}
+	if tt := getFloat(dash, "graphTooltip"); tt != 0 {
+		s.Tooltip = int(tt)
 	}
 	if t, ok := dash["time"].(map[string]any); ok {
 		s.TimeFrom = getString(t, "from")
@@ -141,9 +169,16 @@ func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSessi
 			for _, lv := range list {
 				if vm, ok := lv.(map[string]any); ok {
 					vs := VariableSpec{
-						Name:  getString(vm, "name"),
-						Type:  getString(vm, "type"),
-						Query: getString(vm, "query"),
+						Name:       getString(vm, "name"),
+						Type:       getString(vm, "type"),
+						Query:      getString(vm, "query"),
+						Label:      getString(vm, "label"),
+						Multi:      getBool(vm, "multi"),
+						IncludeAll: getBool(vm, "includeAll"),
+						Regex:      getString(vm, "regex"),
+					}
+					if sortv := getFloat(vm, "sort"); sortv != 0 {
+						vs.Sort = int(sortv)
 					}
 					if ds, ok := vm["datasource"].(map[string]any); ok {
 						vs.DatasourceUID = getString(ds, "uid")
@@ -281,6 +316,9 @@ func parsePanelEntry(pmap map[string]any) *PanelEntry {
 					RefID:        getString(tm, "refId"),
 					Expr:         getString(tm, "expr"),
 					LegendFormat: getString(tm, "legendFormat"),
+					Instant:      getBool(tm, "instant"),
+					Format:       getString(tm, "format"),
+					Hide:         getBool(tm, "hide"),
 				}
 				if ds, ok := tm["datasource"].(map[string]any); ok {
 					q.DatasourceUID = getString(ds, "uid")
@@ -290,6 +328,7 @@ func parsePanelEntry(pmap map[string]any) *PanelEntry {
 			}
 		}
 	}
+	// fieldConfig (merged): defaults (unit/decimals/thresholds/min/max + timeseries custom) + overrides
 	if fc, ok := pmap["fieldConfig"].(map[string]any); ok {
 		if defs, ok := fc["defaults"].(map[string]any); ok {
 			if u, ok := defs["unit"].(string); ok {
@@ -298,6 +337,12 @@ func parsePanelEntry(pmap map[string]any) *PanelEntry {
 			if defs["decimals"] != nil {
 				f := getFloat(defs, "decimals")
 				pe.Decimals = &f
+			}
+			if minv, ok := defs["min"].(float64); ok {
+				pe.GaugeMin = &minv
+			}
+			if maxv, ok := defs["max"].(float64); ok {
+				pe.GaugeMax = &maxv
 			}
 			if ths, ok := defs["thresholds"].(map[string]any); ok {
 				if steps, ok := ths["steps"].([]any); ok {
@@ -316,10 +361,61 @@ func parsePanelEntry(pmap map[string]any) *PanelEntry {
 					}
 				}
 			}
+			// timeseries custom fields are flat under custom (per SDK): fillOpacity, lineWidth, stacking{ mode }, axisSoftMin, axisSoftMax
+			if custom, ok := defs["custom"].(map[string]any); ok {
+				if fo, ok := custom["fillOpacity"].(float64); ok {
+					pe.FillOpacity = &fo
+				}
+				if lw, ok := custom["lineWidth"].(float64); ok {
+					pe.LineWidth = &lw
+				}
+				if sm, ok := custom["stacking"].(map[string]any); ok {
+					if mode, ok := sm["mode"].(string); ok && mode != "" && mode != "none" {
+						pe.Stacking = mode
+					}
+				}
+				if smin, ok := custom["axisSoftMin"].(float64); ok {
+					pe.AxisSoftMin = &smin
+				}
+				if smax, ok := custom["axisSoftMax"].(float64); ok {
+					pe.AxisSoftMax = &smax
+				}
+			}
+		}
+		if overrides, ok := fc["overrides"].([]any); ok {
+			for _, ov := range overrides {
+				if om, ok := ov.(map[string]any); ok {
+					if matcher, ok := om["matcher"].(map[string]any); ok {
+						if getString(matcher, "id") == "byName" && getString(matcher, "options") == "Value" {
+							if props, ok := om["properties"].([]any); ok {
+								for _, pr := range props {
+									if pm, ok := pr.(map[string]any); ok && getString(pm, "id") == "min" {
+										if v, ok := pm["value"].(float64); ok {
+											pe.GaugeMin = &v
+										}
+									}
+									if pm, ok := pr.(map[string]any); ok && getString(pm, "id") == "max" {
+										if v, ok := pm["value"].(float64); ok {
+											pe.GaugeMax = &v
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
+	// options (legend + reduce calcs)
 	if opts, ok := pmap["options"].(map[string]any); ok {
 		if leg, ok := opts["legend"].(map[string]any); ok {
+			if dm, ok := leg["displayMode"].(string); ok && dm != "" {
+				pe.LegendDisplayMode = dm
+			}
+			if pl, ok := leg["placement"].(string); ok && pl != "" {
+				pe.LegendPlacement = pl
+			}
 			if calcs, ok := leg["calcs"].([]any); ok {
 				for _, c := range calcs {
 					if s, ok := c.(string); ok {
@@ -335,6 +431,12 @@ func parsePanelEntry(pmap map[string]any) *PanelEntry {
 						pe.ReduceCalcs = append(pe.ReduceCalcs, s)
 					}
 				}
+			}
+		}
+		// For stat/gauge/table, legend display/placement may be under reduceOptions or top-level options (legacy)
+		if pe.LegendDisplayMode == "" {
+			if dm, ok := opts["legend"].(string); ok && dm != "" {
+				pe.LegendDisplayMode = dm
 			}
 		}
 	}
@@ -660,6 +762,11 @@ type AddParamReq struct {
 	Query          string `json:"query,omitempty" jsonschema:"The query expression or values"`
 	DatasourceUID  string `json:"datasource_uid,omitempty" jsonschema:"Optional datasource UID"`
 	DatasourceType string `json:"datasource_type,omitempty" jsonschema:"Optional datasource type"`
+	Label          string `json:"label,omitempty" jsonschema:"Optional display label for the variable"`
+	Multi          bool   `json:"multi,omitempty" jsonschema:"Allow multiple selections"`
+	IncludeAll     bool   `json:"include_all,omitempty" jsonschema:"Include an 'All' option"`
+	Regex          string `json:"regex,omitempty" jsonschema:"Optional regex filter for query variables"`
+	Sort           int    `json:"sort,omitempty" jsonschema:"Sort order: 0=disabled, 1=alpha asc, 2=alpha desc, 3=numeric asc, 4=numeric desc, 5=alpha case-insensitive asc, 6=alpha case-insensitive desc"`
 }
 
 func addParamHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandlerFor[AddParamReq, mcputil.SuccessResult] {
@@ -682,6 +789,11 @@ func addParamHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandlerFor[A
 				Query:          args.Query,
 				DatasourceUID:  args.DatasourceUID,
 				DatasourceType: dsType,
+				Label:          args.Label,
+				Multi:          args.Multi,
+				IncludeAll:     args.IncludeAll,
+				Regex:          args.Regex,
+				Sort:           args.Sort,
 			})
 			return nil
 		})
@@ -718,6 +830,8 @@ type UpdateDashboardReq struct {
 	UID         string   `json:"uid,omitempty" jsonschema:"Optional new UID"`
 	Tags        []string `json:"tags,omitempty" jsonschema:"Optional new tag list (replaces existing)"`
 	Description string   `json:"description,omitempty" jsonschema:"Optional description (stored as model field override)"`
+	Refresh     string   `json:"refresh,omitempty" jsonschema:"Optional auto-refresh interval (e.g. \"30s\", \"1m\")"`
+	Tooltip     int      `json:"tooltip,omitempty" jsonschema:"Optional cursor sync mode: 0=off, 1=crosshair, 2=shared crosshair"`
 }
 
 func updateDashboardHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateDashboardReq, mcputil.SuccessResult] {
@@ -731,6 +845,15 @@ func updateDashboardHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateDashboa
 			}
 			if args.Tags != nil {
 				s.Tags = args.Tags
+			}
+			if args.Description != "" {
+				s.Description = args.Description
+			}
+			if args.Refresh != "" {
+				s.Refresh = args.Refresh
+			}
+			if args.Tooltip != 0 {
+				s.Tooltip = args.Tooltip
 			}
 			return nil
 		})
@@ -787,7 +910,9 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 		if len(tags) > 0 {
 			dbBuilder.Tags(tags)
 		}
-		if s.Model != "" {
+		if s.Description != "" {
+			dbBuilder.Description(s.Description)
+		} else if s.Model != "" {
 			dbBuilder.Description("Created by " + s.Model)
 		}
 		if s.TimeFrom != "" || s.TimeTo != "" {
@@ -800,6 +925,12 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 				to = "now"
 			}
 			dbBuilder.Time(from, to)
+		}
+		if s.Refresh != "" {
+			dbBuilder.Refresh(s.Refresh)
+		}
+		if s.Tooltip != 0 {
+			dbBuilder.Tooltip(dashboard.DashboardCursorSync(s.Tooltip))
 		}
 
 		// Variables
@@ -820,6 +951,21 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 				if v.Query != "" {
 					vb.Query(dashboard.StringOrMap{String: new(v.Query)})
 				}
+				if v.Label != "" {
+					vb.Label(v.Label)
+				}
+				if v.Multi {
+					vb.Multi(v.Multi)
+				}
+				if v.IncludeAll {
+					vb.IncludeAll(v.IncludeAll)
+				}
+				if v.Regex != "" {
+					vb.Regex(v.Regex)
+				}
+				if v.Sort != 0 {
+					vb.Sort(dashboard.VariableSort(v.Sort))
+				}
 				vb.Refresh(dashboard.VariableRefresh(1))
 				dbBuilder.WithVariable(vb)
 
@@ -827,6 +973,15 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 				vb := dashboard.NewCustomVariableBuilder(v.Name)
 				if v.Query != "" {
 					vb.Values(dashboard.StringOrMap{String: new(v.Query)})
+				}
+				if v.Label != "" {
+					vb.Label(v.Label)
+				}
+				if v.Multi {
+					vb.Multi(v.Multi)
+				}
+				if v.IncludeAll {
+					vb.IncludeAll(v.IncludeAll)
 				}
 				dbBuilder.WithVariable(vb)
 
@@ -921,6 +1076,15 @@ func buildPanel(p *PanelEntry) cog.Builder[dashboard.Panel] {
 		if q.LegendFormat != "" {
 			dq.LegendFormat(q.LegendFormat)
 		}
+		if q.Instant {
+			dq.Instant()
+		}
+		if q.Format != "" {
+			dq.Format(prometheus.PromQueryFormat(q.Format))
+		}
+		if q.Hide {
+			dq.Hide(true)
+		}
 		targets = append(targets, dq)
 	}
 
@@ -963,8 +1127,24 @@ func buildPanel(p *PanelEntry) cog.Builder[dashboard.Panel] {
 		if p.Decimals != nil {
 			pb.Decimals(*p.Decimals)
 		}
-		if len(p.ReduceCalcs) > 0 {
-			pb.Legend(common.NewVizLegendOptionsBuilder().Calcs(p.ReduceCalcs))
+		if p.FillOpacity != nil {
+			pb.FillOpacity(*p.FillOpacity)
+		}
+		if p.LineWidth != nil {
+			pb.LineWidth(*p.LineWidth)
+		}
+		if p.Stacking != "" {
+			pb.Stacking(common.NewStackingConfigBuilder().Mode(common.StackingMode(p.Stacking)))
+		}
+		if p.AxisSoftMin != nil {
+			pb.AxisSoftMin(*p.AxisSoftMin)
+		}
+		if p.AxisSoftMax != nil {
+			pb.AxisSoftMax(*p.AxisSoftMax)
+		}
+		legend := buildLegend(p)
+		if legend != nil {
+			pb.Legend(legend)
 		}
 		return pb
 
@@ -987,8 +1167,9 @@ func buildPanel(p *PanelEntry) cog.Builder[dashboard.Panel] {
 		if p.Decimals != nil {
 			pb.Decimals(*p.Decimals)
 		}
-		if len(p.ReduceCalcs) > 0 {
-			pb.ReduceOptions(common.NewReduceDataOptionsBuilder().Calcs(p.ReduceCalcs))
+		ro := buildReduceOptions(p)
+		if ro != nil {
+			pb.ReduceOptions(ro)
 		}
 		return pb
 
@@ -1011,8 +1192,15 @@ func buildPanel(p *PanelEntry) cog.Builder[dashboard.Panel] {
 		if p.Decimals != nil {
 			pb.Decimals(*p.Decimals)
 		}
-		if len(p.ReduceCalcs) > 0 {
-			pb.ReduceOptions(common.NewReduceDataOptionsBuilder().Calcs(p.ReduceCalcs))
+		if p.GaugeMin != nil {
+			pb.Min(*p.GaugeMin)
+		}
+		if p.GaugeMax != nil {
+			pb.Max(*p.GaugeMax)
+		}
+		ro := buildReduceOptions(p)
+		if ro != nil {
+			pb.ReduceOptions(ro)
 		}
 		return pb
 
@@ -1064,4 +1252,28 @@ func buildPanel(p *PanelEntry) cog.Builder[dashboard.Panel] {
 		}
 		return pb
 	}
+}
+
+func buildReduceOptions(p *PanelEntry) *common.ReduceDataOptionsBuilder {
+	if len(p.ReduceCalcs) == 0 {
+		return nil
+	}
+	return common.NewReduceDataOptionsBuilder().Calcs(p.ReduceCalcs)
+}
+
+func buildLegend(p *PanelEntry) *common.VizLegendOptionsBuilder {
+	if p.LegendDisplayMode == "" && p.LegendPlacement == "" && len(p.ReduceCalcs) == 0 {
+		return nil
+	}
+	lb := common.NewVizLegendOptionsBuilder()
+	if p.LegendDisplayMode != "" {
+		lb.DisplayMode(common.LegendDisplayMode(p.LegendDisplayMode))
+	}
+	if p.LegendPlacement != "" {
+		lb.Placement(common.LegendPlacement(p.LegendPlacement))
+	}
+	if len(p.ReduceCalcs) > 0 {
+		lb.Calcs(p.ReduceCalcs)
+	}
+	return lb
 }

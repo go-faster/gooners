@@ -15,6 +15,7 @@ import (
 type AddPanelReq struct {
 	DashboardID string   `json:"dashboard_id" jsonschema:"The ID of the dashboard session"`
 	Title       string   `json:"title" jsonschema:"The title of the panel"`
+	Description string   `json:"description,omitempty" jsonschema:"Optional panel description"`
 	Type        string   `json:"type" jsonschema:"The panel type (e.g. timeseries, stat, gauge, table)"`
 	RowID       string   `json:"row_id,omitempty" jsonschema:"Optional row ID to group the panel under"`
 	W           *int     `json:"w,omitempty" jsonschema:"Optional width (1-24)"`
@@ -24,6 +25,18 @@ type AddPanelReq struct {
 	Unit        string   `json:"unit,omitempty" jsonschema:"Optional unit (e.g. short, percent, bytes)"`
 	Decimals    *float64 `json:"decimals,omitempty" jsonschema:"Optional decimal precision"`
 	ReduceCalcs []string `json:"reduce_calcs,omitempty" jsonschema:"Optional calculation/reducers for stat/gauge panels (e.g. mean, lastNotNull, max)"`
+	// timeseries visual
+	FillOpacity *float64 `json:"fill_opacity,omitempty" jsonschema:"Optional fill opacity (0-100) for timeseries"`
+	LineWidth   *float64 `json:"line_width,omitempty" jsonschema:"Optional line width for timeseries"`
+	Stacking    string   `json:"stacking,omitempty" jsonschema:"Stacking mode: none, normal, percent"`
+	AxisSoftMin *float64 `json:"axis_soft_min,omitempty" jsonschema:"Optional soft min for Y axis"`
+	AxisSoftMax *float64 `json:"axis_soft_max,omitempty" jsonschema:"Optional soft max for Y axis"`
+	// gauge field-level bounds
+	GaugeMin *float64 `json:"gauge_min,omitempty" jsonschema:"Optional min for gauge"`
+	GaugeMax *float64 `json:"gauge_max,omitempty" jsonschema:"Optional max for gauge"`
+	// legend (visual effect only on timeseries; stored for stat/gauge/table but ignored at export time)
+	LegendDisplayMode string `json:"legend_display_mode,omitempty" jsonschema:"Legend display: list, table, hidden (visual effect only on timeseries)"`
+	LegendPlacement   string `json:"legend_placement,omitempty" jsonschema:"Legend placement: bottom, right (visual effect only on timeseries)"`
 }
 
 type AddPanelRes struct {
@@ -33,6 +46,7 @@ type AddPanelRes struct {
 
 type PanelSpec struct {
 	Title       string          `json:"title" jsonschema:"The title of the panel"`
+	Description string          `json:"description,omitempty" jsonschema:"Optional panel description"`
 	Type        string          `json:"type" jsonschema:"The panel type (e.g. timeseries, stat, gauge, table)"`
 	W           *int            `json:"w,omitempty" jsonschema:"Optional width (1-24)"`
 	H           *int            `json:"h,omitempty" jsonschema:"Optional height"`
@@ -43,6 +57,18 @@ type PanelSpec struct {
 	ReduceCalcs []string        `json:"reduce_calcs,omitempty" jsonschema:"Optional calculation/reducers for stat/gauge panels (e.g. mean, lastNotNull, max)"`
 	Queries     []QuerySpec     `json:"queries,omitempty" jsonschema:"Optional queries to attach to the panel"`
 	Thresholds  []ThresholdSpec `json:"thresholds,omitempty" jsonschema:"Optional thresholds to add to stat/gauge panels"`
+	// timeseries visual
+	FillOpacity *float64 `json:"fill_opacity,omitempty" jsonschema:"Optional fill opacity (0-100) for timeseries"`
+	LineWidth   *float64 `json:"line_width,omitempty" jsonschema:"Optional line width for timeseries"`
+	Stacking    string   `json:"stacking,omitempty" jsonschema:"Stacking mode: none, normal, percent"`
+	AxisSoftMin *float64 `json:"axis_soft_min,omitempty" jsonschema:"Optional soft min for Y axis"`
+	AxisSoftMax *float64 `json:"axis_soft_max,omitempty" jsonschema:"Optional soft max for Y axis"`
+	// gauge field-level bounds
+	GaugeMin *float64 `json:"gauge_min,omitempty" jsonschema:"Optional min for gauge"`
+	GaugeMax *float64 `json:"gauge_max,omitempty" jsonschema:"Optional max for gauge"`
+	// legend (visual effect only on timeseries; stored for stat/gauge/table but ignored at export time)
+	LegendDisplayMode string `json:"legend_display_mode,omitempty" jsonschema:"Legend display: list, table, hidden (visual effect only on timeseries)"`
+	LegendPlacement   string `json:"legend_placement,omitempty" jsonschema:"Legend placement: bottom, right (visual effect only on timeseries)"`
 }
 
 type ThresholdSpec struct {
@@ -212,13 +238,23 @@ func addPanelHandler(sm *SessionManager) mcp.ToolHandlerFor[AddPanelReq, AddPane
 			gridPos = placePanel(s, r, args.Type, args.W, args.H, args.X, args.Y)
 
 			panel := &PanelEntry{
-				ID:          panelID,
-				Title:       args.Title,
-				Type:        args.Type,
-				GridPos:     gridPos,
-				Unit:        args.Unit,
-				Decimals:    args.Decimals,
-				ReduceCalcs: args.ReduceCalcs,
+				ID:                panelID,
+				Title:             args.Title,
+				Description:       args.Description,
+				Type:              args.Type,
+				GridPos:           gridPos,
+				Unit:              args.Unit,
+				Decimals:          args.Decimals,
+				ReduceCalcs:       args.ReduceCalcs,
+				FillOpacity:       args.FillOpacity,
+				LineWidth:         args.LineWidth,
+				Stacking:          args.Stacking,
+				AxisSoftMin:       args.AxisSoftMin,
+				AxisSoftMax:       args.AxisSoftMax,
+				GaugeMin:          args.GaugeMin,
+				GaugeMax:          args.GaugeMax,
+				LegendDisplayMode: args.LegendDisplayMode,
+				LegendPlacement:   args.LegendPlacement,
 			}
 
 			if args.Type == "stat" || args.Type == "gauge" {
@@ -280,13 +316,23 @@ func addPanelsBatchHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandle
 
 				panelID := uuid.New().String()
 				panel := &PanelEntry{
-					ID:          panelID,
-					Title:       ps.Title,
-					Type:        ps.Type,
-					GridPos:     gridPos,
-					Unit:        ps.Unit,
-					Decimals:    ps.Decimals,
-					ReduceCalcs: ps.ReduceCalcs,
+					ID:                panelID,
+					Title:             ps.Title,
+					Description:       ps.Description,
+					Type:              ps.Type,
+					GridPos:           gridPos,
+					Unit:              ps.Unit,
+					Decimals:          ps.Decimals,
+					ReduceCalcs:       ps.ReduceCalcs,
+					FillOpacity:       ps.FillOpacity,
+					LineWidth:         ps.LineWidth,
+					Stacking:          ps.Stacking,
+					AxisSoftMin:       ps.AxisSoftMin,
+					AxisSoftMax:       ps.AxisSoftMax,
+					GaugeMin:          ps.GaugeMin,
+					GaugeMax:          ps.GaugeMax,
+					LegendDisplayMode: ps.LegendDisplayMode,
+					LegendPlacement:   ps.LegendPlacement,
 				}
 
 				for idx, q := range ps.Queries {
@@ -305,6 +351,9 @@ func addPanelsBatchHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandle
 						DatasourceType: dsType,
 						Expr:           q.Expr,
 						LegendFormat:   q.LegendFormat,
+						Instant:        q.Instant,
+						Format:         q.Format,
+						Hide:           q.Hide,
 					})
 				}
 
@@ -347,6 +396,18 @@ type UpdatePanelReq struct {
 	Unit        string   `json:"unit,omitempty" jsonschema:"Optional unit (e.g. short, percent, bytes)"`
 	Decimals    *float64 `json:"decimals,omitempty" jsonschema:"Optional decimal precision"`
 	ReduceCalcs []string `json:"reduce_calcs,omitempty" jsonschema:"Optional calculation/reducers for stat/gauge panels (e.g. mean, lastNotNull, max)"`
+	// timeseries visual
+	FillOpacity *float64 `json:"fill_opacity,omitempty" jsonschema:"Optional fill opacity (0-100) for timeseries"`
+	LineWidth   *float64 `json:"line_width,omitempty" jsonschema:"Optional line width for timeseries"`
+	Stacking    string   `json:"stacking,omitempty" jsonschema:"Stacking mode: none, normal, percent"`
+	AxisSoftMin *float64 `json:"axis_soft_min,omitempty" jsonschema:"Optional soft min for Y axis"`
+	AxisSoftMax *float64 `json:"axis_soft_max,omitempty" jsonschema:"Optional soft max for Y axis"`
+	// gauge field-level bounds
+	GaugeMin *float64 `json:"gauge_min,omitempty" jsonschema:"Optional min for gauge"`
+	GaugeMax *float64 `json:"gauge_max,omitempty" jsonschema:"Optional max for gauge"`
+	// legend (visual effect only on timeseries; stored for stat/gauge/table but ignored at export time)
+	LegendDisplayMode string `json:"legend_display_mode,omitempty" jsonschema:"Legend display: list, table, hidden (visual effect only on timeseries)"`
+	LegendPlacement   string `json:"legend_placement,omitempty" jsonschema:"Legend placement: bottom, right (visual effect only on timeseries)"`
 }
 
 func updatePanelHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdatePanelReq, mcputil.SuccessResult] {
@@ -375,6 +436,33 @@ func updatePanelHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdatePanelReq, m
 			}
 			if args.ReduceCalcs != nil {
 				p.ReduceCalcs = args.ReduceCalcs
+			}
+			if args.FillOpacity != nil {
+				p.FillOpacity = args.FillOpacity
+			}
+			if args.LineWidth != nil {
+				p.LineWidth = args.LineWidth
+			}
+			if args.Stacking != "" {
+				p.Stacking = args.Stacking
+			}
+			if args.AxisSoftMin != nil {
+				p.AxisSoftMin = args.AxisSoftMin
+			}
+			if args.AxisSoftMax != nil {
+				p.AxisSoftMax = args.AxisSoftMax
+			}
+			if args.GaugeMin != nil {
+				p.GaugeMin = args.GaugeMin
+			}
+			if args.GaugeMax != nil {
+				p.GaugeMax = args.GaugeMax
+			}
+			if args.LegendDisplayMode != "" {
+				p.LegendDisplayMode = args.LegendDisplayMode
+			}
+			if args.LegendPlacement != "" {
+				p.LegendPlacement = args.LegendPlacement
 			}
 			return nil
 		})
