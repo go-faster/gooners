@@ -110,13 +110,16 @@ type UploadResult struct {
 
 // UploadStatusResult for upload status.
 type UploadStatusResult struct {
-	OK            bool    `json:"ok"`
-	UploadID      string  `json:"upload_id"`
-	BytesUploaded int64   `json:"bytes_uploaded"`
-	TotalBytes    int64   `json:"total_bytes"`
-	Percent       float64 `json:"percent"`
-	Done          bool    `json:"done"`
-	Error         string  `json:"error,omitempty"`
+	OK              bool    `json:"ok"`
+	UploadID        string  `json:"upload_id"`
+	BytesUploaded   int64   `json:"bytes_uploaded"`
+	TotalBytes      int64   `json:"total_bytes"`
+	Percent         float64 `json:"percent"`
+	InstantSpeedBPS float64 `json:"instant_speed_bps"`
+	AverageSpeedBPS float64 `json:"average_speed_bps"`
+	ETASeconds      float64 `json:"eta_seconds"`
+	Done            bool    `json:"done"`
+	Error           string  `json:"error,omitempty"`
 }
 
 // DownloadResult for download start.
@@ -132,6 +135,9 @@ type DownloadStatusResult struct {
 	BytesDownloaded int64   `json:"bytes_downloaded"`
 	TotalBytes      int64   `json:"total_bytes"`
 	Percent         float64 `json:"percent"`
+	InstantSpeedBPS float64 `json:"instant_speed_bps"`
+	AverageSpeedBPS float64 `json:"average_speed_bps"`
+	ETASeconds      float64 `json:"eta_seconds"`
 	Done            bool    `json:"done"`
 	Error           string  `json:"error,omitempty"`
 }

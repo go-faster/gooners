@@ -49,6 +49,9 @@ type UploadJob struct {
 	RemotePath    string
 	TotalBytes    int64
 	BytesUploaded int64
+	StartedAt     time.Time
+	LastStatusAt  time.Time
+	LastStatus    int64
 	Done          bool
 	Err           error
 	mu            sync.Mutex
@@ -61,6 +64,9 @@ type DownloadJob struct {
 	RemotePath      string
 	TotalBytes      int64
 	BytesDownloaded int64
+	StartedAt       time.Time
+	LastStatusAt    time.Time
+	LastStatus      int64
 	Done            bool
 	Err             error
 	mu              sync.Mutex

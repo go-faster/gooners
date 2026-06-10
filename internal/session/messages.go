@@ -95,12 +95,15 @@ type UploadStatusRequest struct {
 func (UploadStatusRequest) isRequest() {}
 
 type UploadStatusResponse struct {
-	UploadID      string
-	BytesUploaded int64
-	TotalBytes    int64
-	Percent       float64
-	Done          bool
-	Err           error
+	UploadID        string
+	BytesUploaded   int64
+	TotalBytes      int64
+	Percent         float64
+	InstantSpeedBPS float64
+	AverageSpeedBPS float64
+	ETASeconds      float64
+	Done            bool
+	Err             error
 }
 
 type DownloadRequest struct {
@@ -130,6 +133,9 @@ type DownloadStatusResponse struct {
 	BytesDownloaded int64
 	TotalBytes      int64
 	Percent         float64
+	InstantSpeedBPS float64
+	AverageSpeedBPS float64
+	ETASeconds      float64
 	Done            bool
 	Err             error
 }

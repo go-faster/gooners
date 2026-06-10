@@ -484,12 +484,15 @@ func uploadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[uploadStatusParam
 			return nil, mcputil.UploadStatusResult{}, err
 		}
 		sr := mcputil.UploadStatusResult{
-			OK:            true,
-			UploadID:      status.UploadID,
-			BytesUploaded: status.BytesUploaded,
-			TotalBytes:    status.TotalBytes,
-			Percent:       status.Percent,
-			Done:          status.Done,
+			OK:              true,
+			UploadID:        status.UploadID,
+			BytesUploaded:   status.BytesUploaded,
+			TotalBytes:      status.TotalBytes,
+			Percent:         status.Percent,
+			InstantSpeedBPS: status.InstantSpeedBPS,
+			AverageSpeedBPS: status.AverageSpeedBPS,
+			ETASeconds:      status.ETASeconds,
+			Done:            status.Done,
 		}
 		if status.Err != nil {
 			sr.Error = status.Err.Error()
@@ -559,6 +562,9 @@ func downloadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[downloadStatusP
 			BytesDownloaded: status.BytesDownloaded,
 			TotalBytes:      status.TotalBytes,
 			Percent:         status.Percent,
+			InstantSpeedBPS: status.InstantSpeedBPS,
+			AverageSpeedBPS: status.AverageSpeedBPS,
+			ETASeconds:      status.ETASeconds,
 			Done:            status.Done,
 		}
 		if status.Err != nil {

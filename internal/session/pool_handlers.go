@@ -11,6 +11,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+const minTransferSampleInterval = 500 * time.Millisecond
+
 type dialResult struct {
 	req       OpenRequest
 	client    *ssh.Client
@@ -182,6 +184,7 @@ func (p *Pool) handleUpload(sessions map[string]*Session, r UploadRequest) {
 		ID:         uploadID,
 		LocalPath:  r.LocalPath,
 		RemotePath: r.RemotePath,
+		StartedAt:  time.Now(),
 		cancel:     uCancel,
 	}
 	s.uploads[uploadID] = job
@@ -200,6 +203,7 @@ func (p *Pool) handleUploadStatus(sessions map[string]*Session, r UploadStatusRe
 		r.resp <- UploadStatusResponse{Err: fmt.Errorf("upload not found: %s", r.UploadID)}
 		return
 	}
+	now := time.Now()
 	job.mu.Lock()
 	percent := float64(0)
 	if job.TotalBytes > 0 {
@@ -207,16 +211,57 @@ func (p *Pool) handleUploadStatus(sessions map[string]*Session, r UploadStatusRe
 	} else if job.Done {
 		percent = 100
 	}
+	instantSpeedBPS, averageSpeedBPS, etaSeconds := transferStats(
+		now,
+		job.StartedAt,
+		job.LastStatusAt,
+		job.LastStatus,
+		job.BytesUploaded,
+		job.TotalBytes,
+		job.Done,
+	)
+	if job.LastStatusAt.IsZero() || now.Sub(job.LastStatusAt) >= minTransferSampleInterval {
+		job.LastStatusAt = now
+		job.LastStatus = job.BytesUploaded
+	}
 	resp := UploadStatusResponse{
-		UploadID:      job.ID,
-		BytesUploaded: job.BytesUploaded,
-		TotalBytes:    job.TotalBytes,
-		Percent:       percent,
-		Done:          job.Done,
-		Err:           job.Err,
+		UploadID:        job.ID,
+		BytesUploaded:   job.BytesUploaded,
+		TotalBytes:      job.TotalBytes,
+		Percent:         percent,
+		InstantSpeedBPS: instantSpeedBPS,
+		AverageSpeedBPS: averageSpeedBPS,
+		ETASeconds:      etaSeconds,
+		Done:            job.Done,
+		Err:             job.Err,
 	}
 	job.mu.Unlock()
 	r.resp <- resp
+}
+
+func transferStats(
+	now time.Time,
+	startedAt time.Time,
+	lastStatusAt time.Time,
+	lastStatus int64,
+	current int64,
+	total int64,
+	done bool,
+) (instantSpeedBPS, averageSpeedBPS, etaSeconds float64) {
+	if elapsed := now.Sub(startedAt).Seconds(); !done && !startedAt.IsZero() && elapsed > 0 {
+		averageSpeedBPS = float64(current) / elapsed
+	}
+
+	if elapsed := now.Sub(lastStatusAt).Seconds(); !done && !lastStatusAt.IsZero() && elapsed > 0 {
+		instantSpeedBPS = float64(current-lastStatus) / elapsed
+	}
+
+	remaining := total - current
+	if !done && remaining > 0 && averageSpeedBPS > 0 {
+		etaSeconds = float64(remaining) / averageSpeedBPS
+	}
+
+	return instantSpeedBPS, averageSpeedBPS, etaSeconds
 }
 
 func (p *Pool) handleDownload(sessions map[string]*Session, r DownloadRequest) {
@@ -231,6 +276,7 @@ func (p *Pool) handleDownload(sessions map[string]*Session, r DownloadRequest) {
 		ID:         downloadID,
 		LocalPath:  r.LocalPath,
 		RemotePath: r.RemotePath,
+		StartedAt:  time.Now(),
 		cancel:     dCancel,
 	}
 	s.downloads[downloadID] = job
@@ -249,6 +295,7 @@ func (p *Pool) handleDownloadStatus(sessions map[string]*Session, r DownloadStat
 		r.resp <- DownloadStatusResponse{Err: fmt.Errorf("download not found: %s", r.DownloadID)}
 		return
 	}
+	now := time.Now()
 	job.mu.Lock()
 	percent := float64(0)
 	if job.TotalBytes > 0 {
@@ -256,11 +303,27 @@ func (p *Pool) handleDownloadStatus(sessions map[string]*Session, r DownloadStat
 	} else if job.Done {
 		percent = 100
 	}
+	instantSpeedBPS, averageSpeedBPS, etaSeconds := transferStats(
+		now,
+		job.StartedAt,
+		job.LastStatusAt,
+		job.LastStatus,
+		job.BytesDownloaded,
+		job.TotalBytes,
+		job.Done,
+	)
+	if job.LastStatusAt.IsZero() || now.Sub(job.LastStatusAt) >= minTransferSampleInterval {
+		job.LastStatusAt = now
+		job.LastStatus = job.BytesDownloaded
+	}
 	resp := DownloadStatusResponse{
 		DownloadID:      job.ID,
 		BytesDownloaded: job.BytesDownloaded,
 		TotalBytes:      job.TotalBytes,
 		Percent:         percent,
+		InstantSpeedBPS: instantSpeedBPS,
+		AverageSpeedBPS: averageSpeedBPS,
+		ETASeconds:      etaSeconds,
 		Done:            job.Done,
 		Err:             job.Err,
 	}
