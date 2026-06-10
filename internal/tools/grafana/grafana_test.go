@@ -1443,6 +1443,37 @@ func TestMoveRow_NotFound(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRecomputeRowPositions_RowsBeforePanels(t *testing.T) {
+	// Simulate a model that creates all rows first, then adds panels.
+	// Row headers should not overlap the panels of earlier rows.
+	rows := []*RowEntry{
+		{ID: "r1", Title: "Overview", Y: 0, Panels: []*PanelEntry{
+			{GridPos: dashboard.GridPos{X: 0, Y: 1, W: 24, H: 8}},
+		}},
+		// Row 2 was created when s.NextY=1, but row 1's panels push content to Y=9.
+		{ID: "r2", Title: "Details", Y: 1, Panels: []*PanelEntry{
+			{GridPos: dashboard.GridPos{X: 0, Y: 2, W: 12, H: 8}},
+			{GridPos: dashboard.GridPos{X: 12, Y: 2, W: 12, H: 8}},
+		}},
+		// Row 3 created at Y=2, should follow row 2's panels.
+		{ID: "r3", Title: "Resources", Y: 2, Panels: nil},
+	}
+
+	got := recomputeRowPositions(rows)
+
+	// Row 1: Y=0 (correct, no change)
+	assert.Equal(t, uint32(0), got[0].Y)
+	assert.Equal(t, uint32(1), got[0].Panels[0].GridPos.Y) // panel unchanged (delta=0)
+
+	// Row 2: should start at Y=9 (after row1 header + 8-tall panel)
+	assert.Equal(t, uint32(9), got[1].Y)
+	assert.Equal(t, uint32(10), got[1].Panels[0].GridPos.Y) // was 2, delta=+8
+	assert.Equal(t, uint32(10), got[1].Panels[1].GridPos.Y)
+
+	// Row 3: should start at Y=18 (after row2 header + 8-tall panels)
+	assert.Equal(t, uint32(18), got[2].Y)
+}
+
 func TestMovePanel_SameContainer(t *testing.T) {
 	sm := newTestSession(t, "T")
 

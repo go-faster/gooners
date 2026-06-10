@@ -994,9 +994,13 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 			}
 		}
 
-		// Add rows
-		for _, r := range s.Rows {
-			rowBuilder := dashboard.NewRowBuilder(r.Title).Collapsed(r.Collapsed)
+		// Add rows. Recompute Y positions before building so that rows created
+		// before their panels are placed correctly (row headers would otherwise
+		// stack at consecutive Y values instead of following panel content).
+		for _, r := range recomputeRowPositions(s.Rows) {
+			rowBuilder := dashboard.NewRowBuilder(r.Title).
+				Collapsed(r.Collapsed).
+				GridPos(dashboard.GridPos{Y: r.Y, W: 24, H: 1})
 			if r.Collapsed {
 				for _, p := range r.Panels {
 					pBuilder := buildPanel(p)
@@ -1259,6 +1263,46 @@ func buildReduceOptions(p *PanelEntry) *common.ReduceDataOptionsBuilder {
 		return nil
 	}
 	return common.NewReduceDataOptionsBuilder().Calcs(p.ReduceCalcs)
+}
+
+// recomputeRowPositions returns adjusted row copies with Y positions derived
+// from actual panel content rather than the snapshot taken at row-creation time.
+// Models commonly create all rows first and add panels later, which leaves row
+// headers stacked at Y=0,1,2 regardless of how tall prior rows' panels are.
+func recomputeRowPositions(rows []*RowEntry) []*RowEntry {
+	result := make([]*RowEntry, len(rows))
+	currentY := uint32(0)
+	for i, r := range rows {
+		delta := int(currentY) - int(r.Y)
+		rowCopy := *r
+		rowCopy.Y = currentY
+		currentY++ // row header is 1 unit tall
+
+		if r.Collapsed {
+			// Collapsed rows hide their panels; they don't consume vertical space.
+			rowCopy.Panels = r.Panels
+			result[i] = &rowCopy
+			continue
+		}
+
+		if delta != 0 && len(r.Panels) > 0 {
+			panelsCopy := make([]*PanelEntry, len(r.Panels))
+			for j, p := range r.Panels {
+				pc := *p
+				pc.GridPos.Y = uint32(int(p.GridPos.Y) + delta)
+				panelsCopy[j] = &pc
+			}
+			rowCopy.Panels = panelsCopy
+		}
+
+		for _, p := range rowCopy.Panels {
+			if bottom := p.GridPos.Y + p.GridPos.H; bottom > currentY {
+				currentY = bottom
+			}
+		}
+		result[i] = &rowCopy
+	}
+	return result
 }
 
 func buildLegend(p *PanelEntry) *common.VizLegendOptionsBuilder {
