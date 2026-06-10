@@ -55,7 +55,7 @@ Use these conventions to produce visually consistent, production-grade dashboard
 
 **Timeseries panels:**
 - Default height: h=8. Prefer w=12 (two-up) or w=24 (full-width) for readability.
-- Set `axis_soft_min: 0` for rate and counter panels (prevents negative Y axis on non-negative data).
+- Use `axis_soft_min: 0` only when the data can legitimately approach zero (error rates, idle request rates, stacked breakdowns). Do **not** use it for metrics with an elevated natural floor — heap size, goroutine counts, allocation rate on a loaded server, etc. — where it would collapse all visible variation into the top slice of the chart and waste most of the Y axis. When in doubt, omit it and let Grafana auto-scale.
 - Trend lines: `fill_opacity: 10`, `line_width: 1` or `2`.
 - Resource breakdowns (CPU/memory/network by pod, etc.): `fill_opacity: 80`, `stacking: "normal"` so areas add up visually.
 - Always configure a legend for timeseries: `legend_display_mode: "table"`, `legend_placement: "bottom"`, plus `reduce_calcs: ["mean", "lastNotNull", "max"]` (or a relevant subset). This gives operators instant min/mean/max context without tooltips.
