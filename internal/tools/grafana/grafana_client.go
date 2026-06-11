@@ -163,48 +163,54 @@ func (c *GrafanaClient) LookupMetricMetadata(ctx context.Context, dsUID, metric 
 	return c.getRaw(ctx, path)
 }
 
-func (c *GrafanaClient) VerifyPrometheusQuery(ctx context.Context, dsUID, query, queryType string) (string, error) {
+func (c *GrafanaClient) VerifyPrometheusQuery(ctx context.Context, dsUID, query, queryType string) (*QuerySummary, error) {
 	v := url.Values{}
 	v.Set("query", query)
+	now := time.Now()
 	var path string
 	if queryType == "instant" {
-		v.Set("time", fmt.Sprintf("%d", time.Now().Unix()))
+		v.Set("time", fmt.Sprintf("%d", now.Unix()))
 		path = fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/query?%s", dsUID, v.Encode())
 	} else {
-		now := time.Now()
 		start := now.Add(-1 * time.Hour).Unix()
-		end := now.Unix()
 		v.Set("start", fmt.Sprintf("%d", start))
-		v.Set("end", fmt.Sprintf("%d", end))
+		v.Set("end", fmt.Sprintf("%d", now.Unix()))
 		v.Set("step", "15s")
 		path = fmt.Sprintf("/api/datasources/proxy/uid/%s/api/v1/query_range?%s", dsUID, v.Encode())
 	}
-	return c.getRaw(ctx, path)
+	body, err := c.getRaw(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return summarizePrometheusResponse([]byte(body), now)
 }
 
-func (c *GrafanaClient) VerifyLokiQuery(ctx context.Context, dsUID, query, queryType string) (string, error) {
+func (c *GrafanaClient) VerifyLokiQuery(ctx context.Context, dsUID, query, queryType string) (*QuerySummary, error) {
 	v := url.Values{}
 	v.Set("query", query)
+	now := time.Now()
 	var path string
 	if queryType == "instant" {
-		v.Set("time", fmt.Sprintf("%d", time.Now().UnixNano()))
+		v.Set("time", fmt.Sprintf("%d", now.UnixNano()))
 		path = fmt.Sprintf("/api/datasources/proxy/uid/%s/loki/api/v1/query?%s", dsUID, v.Encode())
 	} else {
-		now := time.Now()
 		start := now.Add(-1 * time.Hour).UnixNano()
-		end := now.UnixNano()
 		v.Set("start", fmt.Sprintf("%d", start))
-		v.Set("end", fmt.Sprintf("%d", end))
+		v.Set("end", fmt.Sprintf("%d", now.UnixNano()))
 		v.Set("step", "15s")
 		path = fmt.Sprintf("/api/datasources/proxy/uid/%s/loki/api/v1/query_range?%s", dsUID, v.Encode())
 	}
-	return c.getRaw(ctx, path)
+	body, err := c.getRaw(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	return summarizeLokiResponse([]byte(body), now)
 }
 
-func (c *GrafanaClient) VerifyQuery(ctx context.Context, dsUID, query, queryType string) (string, error) {
+func (c *GrafanaClient) VerifyQuery(ctx context.Context, dsUID, query, queryType string) (*QuerySummary, error) {
 	info, err := c.GetDatasourceByUID(ctx, dsUID)
 	if err != nil {
-		return "", fmt.Errorf("resolving datasource by UID: %w", err)
+		return nil, fmt.Errorf("resolving datasource by UID: %w", err)
 	}
 	switch info.Type {
 	case "prometheus":
@@ -212,7 +218,7 @@ func (c *GrafanaClient) VerifyQuery(ctx context.Context, dsUID, query, queryType
 	case "loki":
 		return c.VerifyLokiQuery(ctx, dsUID, query, queryType)
 	default:
-		return "", fmt.Errorf("unsupported datasource type: %s", info.Type)
+		return nil, fmt.Errorf("unsupported datasource type: %s", info.Type)
 	}
 }
 

@@ -38,20 +38,20 @@ type VerifyQueryReq struct {
 	QueryType     string `json:"query_type,omitempty" jsonschema:"Query type: instant or range (default range)"`
 }
 
-func verifyQueryHandler(gc *GrafanaClient) mcp.ToolHandlerFor[VerifyQueryReq, mcputil.CommandResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args VerifyQueryReq) (*mcp.CallToolResult, mcputil.CommandResult, error) {
+func verifyQueryHandler(gc *GrafanaClient) mcp.ToolHandlerFor[VerifyQueryReq, *QuerySummary] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args VerifyQueryReq) (*mcp.CallToolResult, *QuerySummary, error) {
 		if gc == nil {
-			return nil, mcputil.CommandResult{}, fmt.Errorf("grafana client not configured")
+			return nil, nil, fmt.Errorf("grafana client not configured")
 		}
 		qType := args.QueryType
 		if qType == "" {
 			qType = "range"
 		}
-		res, err := gc.VerifyQuery(ctx, args.DatasourceUID, args.Query, qType)
+		summary, err := gc.VerifyQuery(ctx, args.DatasourceUID, args.Query, qType)
 		if err != nil {
-			return nil, mcputil.CommandResult{}, err
+			return nil, nil, err
 		}
-		return nil, mcputil.CommandResult{Text: res}, nil
+		return nil, summary, nil
 	}
 }
 

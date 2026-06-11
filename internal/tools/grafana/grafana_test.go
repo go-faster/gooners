@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-faster/sdk/gold"
 	"github.com/stretchr/testify/assert"
@@ -753,22 +754,22 @@ func TestGrafanaClient(t *testing.T) {
 			},
 		},
 		"/api/datasources/proxy/uid/prom/api/v1/query": {
-			Response: `{"status":"success","data":{"result":[]}}`,
+			Response: `{"status":"success","data":{"resultType":"vector","result":[]}}`,
 			Check: func(r *http.Request) {
 				assert.Equal(t, "up", r.URL.Query().Get("query"))
 			},
 		},
 		"/api/datasources/proxy/uid/prom/api/v1/query_range": {
-			Response: `{"status":"success","data":{"result":[]}}`,
+			Response: `{"status":"success","data":{"resultType":"matrix","result":[]}}`,
 			Check: func(r *http.Request) {
 				assert.Equal(t, "up", r.URL.Query().Get("query"))
 			},
 		},
 		"/api/datasources/proxy/uid/loki/loki/api/v1/query": {
-			Response: `{"status":"success","data":{"result":[]}}`,
+			Response: `{"status":"success","data":{"resultType":"streams","result":[]}}`,
 		},
 		"/api/datasources/proxy/uid/loki/loki/api/v1/query_range": {
-			Response: `{"status":"success","data":{"result":[]}}`,
+			Response: `{"status":"success","data":{"resultType":"streams","result":[]}}`,
 		},
 		"/api/dashboards/db": {
 			Response: `{"id":1,"uid":"saved","url":"/d/saved","status":"success","version":2}`,
@@ -816,18 +817,25 @@ func TestGrafanaClient(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, metadata, `"status":"success"`)
 
-	raw, err := c.VerifyPrometheusQuery(ctx, "prom", "up", "instant")
+	promInstant, err := c.VerifyPrometheusQuery(ctx, "prom", "up", "instant")
 	require.NoError(t, err)
-	assert.Contains(t, raw, `"success"`)
-	raw, err = c.VerifyPrometheusQuery(ctx, "prom", "up", "range")
+	assert.Equal(t, "vector", promInstant.ResultType)
+	assert.Equal(t, "query returned no data", promInstant.Warning)
+
+	promRange, err := c.VerifyPrometheusQuery(ctx, "prom", "up", "range")
 	require.NoError(t, err)
-	assert.Contains(t, raw, `"success"`)
-	raw, err = c.VerifyLokiQuery(ctx, "loki", `{job="api"}`, "instant")
+	assert.Equal(t, "matrix", promRange.ResultType)
+	assert.Equal(t, "query returned no data", promRange.Warning)
+
+	lokiInstant, err := c.VerifyLokiQuery(ctx, "loki", `{job="api"}`, "instant")
 	require.NoError(t, err)
-	assert.Contains(t, raw, `"success"`)
-	raw, err = c.VerifyLokiQuery(ctx, "loki", `{job="api"}`, "range")
+	assert.Equal(t, "streams", lokiInstant.ResultType)
+	assert.Equal(t, "query returned no data", lokiInstant.Warning)
+
+	lokiRange, err := c.VerifyLokiQuery(ctx, "loki", `{job="api"}`, "range")
 	require.NoError(t, err)
-	assert.Contains(t, raw, `"success"`)
+	assert.Equal(t, "streams", lokiRange.ResultType)
+	assert.Equal(t, "query returned no data", lokiRange.Warning)
 
 	saveRes, err := c.SaveDashboard(ctx, []byte(`{"title":"Saved"}`), "folder")
 	require.NoError(t, err)
@@ -856,32 +864,43 @@ func TestGrafanaClient(t *testing.T) {
 
 func TestGrafanaClientVerifyQuery(t *testing.T) {
 	ctx := context.Background()
+
+	const promMatrix = `{"status":"success","data":{"resultType":"matrix","result":[` +
+		`{"metric":{"job":"api","instance":"h1:80"},"values":[[1000000,"1.5"],[1000015,"2.0"],[1000030,"1.8"]]},` +
+		`{"metric":{"job":"api","instance":"h2:80"},"values":[[1000000,"0.5"],[1000015,"0.7"],[1000030,"0.6"]]}]}}`
+	const lokiStreams = `{"status":"success","data":{"resultType":"streams","result":[` +
+		`{"stream":{"app":"grafana","level":"info"},"values":[["1000000000000","log line 1"],["1000015000000","log line 2"]]}]}}`
+
 	server := newGrafanaTestServer(t, map[string]grafanaTestRoute{
-		"/api/datasources/uid/prom": {
-			Response: `{"uid":"prom","type":"prometheus","name":"Prometheus"}`,
-		},
-		"/api/datasources/uid/loki": {
-			Response: `{"uid":"loki","type":"loki","name":"Loki"}`,
-		},
-		"/api/datasources/uid/unknown": {
-			Response: `{"uid":"unknown","type":"tempo","name":"Tempo"}`,
-		},
-		"/api/datasources/proxy/uid/prom/api/v1/query_range": {
-			Response: `{"status":"success"}`,
-		},
-		"/api/datasources/proxy/uid/loki/loki/api/v1/query_range": {
-			Response: `{"status":"success"}`,
-		},
+		"/api/datasources/uid/prom":                               {Response: `{"uid":"prom","type":"prometheus","name":"Prometheus"}`},
+		"/api/datasources/uid/loki":                               {Response: `{"uid":"loki","type":"loki","name":"Loki"}`},
+		"/api/datasources/uid/unknown":                            {Response: `{"uid":"unknown","type":"tempo","name":"Tempo"}`},
+		"/api/datasources/proxy/uid/prom/api/v1/query_range":      {Response: promMatrix},
+		"/api/datasources/proxy/uid/loki/loki/api/v1/query_range": {Response: lokiStreams},
 	})
 	t.Cleanup(server.Close)
 	c := NewGrafanaClient(server.URL, "", "", "")
 
-	res, err := c.VerifyQuery(ctx, "prom", "up", "range")
+	prom, err := c.VerifyQuery(ctx, "prom", "up", "range")
 	require.NoError(t, err)
-	assert.Contains(t, res, "success")
-	res, err = c.VerifyQuery(ctx, "loki", `{job="api"}`, "range")
+	assert.Equal(t, "matrix", prom.ResultType)
+	assert.Equal(t, 2, prom.SeriesCount)
+	assert.Equal(t, 6, prom.PointsTotal)
+	// Common label: job=api. Dimension: instance (2 values).
+	assert.Equal(t, map[string]string{"job": "api"}, prom.CommonLabels)
+	assert.Equal(t, map[string]int{"instance": 2}, prom.Dimensions)
+	require.NotNil(t, prom.Values)
+	assert.NotEmpty(t, prom.AvgInterval)
+	assert.NotEmpty(t, prom.DataAge)
+
+	loki, err := c.VerifyQuery(ctx, "loki", `{job="api"}`, "range")
 	require.NoError(t, err)
-	assert.Contains(t, res, "success")
+	assert.Equal(t, "streams", loki.ResultType)
+	assert.Equal(t, 1, loki.SeriesCount)
+	assert.Equal(t, 2, loki.PointsTotal)
+	assert.Equal(t, map[string]string{"app": "grafana", "level": "info"}, loki.CommonLabels)
+	assert.NotEmpty(t, loki.DataAge)
+
 	_, err = c.VerifyQuery(ctx, "unknown", "trace", "range")
 	require.ErrorContains(t, err, "unsupported datasource type")
 }
@@ -1001,7 +1020,7 @@ func TestDiscoveryHandlers(t *testing.T) {
 			Response: `{"uid":"prom","type":"prometheus","name":"Prometheus"}`,
 		},
 		"/api/datasources/proxy/uid/prom/api/v1/query_range": {
-			Response: `{"status":"success"}`,
+			Response: `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"job":"api","instance":"host1:8080"},"values":[[1000000,"1.5"],[1000015,"2.0"],[1000030,"1.8"]]},{"metric":{"job":"api","instance":"host2:8080"},"values":[[1000000,"0.5"],[1000015,"0.7"],[1000030,"0.6"]]}]}}`,
 		},
 		"/api/datasources/proxy/uid/prom/api/v1/label/__name__/values": {
 			Response: `{"status":"success","data":["up"]}`,
@@ -1027,7 +1046,8 @@ func TestDiscoveryHandlers(t *testing.T) {
 
 	_, verify, err := verifyQueryHandler(gc)(ctx, nil, VerifyQueryReq{DatasourceUID: "prom", Query: "up"})
 	require.NoError(t, err)
-	assert.Contains(t, verify.Text, "success")
+	require.NotNil(t, verify)
+	assert.Equal(t, "matrix", verify.ResultType)
 	_, _, err = verifyQueryHandler(nil)(ctx, nil, VerifyQueryReq{})
 	require.ErrorContains(t, err, "not configured")
 
@@ -1608,10 +1628,14 @@ func TestRenderLayout(t *testing.T) {
 			{
 				ID: "r1", Title: "Overview", Y: 0,
 				Panels: []*PanelEntry{
-					{ID: "p1", Title: "Rate", Type: "stat",
-						GridPos: dashboard.GridPos{X: 0, Y: 1, W: 6, H: 4}},
-					{ID: "p2", Title: "Errors", Type: "stat",
-						GridPos: dashboard.GridPos{X: 6, Y: 1, W: 6, H: 4}},
+					{
+						ID: "p1", Title: "Rate", Type: "stat",
+						GridPos: dashboard.GridPos{X: 0, Y: 1, W: 6, H: 4},
+					},
+					{
+						ID: "p2", Title: "Errors", Type: "stat",
+						GridPos: dashboard.GridPos{X: 6, Y: 1, W: 6, H: 4},
+					},
 					// intentional gap at x=12..24
 				},
 			},
@@ -1619,16 +1643,22 @@ func TestRenderLayout(t *testing.T) {
 			{
 				ID: "r2", Title: "Details", Y: 1,
 				Panels: []*PanelEntry{
-					{ID: "p3", Title: "Requests", Type: "timeseries",
-						GridPos: dashboard.GridPos{X: 0, Y: 2, W: 12, H: 8}},
-					{ID: "p4", Title: "Latency", Type: "timeseries",
-						GridPos: dashboard.GridPos{X: 12, Y: 2, W: 12, H: 8}},
+					{
+						ID: "p3", Title: "Requests", Type: "timeseries",
+						GridPos: dashboard.GridPos{X: 0, Y: 2, W: 12, H: 8},
+					},
+					{
+						ID: "p4", Title: "Latency", Type: "timeseries",
+						GridPos: dashboard.GridPos{X: 12, Y: 2, W: 12, H: 8},
+					},
 				},
 			},
 		},
 		Panels: []*PanelEntry{
-			{ID: "p5", Title: "Summary", Type: "table",
-				GridPos: dashboard.GridPos{X: 0, Y: 18, W: 24, H: 8}},
+			{
+				ID: "p5", Title: "Summary", Type: "table",
+				GridPos: dashboard.GridPos{X: 0, Y: 18, W: 24, H: 8},
+			},
 		},
 	}
 
@@ -1645,4 +1675,100 @@ func TestRenderLayout(t *testing.T) {
 
 	assert.Contains(t, layout, "no row")
 	assert.Contains(t, layout, `p5`)
+}
+
+func TestAnalyzeLabels(t *testing.T) {
+	// All series share job=api; instance varies.
+	common, dims := analyzeLabels([]map[string]string{
+		{"__name__": "up", "job": "api", "instance": "h1:80"},
+		{"__name__": "up", "job": "api", "instance": "h2:80"},
+		{"__name__": "up", "job": "api", "instance": "h3:80"},
+	})
+	assert.Equal(t, map[string]string{"job": "api"}, common)
+	assert.Equal(t, map[string]int{"instance": 3}, dims)
+
+	// Single series — everything is common, nothing varies.
+	common, dims = analyzeLabels([]map[string]string{
+		{"job": "api", "instance": "h1:80"},
+	})
+	assert.Equal(t, map[string]string{"job": "api", "instance": "h1:80"}, common)
+	assert.Nil(t, dims)
+
+	// Empty input.
+	common, dims = analyzeLabels(nil)
+	assert.Nil(t, common)
+	assert.Nil(t, dims)
+}
+
+func TestSummarizePrometheusResponse(t *testing.T) {
+	now := time.Unix(1_001_000, 0)
+
+	t.Run("matrix with two series", func(t *testing.T) {
+		body := []byte(`{"status":"success","data":{"resultType":"matrix","result":[` +
+			`{"metric":{"job":"api","instance":"h1:80"},"values":[[1000000,"1.5"],[1000015,"2.0"],[1000030,"1.8"]]},` +
+			`{"metric":{"job":"api","instance":"h2:80"},"values":[[1000000,"0.5"],[1000015,"0.7"],[1000030,"0.6"]]}` +
+			`]}}`)
+		s, err := summarizePrometheusResponse(body, now)
+		require.NoError(t, err)
+		assert.Equal(t, "matrix", s.ResultType)
+		assert.Equal(t, 2, s.SeriesCount)
+		assert.Equal(t, 6, s.PointsTotal)
+		assert.Equal(t, map[string]string{"job": "api"}, s.CommonLabels)
+		assert.Equal(t, map[string]int{"instance": 2}, s.Dimensions)
+		assert.Equal(t, "15s", s.AvgInterval)
+		require.NotNil(t, s.Values)
+		assert.InDelta(t, 0.5, s.Values.Min, 1e-9)
+		assert.InDelta(t, 2.0, s.Values.Max, 1e-9)
+		// Last values are 1.8 and 0.6; last_mean = 1.2, last_stddev = 0.6.
+		assert.InDelta(t, 1.2, s.Values.LastMean, 1e-6)
+		assert.InDelta(t, 0.6, s.Values.LastStddev, 1e-6)
+		assert.Empty(t, s.Warning)
+	})
+
+	t.Run("empty matrix", func(t *testing.T) {
+		body := []byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`)
+		s, err := summarizePrometheusResponse(body, now)
+		require.NoError(t, err)
+		assert.Equal(t, 0, s.SeriesCount)
+		assert.NotEmpty(t, s.Warning)
+	})
+
+	t.Run("query error", func(t *testing.T) {
+		body := []byte(`{"status":"error","error":"parse error: ..."}`)
+		s, err := summarizePrometheusResponse(body, now)
+		require.NoError(t, err)
+		assert.Contains(t, s.Warning, "parse error")
+	})
+
+	t.Run("vector with one sample", func(t *testing.T) {
+		body := []byte(`{"status":"success","data":{"resultType":"vector","result":[` +
+			`{"metric":{"job":"api"},"value":[1000000,"3.14"]}` +
+			`]}}`)
+		s, err := summarizePrometheusResponse(body, now)
+		require.NoError(t, err)
+		assert.Equal(t, "vector", s.ResultType)
+		assert.Equal(t, 1, s.SeriesCount)
+		require.NotNil(t, s.Values)
+		assert.InDelta(t, 3.14, s.Values.Min, 1e-9)
+		assert.Zero(t, s.Values.LastStddev) // single series → no stdev
+	})
+}
+
+func TestSummarizeLokiResponse(t *testing.T) {
+	now := time.Unix(1_001, 0)
+
+	t.Run("streams", func(t *testing.T) {
+		body := []byte(`{"status":"success","data":{"resultType":"streams","result":[` +
+			`{"stream":{"app":"grafana","level":"info"},"values":[["1000000000000","line 1"],["1000500000000","line 2"]]},` +
+			`{"stream":{"app":"grafana","level":"warn"},"values":[["1000000000000","warn line"]]}` +
+			`]}}`)
+		s, err := summarizeLokiResponse(body, now)
+		require.NoError(t, err)
+		assert.Equal(t, "streams", s.ResultType)
+		assert.Equal(t, 2, s.SeriesCount)
+		assert.Equal(t, 3, s.PointsTotal)
+		assert.Equal(t, map[string]string{"app": "grafana"}, s.CommonLabels)
+		assert.Equal(t, map[string]int{"level": 2}, s.Dimensions)
+		assert.NotEmpty(t, s.DataAge)
+	})
 }
