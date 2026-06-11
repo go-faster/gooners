@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,6 +47,8 @@ type DashboardSession struct {
 	NextX       uint32         `json:"next_x"`
 	NextY       uint32         `json:"next_y"`
 	LineHeight  uint32         `json:"line_height"`
+	NextPanelID int            `json:"next_panel_id,omitempty"`
+	NextRowID   int            `json:"next_row_id,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	TouchedAt   time.Time      `json:"touched_at"`
 }
@@ -142,6 +145,16 @@ func (s *DashboardSession) findRowIndex(rowID string) int {
 	})
 }
 
+func (s *DashboardSession) newPanelID() string {
+	s.NextPanelID++
+	return fmt.Sprintf("p%d", s.NextPanelID)
+}
+
+func (s *DashboardSession) newRowID() string {
+	s.NextRowID++
+	return fmt.Sprintf("r%d", s.NextRowID)
+}
+
 func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSession, error) {
 	var dash map[string]any
 	if err := json.Unmarshal(dashJSON, &dash); err != nil {
@@ -201,9 +214,8 @@ func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSessi
 		}
 		ptype := getString(pmap, "type")
 		if ptype == "row" {
-			rowID := uuid.New().String()
 			row := &RowEntry{
-				ID:        rowID,
+				ID:        s.newRowID(),
 				Title:     getString(pmap, "title"),
 				Collapsed: getBool(pmap, "collapsed"),
 			}
@@ -220,7 +232,7 @@ func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSessi
 			if row.Collapsed || len(subs) > 0 {
 				for _, sp := range subs {
 					if spm, ok := sp.(map[string]any); ok {
-						if pe := parsePanelEntry(spm); pe != nil {
+						if pe := parsePanelEntry(s.newPanelID(), spm); pe != nil {
 							row.Panels = append(row.Panels, pe)
 						}
 					}
@@ -236,7 +248,7 @@ func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSessi
 					if getString(next, "type") == "row" {
 						break
 					}
-					if pe := parsePanelEntry(next); pe != nil {
+					if pe := parsePanelEntry(s.newPanelID(), next); pe != nil {
 						row.Panels = append(row.Panels, pe)
 					}
 					i++
@@ -275,7 +287,7 @@ func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSessi
 				s.NextY = row.NextY
 			}
 		} else {
-			if pe := parsePanelEntry(pmap); pe != nil {
+			if pe := parsePanelEntry(s.newPanelID(), pmap); pe != nil {
 				topPanels = append(topPanels, pe)
 				if pe.GridPos.Y+pe.GridPos.H > s.NextY {
 					s.NextY = pe.GridPos.Y + pe.GridPos.H
@@ -294,9 +306,9 @@ func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSessi
 	return s, nil
 }
 
-func parsePanelEntry(pmap map[string]any) *PanelEntry {
+func parsePanelEntry(id string, pmap map[string]any) *PanelEntry {
 	pe := &PanelEntry{
-		ID:          uuid.New().String(),
+		ID:          id,
 		Title:       getString(pmap, "title"),
 		Description: getString(pmap, "description"),
 		Type:        getString(pmap, "type"),
@@ -864,13 +876,29 @@ func updateDashboardHandler(sm *SessionManager) mcp.ToolHandlerFor[UpdateDashboa
 	}
 }
 
-func getDashboardStateHandler(sm *SessionManager) mcp.ToolHandlerFor[GetDashboardStateReq, *DashboardSession] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, args GetDashboardStateReq) (*mcp.CallToolResult, *DashboardSession, error) {
+// DashboardStateRes wraps the session with a pre-rendered layout view.
+// The Layout field uses recomputed Y positions — the same positions that will
+// appear in the exported Grafana JSON — so it can be used to verify row
+// membership and spot gaps before calling export_dashboard.
+type DashboardStateRes struct {
+	*DashboardSession
+	// Layout is a band-format spatial summary of the dashboard.
+	// Rows are listed in render order; panels within each row are listed
+	// left-to-right per Y-band. GAP entries show unfilled grid space.
+	// Y values reflect the positions that will be used on export.
+	Layout string `json:"layout"`
+}
+
+func getDashboardStateHandler(sm *SessionManager) mcp.ToolHandlerFor[GetDashboardStateReq, DashboardStateRes] {
+	return func(_ context.Context, _ *mcp.CallToolRequest, args GetDashboardStateReq) (*mcp.CallToolResult, DashboardStateRes, error) {
 		s, err := sm.Get(args.DashboardID)
 		if err != nil {
-			return nil, nil, err
+			return nil, DashboardStateRes{}, err
 		}
-		return nil, s, nil
+		return nil, DashboardStateRes{
+			DashboardSession: s,
+			Layout:           renderLayout(s),
+		}, nil
 	}
 }
 
@@ -1303,6 +1331,65 @@ func recomputeRowPositions(rows []*RowEntry) []*RowEntry {
 		result[i] = &rowCopy
 	}
 	return result
+}
+
+// renderLayout produces a band-format spatial summary of the dashboard.
+// It calls recomputeRowPositions so Y values match what export_dashboard will emit.
+func renderLayout(s *DashboardSession) string {
+	var b strings.Builder
+	b.WriteString("grid: 24 cols\n")
+
+	for _, r := range recomputeRowPositions(s.Rows) {
+		extra := ""
+		if r.Collapsed {
+			extra = " [collapsed]"
+		}
+		fmt.Fprintf(&b, "\nrow %q [y=%d id=%s%s]\n", r.Title, r.Y, r.ID, extra)
+		writePanelBands(&b, r.Panels)
+	}
+
+	if len(s.Panels) > 0 {
+		b.WriteString("\n(no row — panels rendered outside any row section)\n")
+		writePanelBands(&b, s.Panels)
+	}
+
+	return b.String()
+}
+
+// writePanelBands writes panels grouped by Y-band, sorted left-to-right, with
+// explicit GAP entries for unoccupied grid columns.
+func writePanelBands(b *strings.Builder, panels []*PanelEntry) {
+	if len(panels) == 0 {
+		b.WriteString("  (empty)\n")
+		return
+	}
+
+	sorted := slices.Clone(panels)
+	slices.SortFunc(sorted, func(a, b *PanelEntry) int {
+		if c := cmp.Compare(a.GridPos.Y, b.GridPos.Y); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.GridPos.X, b.GridPos.X)
+	})
+
+	i := 0
+	for i < len(sorted) {
+		y := sorted[i].GridPos.Y
+		cursor := uint32(0)
+		for i < len(sorted) && sorted[i].GridPos.Y == y {
+			p := sorted[i]
+			if p.GridPos.X > cursor {
+				fmt.Fprintf(b, "  GAP [x=%d w=%d y=%d]\n", cursor, p.GridPos.X-cursor, y)
+			}
+			fmt.Fprintf(b, "  [x=%-2d w=%-2d h=%-2d y=%-2d] %s %q (%s)\n",
+				p.GridPos.X, p.GridPos.W, p.GridPos.H, p.GridPos.Y, p.ID, p.Title, p.Type)
+			cursor = p.GridPos.X + p.GridPos.W
+			i++
+		}
+		if cursor < 24 {
+			fmt.Fprintf(b, "  GAP [x=%d w=%d y=%d]\n", cursor, 24-cursor, y)
+		}
+	}
 }
 
 func buildLegend(p *PanelEntry) *common.VizLegendOptionsBuilder {

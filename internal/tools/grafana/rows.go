@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/tools/mcputil"
@@ -23,8 +22,9 @@ type AddRowRes struct {
 
 func addRowHandler(sm *SessionManager) mcp.ToolHandlerFor[AddRowReq, AddRowRes] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args AddRowReq) (*mcp.CallToolResult, AddRowRes, error) {
-		rowID := uuid.New().String()
+		var rowID string
 		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			rowID = s.newRowID()
 			rY := s.NextY
 			s.Rows = append(s.Rows, &RowEntry{
 				ID:        rowID,

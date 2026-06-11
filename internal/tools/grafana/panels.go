@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/grafana/grafana-foundation-sdk/go/dashboard"
@@ -216,7 +215,7 @@ func placePanelInDashboard(s *DashboardSession, w, h uint32, xOpt, yOpt *int) da
 func addPanelHandler(sm *SessionManager) mcp.ToolHandlerFor[AddPanelReq, AddPanelRes] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args AddPanelReq) (*mcp.CallToolResult, AddPanelRes, error) {
 		var gridPos dashboard.GridPos
-		panelID := uuid.New().String()
+		var panelID string
 
 		if len(args.ReduceCalcs) > 0 {
 			switch args.Type {
@@ -227,6 +226,7 @@ func addPanelHandler(sm *SessionManager) mcp.ToolHandlerFor[AddPanelReq, AddPane
 		}
 
 		err := sm.Update(args.DashboardID, func(s *DashboardSession) error {
+			panelID = s.newPanelID()
 			var r *RowEntry
 			if args.RowID != "" {
 				r = s.findRow(args.RowID)
@@ -314,7 +314,7 @@ func addPanelsBatchHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandle
 			for _, ps := range args.Panels {
 				gridPos := placePanel(s, r, ps.Type, ps.W, ps.H, ps.X, ps.Y)
 
-				panelID := uuid.New().String()
+				panelID := s.newPanelID()
 				panel := &PanelEntry{
 					ID:                panelID,
 					Title:             ps.Title,

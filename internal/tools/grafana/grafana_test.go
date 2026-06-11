@@ -1598,3 +1598,51 @@ func TestBuildPanel_VisualFields_Roundtrip(t *testing.T) {
 	require.NotNil(t, p1.GaugeMax)
 	assert.Equal(t, 1.0, *p1.GaugeMax)
 }
+
+func TestRenderLayout(t *testing.T) {
+	// Build a session with two rows (created before panels, the known tricky case)
+	// and one top-level panel.
+	s := &DashboardSession{
+		DashboardID: "test",
+		Rows: []*RowEntry{
+			{
+				ID: "r1", Title: "Overview", Y: 0,
+				Panels: []*PanelEntry{
+					{ID: "p1", Title: "Rate", Type: "stat",
+						GridPos: dashboard.GridPos{X: 0, Y: 1, W: 6, H: 4}},
+					{ID: "p2", Title: "Errors", Type: "stat",
+						GridPos: dashboard.GridPos{X: 6, Y: 1, W: 6, H: 4}},
+					// intentional gap at x=12..24
+				},
+			},
+			// Created before panels were added to r1, so stored Y=1; recompute must move to Y=5.
+			{
+				ID: "r2", Title: "Details", Y: 1,
+				Panels: []*PanelEntry{
+					{ID: "p3", Title: "Requests", Type: "timeseries",
+						GridPos: dashboard.GridPos{X: 0, Y: 2, W: 12, H: 8}},
+					{ID: "p4", Title: "Latency", Type: "timeseries",
+						GridPos: dashboard.GridPos{X: 12, Y: 2, W: 12, H: 8}},
+				},
+			},
+		},
+		Panels: []*PanelEntry{
+			{ID: "p5", Title: "Summary", Type: "table",
+				GridPos: dashboard.GridPos{X: 0, Y: 18, W: 24, H: 8}},
+		},
+	}
+
+	layout := renderLayout(s)
+
+	assert.Contains(t, layout, `row "Overview" [y=0 id=r1]`)
+	assert.Contains(t, layout, `p1`)
+	assert.Contains(t, layout, `p2`)
+	assert.Contains(t, layout, "GAP [x=12 w=12 y=1]")
+
+	// Row 2 must be pushed to y=5 (row1 header + 4-tall panels = 0+1+4=5).
+	assert.Contains(t, layout, `row "Details" [y=5 id=r2]`)
+	assert.NotContains(t, layout, "GAP [x=0")
+
+	assert.Contains(t, layout, "no row")
+	assert.Contains(t, layout, `p5`)
+}
