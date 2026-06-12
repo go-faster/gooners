@@ -89,3 +89,4 @@ For a complete local sandbox environment containing both a Grafana instance and 
 - `lookup_labels` — fetches labels for a selector/metric.
 - `lookup_label_values` — fetches available values for a label.
 - `lookup_metric_metadata` — returns metric type and help string.
+- `discover_telemetry_registry` — parses Weaver/OpenTelemetry semantic convention YAML files under the working directory to discover metrics, instruments, units, and attributes.

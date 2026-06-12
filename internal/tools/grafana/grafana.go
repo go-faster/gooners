@@ -658,6 +658,12 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 		Description: "Parses a PromQL/MetricsQL expression offline and returns a syntax error or the normalized expression. Use this to catch syntax errors when Grafana is not configured. Note: Grafana duration macros like $__rate_interval are not valid PromQL durations and will be stripped by the parser — substitute real values (e.g. 5m) before calling this tool.",
 		Flags:       mcputil.ReadOnly,
 	}, parsePromQLHandler())
+
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "discover_telemetry_registry",
+		Description: "Parses Weaver OpenTelemetry YAML files (semantic conventions) to discover metrics, their types, units, and attributes. By default, it searches the current working directory.",
+		Flags:       mcputil.ReadOnly,
+	}, discoverTelemetryRegistryHandler())
 }
 
 // Handler implementations
