@@ -13,6 +13,10 @@ import (
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
+type runner interface {
+	Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error)
+}
+
 func Register(s *mcp.Server, p *session.Pool) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "systemctl_status", Description: "Show status of a systemd unit.", Flags: mcputil.ReadOnly}, statusHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "systemctl_list_units", Description: "List systemd units.", Flags: mcputil.ReadOnly}, listUnitsHandler(p))
@@ -28,7 +32,7 @@ type systemdBaseParams struct {
 	Unit      string `json:"unit" jsonschema:"Name of the systemd unit (e.g. nginx.service)"`
 }
 
-func statusHandler(p *session.Pool) mcp.ToolHandlerFor[systemdBaseParams, mcputil.CommandResult] {
+func statusHandler(p runner) mcp.ToolHandlerFor[systemdBaseParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args systemdBaseParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Unit == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and unit are required")
@@ -52,7 +56,7 @@ type listUnitsParams struct {
 	Type      string `json:"type,omitempty" jsonschema:"Filter by unit type (e.g. service, timer)"`
 }
 
-func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, mcputil.CommandResult] {
+func listUnitsHandler(p runner) mcp.ToolHandlerFor[listUnitsParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args listUnitsParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")
@@ -76,7 +80,7 @@ func listUnitsHandler(p *session.Pool) mcp.ToolHandlerFor[listUnitsParams, mcput
 	}
 }
 
-func mutatingHandler(p *session.Pool, action string) mcp.ToolHandlerFor[systemdBaseParams, mcputil.CommandResult] {
+func mutatingHandler(p runner, action string) mcp.ToolHandlerFor[systemdBaseParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args systemdBaseParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.Unit == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and unit are required")
@@ -104,7 +108,7 @@ type journalParams struct {
 	Priority  string  `json:"priority,omitempty" jsonschema:"Filter by priority (e.g. err, warning)"`
 }
 
-func journalHandler(p *session.Pool) mcp.ToolHandlerFor[journalParams, mcputil.CommandResult] {
+func journalHandler(p runner) mcp.ToolHandlerFor[journalParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args journalParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")

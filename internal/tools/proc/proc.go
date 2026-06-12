@@ -54,6 +54,10 @@ func validSignal(s string) string {
 	return ""
 }
 
+type runner interface {
+	Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error)
+}
+
 func Register(s *mcp.Server, p session.Provider) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "proc_list", Description: "List running processes (ps aux). Optional user and grep filter.", Flags: mcputil.ReadOnly}, listHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "proc_info", Description: "Show details for a process: /proc/<pid>/status, cmdline, exe, cwd.", Flags: mcputil.ReadOnly}, infoHandler(p))
@@ -68,7 +72,7 @@ type procListParams struct {
 	MaxLines  float64 `json:"max_lines,omitempty" jsonschema:"Maximum lines of output"`
 }
 
-func listHandler(p session.Provider) mcp.ToolHandlerFor[procListParams, mcputil.CommandResult] {
+func listHandler(p runner) mcp.ToolHandlerFor[procListParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args procListParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")
@@ -100,7 +104,7 @@ type procPIDParams struct {
 	PID       string `json:"pid" jsonschema:"Process ID"`
 }
 
-func infoHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, mcputil.CommandResult] {
+func infoHandler(p runner) mcp.ToolHandlerFor[procPIDParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args procPIDParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.PID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and pid are required")
@@ -127,7 +131,7 @@ func infoHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, mcputil.C
 	}
 }
 
-func lsofHandler(p session.Provider) mcp.ToolHandlerFor[procPIDParams, mcputil.CommandResult] {
+func lsofHandler(p runner) mcp.ToolHandlerFor[procPIDParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args procPIDParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.PID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and pid are required")
@@ -154,7 +158,7 @@ type killParams struct {
 	Signal    string `json:"signal,omitempty" jsonschema:"Signal to send (e.g. TERM, KILL)"`
 }
 
-func killHandler(p session.Provider) mcp.ToolHandlerFor[killParams, mcputil.CommandResult] {
+func killHandler(p runner) mcp.ToolHandlerFor[killParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args killParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.PID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and pid are required")

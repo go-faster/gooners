@@ -12,6 +12,10 @@ import (
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
+type runner interface {
+	Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error)
+}
+
 func Register(s *mcp.Server, p *session.Pool) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "disk_lsblk",
@@ -30,7 +34,7 @@ type lsblkParams struct {
 	Device    string `json:"device,omitempty" jsonschema:"Block device name (e.g. sda)"`
 }
 
-func lsblkHandler(p *session.Pool) mcp.ToolHandlerFor[lsblkParams, mcputil.CommandResult] {
+func lsblkHandler(p runner) mcp.ToolHandlerFor[lsblkParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args lsblkParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")
@@ -56,7 +60,7 @@ type dfParams struct {
 	Path      string `json:"path,omitempty" jsonschema:"Path to check disk usage for (e.g. /var)"`
 }
 
-func dfHandler(p *session.Pool) mcp.ToolHandlerFor[dfParams, mcputil.CommandResult] {
+func dfHandler(p runner) mcp.ToolHandlerFor[dfParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args dfParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id is required")

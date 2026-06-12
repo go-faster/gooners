@@ -20,6 +20,19 @@ import (
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
+type corePool interface {
+	Open(ctx context.Context, machine string) (session.OpenResult, error)
+	OpenCfg(ctx context.Context, cfg session.Config) (session.OpenResult, error)
+	Close(ctx context.Context, id string) error
+	List(ctx context.Context) ([]session.SessionInfo, error)
+	Machine(ctx context.Context, id string) (string, error)
+	Exec(ctx context.Context, r session.ExecRequest) session.ExecResponse
+	CommandTimeout() time.Duration
+	Ping(ctx context.Context, id string) (time.Duration, error)
+	GetSpool(ctx context.Context, sessionID, spoolID string) (string, error)
+	DeleteSpool(ctx context.Context, sessionID, spoolID string) error
+}
+
 type RegisterOptions struct {
 	// DisableSudo prevents registration of the ssh_sudo_exec tool.
 	DisableSudo bool
@@ -105,7 +118,7 @@ type openParams struct {
 	Machine string `json:"machine" jsonschema:"host, user@host, host:port etc."`
 }
 
-func openHandler(p *session.Pool, passwords PasswordProvider, logger *slog.Logger) mcp.ToolHandlerFor[openParams, mcputil.SessionResult] {
+func openHandler(p corePool, passwords PasswordProvider, logger *slog.Logger) mcp.ToolHandlerFor[openParams, mcputil.SessionResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args openParams) (*mcp.CallToolResult, mcputil.SessionResult, error) {
 		if args.Machine == "" {
 			return nil, mcputil.SessionResult{}, fmt.Errorf("machine is required")
@@ -155,7 +168,7 @@ type openCfgParams struct {
 	KnownHosts string `json:"known_hosts,omitempty" jsonschema:"Path to known_hosts file"`
 }
 
-func openCfgHandler(p *session.Pool, logger *slog.Logger) mcp.ToolHandlerFor[openCfgParams, mcputil.SessionResult] {
+func openCfgHandler(p corePool, logger *slog.Logger) mcp.ToolHandlerFor[openCfgParams, mcputil.SessionResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args openCfgParams) (*mcp.CallToolResult, mcputil.SessionResult, error) {
 		if args.Machine == "" {
 			return nil, mcputil.SessionResult{}, fmt.Errorf("machine is required")
@@ -200,7 +213,7 @@ type closeParams struct {
 	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session to close"`
 }
 
-func closeHandler(p *session.Pool) mcp.ToolHandlerFor[closeParams, mcputil.SuccessResult] {
+func closeHandler(p corePool) mcp.ToolHandlerFor[closeParams, mcputil.SuccessResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args closeParams) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
 		if args.SessionID == "" {
 			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id is required")
@@ -210,7 +223,7 @@ func closeHandler(p *session.Pool) mcp.ToolHandlerFor[closeParams, mcputil.Succe
 	}
 }
 
-func listHandler(p *session.Pool) mcp.ToolHandlerFor[struct{}, mcputil.SessionsResult] {
+func listHandler(p corePool) mcp.ToolHandlerFor[struct{}, mcputil.SessionsResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, mcputil.SessionsResult, error) {
 		list, err := p.List(ctx)
 		if err != nil {
@@ -236,7 +249,7 @@ type execParams struct {
 	SudoPassword string `json:"sudo_password,omitempty" jsonschema:"Sudo password if required"`
 }
 
-func execHandler(p *session.Pool, sudo bool, passwords PasswordProvider, logger *slog.Logger) mcp.ToolHandlerFor[execParams, mcputil.ExecResult] {
+func execHandler(p corePool, sudo bool, passwords PasswordProvider, logger *slog.Logger) mcp.ToolHandlerFor[execParams, mcputil.ExecResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args execParams) (*mcp.CallToolResult, mcputil.ExecResult, error) {
 		if args.SessionID == "" || args.Command == "" {
 			return nil, mcputil.ExecResult{}, fmt.Errorf("session_id and command are required")
@@ -296,7 +309,7 @@ type onceParams struct {
 	TimeoutSec  int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
 }
 
-func onceHandler(p *session.Pool) mcp.ToolHandlerFor[onceParams, mcputil.ExecResult] {
+func onceHandler(p corePool) mcp.ToolHandlerFor[onceParams, mcputil.ExecResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args onceParams) (*mcp.CallToolResult, mcputil.ExecResult, error) {
 		if args.Machine == "" || args.Command == "" {
 			return nil, mcputil.ExecResult{}, fmt.Errorf("machine and command are required")
@@ -362,7 +375,7 @@ type pingParams struct {
 	SessionID string `json:"session_id" jsonschema:"The ID of the SSH session to ping"`
 }
 
-func pingHandler(p *session.Pool) mcp.ToolHandlerFor[pingParams, mcputil.PingResult] {
+func pingHandler(p corePool) mcp.ToolHandlerFor[pingParams, mcputil.PingResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args pingParams) (*mcp.CallToolResult, mcputil.PingResult, error) {
 		if args.SessionID == "" {
 			return nil, mcputil.PingResult{}, fmt.Errorf("session_id is required")
@@ -389,7 +402,7 @@ type readOutputParams struct {
 	FromEnd   bool   `json:"from_end,omitempty" jsonschema:"Read from the end of the file (tail behavior) instead of the beginning"`
 }
 
-func readOutputHandler(p *session.Pool) mcp.ToolHandlerFor[readOutputParams, mcputil.CommandResult] {
+func readOutputHandler(p corePool) mcp.ToolHandlerFor[readOutputParams, mcputil.CommandResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args readOutputParams) (*mcp.CallToolResult, mcputil.CommandResult, error) {
 		if args.SessionID == "" || args.SpoolID == "" {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("session_id and spool_id are required")
@@ -427,7 +440,7 @@ type saveOutputParams struct {
 	LocalPath string `json:"local_path" jsonschema:"The destination local file path to save the spool output to"`
 }
 
-func saveOutputHandler(p *session.Pool) mcp.ToolHandlerFor[saveOutputParams, mcputil.SuccessResult] {
+func saveOutputHandler(p corePool) mcp.ToolHandlerFor[saveOutputParams, mcputil.SuccessResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args saveOutputParams) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
 		if args.SessionID == "" || args.SpoolID == "" || args.LocalPath == "" {
 			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id, spool_id, and local_path are required")

@@ -16,6 +16,9 @@ type mockRunner struct {
 }
 
 func (m *mockRunner) Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error) {
+	if m.runFunc == nil {
+		return sshutil.Result{}, fmt.Errorf("Run should not be called")
+	}
 	return m.runFunc(cmd)
 }
 
@@ -68,4 +71,41 @@ func TestNetAddrsHandler_SuccessJSON(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, res.IsError)
 	require.Equal(t, `[{"ifname":"eth0"}]`, cr.Text)
+}
+
+func TestSimpleCmdHandler(t *testing.T) {
+	runner := &mockRunner{
+		runFunc: func(cmd string) (sshutil.Result, error) {
+			require.Equal(t, "uptime", cmd)
+			return sshutil.Result{Stdout: "up 1 day"}, nil
+		},
+	}
+
+	res, cr, err := simpleCmdHandler(runner, "uptime")(context.Background(), &mcp.CallToolRequest{}, sessionParam{
+		SessionID: "test_session",
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	require.Equal(t, "up 1 day", cr.Text)
+}
+
+func TestSimpleCmdHandler_RunError(t *testing.T) {
+	runner := &mockRunner{
+		runFunc: func(cmd string) (sshutil.Result, error) {
+			require.Equal(t, "free -h", cmd)
+			return sshutil.Result{Stderr: "missing"}, fmt.Errorf("not found")
+		},
+	}
+
+	res, cr, err := simpleCmdHandler(runner, "free -h")(context.Background(), &mcp.CallToolRequest{}, sessionParam{
+		SessionID: "test_session",
+	})
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	require.Equal(t, "error: not found", cr.Text)
+}
+
+func TestSimpleCmdHandler_RequiresSessionID(t *testing.T) {
+	_, _, err := simpleCmdHandler(&mockRunner{}, "uptime")(context.Background(), &mcp.CallToolRequest{}, sessionParam{})
+	require.Error(t, err)
 }
