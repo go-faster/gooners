@@ -96,6 +96,8 @@ skills/
 ## Commits
 
 - Commit generated files (golden files, mocks, protobuf output, etc.) in a separate commit from the code that produces them. If it's unclear whether a file is generated, ask before bundling it.
+- Conventional commits format: `type(scope): subject` (e.g., `fix(chstorage): fix column mapping`).
+- Keep commit message body lines at 100 characters or fewer.
 
 ## Testing
 
