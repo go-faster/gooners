@@ -109,7 +109,10 @@ func collectText(out []string, v any) []string {
 func collectObjects(out []map[string]any, v any) []map[string]any {
 	switch x := v.(type) {
 	case map[string]any:
-		if x["id"] != nil || x["role"] != nil || x["requestID"] != nil || x["messageID"] != nil || messageRole(x) != "" {
+		if x["id"] != nil || x["role"] != nil ||
+			x["requestID"] != nil || x["messageID"] != nil ||
+			x["request_id"] != nil || x["message_id"] != nil ||
+			messageRole(x) != "" {
 			out = append(out, x)
 		}
 		for _, key := range []string{"data", "items", "messages", "requests", "permissions", "questions", "content", "parts"} {
@@ -167,6 +170,13 @@ func preview(s string) string {
 
 func compactText(s string) string {
 	return truncateFields(s, 1200)
+}
+
+func truncateText(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "..."
 }
 
 func truncateFields(s string, limit int) string {

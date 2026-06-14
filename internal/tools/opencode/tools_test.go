@@ -117,7 +117,8 @@ func TestCheckHandlerReportsPendingPermission(t *testing.T) {
 
 	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
 	require.NoError(t, err)
-	require.Equal(t, "unknown", res.Status)
+	// No job tracked by this server — status comes from opencode session state.
+	require.Equal(t, string(JobRunning), res.Status)
 	require.Equal(t, 1, res.PendingPermissionCount)
 	require.Contains(t, res.Message, "handoff_permissions")
 }
@@ -195,9 +196,9 @@ func TestCheckHandlerReportsDoneJob(t *testing.T) {
 	client := newTestClient(t, Config{BaseURL: server.URL})
 	mgr := NewManager(t.Context(), client, slog.Default())
 	mgr.jobs["ses_1"] = &Job{
-		SessionID:    "ses_1",
-		Status:       JobDone,
-		PromptResult: json.RawMessage(`{"messageID":"msg_prompt"}`),
+		SessionID:       "ses_1",
+		Status:          JobDone,
+		PromptMessageID: "msg_prompt",
 	}
 
 	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
@@ -554,19 +555,19 @@ func TestManagerJobsReturnsSnapshots(t *testing.T) {
 	t.Parallel()
 	mgr := NewManager(t.Context(), nil, nil)
 	mgr.jobs["ses_1"] = &Job{
-		SessionID:    "ses_1",
-		Status:       JobRunning,
-		PromptResult: json.RawMessage(`{"messageID":"msg_1"}`),
-		Err:          errors.New("boom"),
-		CreatedAt:    time.Unix(1, 0),
-		UpdatedAt:    time.Unix(2, 0),
+		SessionID:       "ses_1",
+		Status:          JobRunning,
+		PromptMessageID: "msg_1",
+		Err:             errors.New("boom"),
+		CreatedAt:       time.Unix(1, 0),
+		UpdatedAt:       time.Unix(2, 0),
 	}
 
 	jobs := mgr.Jobs()
 	require.Len(t, jobs, 1)
 	require.Equal(t, "ses_1", jobs[0].SessionID)
 	require.Equal(t, JobRunning, jobs[0].Status)
-	require.Equal(t, json.RawMessage(`{"messageID":"msg_1"}`), jobs[0].PromptResult)
+	require.Equal(t, "msg_1", jobs[0].PromptMessageID)
 	require.EqualError(t, jobs[0].Err, "boom")
 	require.Equal(t, time.Unix(1, 0), jobs[0].CreatedAt)
 	require.Equal(t, time.Unix(2, 0), jobs[0].UpdatedAt)
@@ -579,11 +580,11 @@ func TestManagerStateDirPersistence(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	running := jobRecord{
-		SessionID:    "ses_1",
-		Status:       JobRunning,
-		PromptResult: json.RawMessage(`{"messageID":"msg_1"}`),
-		CreatedAt:    time.Unix(1, 0),
-		UpdatedAt:    time.Unix(2, 0),
+		SessionID:       "ses_1",
+		Status:          JobRunning,
+		PromptMessageID: "msg_1",
+		CreatedAt:       time.Unix(1, 0),
+		UpdatedAt:       time.Unix(2, 0),
 	}
 	raw, err := json.Marshal(running)
 	require.NoError(t, err)
@@ -595,18 +596,18 @@ func TestManagerStateDirPersistence(t *testing.T) {
 	job, ok := mgr.Job("ses_1")
 	require.True(t, ok)
 	require.Equal(t, "ses_1", job.SessionID)
-	require.Equal(t, JobError, job.Status)
-	require.EqualError(t, job.Err, "server restarted before job completed")
-	require.Equal(t, running.PromptResult, job.PromptResult)
+	require.Equal(t, JobUnknown, job.Status)
+	require.NoError(t, job.Err)
+	require.Equal(t, running.PromptMessageID, job.PromptMessageID)
 	require.True(t, running.CreatedAt.Equal(job.CreatedAt))
 	require.True(t, job.UpdatedAt.After(running.UpdatedAt))
 
 	valid := &Job{
-		SessionID:    "ses_2",
-		Status:       JobDone,
-		PromptResult: json.RawMessage(`{"ok":true}`),
-		CreatedAt:    time.Unix(3, 0),
-		UpdatedAt:    time.Unix(4, 0),
+		SessionID:       "ses_2",
+		Status:          JobDone,
+		PromptMessageID: "msg_ok",
+		CreatedAt:       time.Unix(3, 0),
+		UpdatedAt:       time.Unix(4, 0),
 	}
 	mgr.saveJob(valid)
 	saved, err := os.ReadFile(filepath.Join(stateDir, "ses_2.json"))

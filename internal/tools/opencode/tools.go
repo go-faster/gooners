@@ -166,7 +166,7 @@ func runHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[runParams, Hand
 			job, ok := mgr.Job(session.ID)
 			var promptMsgID string
 			if ok {
-				promptMsgID = extractMessageID(job.PromptResult)
+				promptMsgID = job.PromptMessageID
 			}
 
 			if res.PendingPermissionCount > 0 || res.PendingQuestionCount > 0 {
@@ -257,23 +257,35 @@ func doCheck(ctx context.Context, client *Client, mgr *Manager, args checkParams
 		return HandoffCheckResult{}, err
 	}
 
+	// No tracked job (external session or different server instance): report
+	// whatever opencode says and surface any pending permissions/questions.
 	if !ok {
-		res.Status = "unknown"
+		res.Status = sessionStatus(isFinished)
 		return res, nil
 	}
 
 	if job.Status == JobRunning {
-		if isFinished {
-			res.Status = "done"
-		} else {
-			res.Status = string(JobRunning)
-		}
+		res.Status = sessionStatus(isFinished)
 		res.Message = checkMessage(res)
 		if res.Message == "session state loaded" {
-			if res.Status == "done" {
+			if isFinished {
 				res.Message = "handoff completed"
 			} else {
 				res.Message = "handoff is still running"
+			}
+		}
+		return res, nil
+	}
+
+	// JobUnknown: server restarted while the job was in flight — the prompt
+	// result is unavailable, so trust the opencode session state exclusively.
+	if job.Status == JobUnknown {
+		res.Status = sessionStatus(isFinished)
+		if res.Message == "session state loaded" {
+			if isFinished {
+				res.Message = "handoff completed (restored after server restart)"
+			} else {
+				res.Message = "session state unknown after server restart; use handoff_check to monitor"
 			}
 		}
 		return res, nil
@@ -284,7 +296,7 @@ func doCheck(ctx context.Context, client *Client, mgr *Manager, args checkParams
 	// job error when the session is demonstrably finished.
 	if isFinished {
 		res.Status = string(JobDone)
-		res.PromptMessageID = extractMessageID(job.PromptResult)
+		res.PromptMessageID = job.PromptMessageID
 		if res.Message == "session state loaded" {
 			res.Message = "handoff completed"
 		}
@@ -292,7 +304,7 @@ func doCheck(ctx context.Context, client *Client, mgr *Manager, args checkParams
 	}
 
 	res.Status = string(job.Status)
-	res.PromptMessageID = extractMessageID(job.PromptResult)
+	res.PromptMessageID = job.PromptMessageID
 	if job.Err != nil {
 		res.Error = job.Err.Error()
 		msg := "handoff failed"
@@ -306,6 +318,15 @@ func doCheck(ctx context.Context, client *Client, mgr *Manager, args checkParams
 		}
 	}
 	return res, nil
+}
+
+// sessionStatus maps the isFinished flag to a status string for sessions that
+// are not tracked by this server instance.
+func sessionStatus(isFinished bool) string {
+	if isFinished {
+		return string(JobDone)
+	}
+	return string(JobRunning)
 }
 
 func permissionsHandler(client *Client) mcp.ToolHandlerFor[requestListParams, RequestsResult] {
@@ -385,12 +406,13 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 	var isFinished bool
 	msg, msgErr := client.Messages(ctx, loc, sessionID)
 	if msgErr == nil {
-		res.Messages = summarizeMessages(msg, 6)
-		res.MessagesReturned = len(res.Messages)
-		res.FinalText = firstText(msg)
+		summaries := summarizeMessages(msg, 6)
+		res.MessagesReturned = len(summaries)
 		if verbose {
+			res.Messages = summaries
 			res.RawMessages = rawJSONArray(msg)
 		}
+		res.FinalText = truncateText(firstText(msg), 4000)
 		isFinished = isSessionFinishedJSON(msg)
 	}
 	ctxData, ctxErr := client.Context(ctx, loc, sessionID)
@@ -399,7 +421,7 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 			res.RawContext = rawJSONObject(ctxData)
 		}
 		if res.FinalText == "" {
-			res.FinalText = firstText(ctxData)
+			res.FinalText = truncateText(firstText(ctxData), 4000)
 		}
 	}
 	fillPendingRequests(ctx, client, loc, &res)

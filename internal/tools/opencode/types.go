@@ -3,6 +3,7 @@ package opencode
 
 import (
 	"encoding/json"
+	"log/slog"
 	"time"
 )
 
@@ -15,6 +16,9 @@ type Config struct {
 	// SyncTimeout is the timeout for blocking prompt calls (session message POST).
 	// If zero, the general request timeout is used.
 	SyncTimeout time.Duration
+	// APILogger, when non-nil, logs every HTTP request and response body at
+	// debug level. Useful for debugging opencode API calls.
+	APILogger *slog.Logger
 }
 
 type Location struct {

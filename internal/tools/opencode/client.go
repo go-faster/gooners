@@ -5,8 +5,10 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -57,12 +59,19 @@ func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 
 	newHTTPClient := func(t time.Duration) *http.Client {
 		c := &http.Client{Timeout: t}
+		var base http.RoundTripper = http.DefaultTransport
 		if cfg.Username != "" || cfg.Password != "" {
-			c.Transport = &basicAuthTransport{
+			base = &basicAuthTransport{
 				username: cfg.Username,
 				password: cfg.Password,
-				base:     http.DefaultTransport,
+				base:     base,
 			}
+		}
+		if cfg.APILogger != nil {
+			base = &loggingTransport{base: base, logger: cfg.APILogger}
+		}
+		if base != http.DefaultTransport {
+			c.Transport = base
 		}
 		return c
 	}
@@ -138,6 +147,12 @@ func (c *Client) ProvidersAndModels(ctx context.Context, loc Location) (ModelsRe
 func (c *Client) apiProvidersAndModels(ctx context.Context, loc Location) (ModelsResult, bool, error) {
 	raw, err := c.v2Get(ctx, "/api/provider", c.dir(loc))
 	if err != nil {
+		// 404 means the endpoint doesn't exist in this opencode version; fall back
+		// to the SDK app-route path instead of propagating the error.
+		var httpErr *HTTPError
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+			return ModelsResult{}, false, nil
+		}
 		return ModelsResult{}, false, err
 	}
 
@@ -397,6 +412,19 @@ func (c *Client) doRaw(req *http.Request) (json.RawMessage, error) {
 	return c.doRawWith(c.httpClient, req)
 }
 
+// HTTPError is returned by client methods when the server responds with a
+// non-2xx status code.
+type HTTPError struct {
+	Method     string
+	Path       string
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("opencode API %s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
+}
+
 func (c *Client) doRawWith(hc *http.Client, req *http.Request) (json.RawMessage, error) {
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -406,6 +434,18 @@ func (c *Client) doRawWith(hc *http.Client, req *http.Request) (json.RawMessage,
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snippet := data
+		if len(snippet) > 256 {
+			snippet = snippet[:256]
+		}
+		return nil, &HTTPError{
+			Method:     req.Method,
+			Path:       req.URL.Path,
+			StatusCode: resp.StatusCode,
+			Body:       string(snippet),
+		}
 	}
 	return json.RawMessage(data), nil
 }
@@ -431,4 +471,52 @@ func (t *basicAuthTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	r = r.Clone(r.Context())
 	r.SetBasicAuth(t.username, t.password)
 	return t.base.RoundTrip(r)
+}
+
+// loggingTransport logs every outgoing HTTP request and its response body at
+// debug level. It is intended for debugging opencode API interactions.
+type loggingTransport struct {
+	base   http.RoundTripper
+	logger *slog.Logger
+}
+
+func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	var reqSnippet string
+	if r.Body != nil {
+		data, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewReader(data))
+		if len(data) > 512 {
+			reqSnippet = string(data[:512]) + "..."
+		} else {
+			reqSnippet = string(data)
+		}
+	}
+	t.logger.DebugContext(r.Context(), "opencode API request",
+		"method", r.Method,
+		"url", r.URL.String(),
+		"body", reqSnippet,
+	)
+
+	resp, err := t.base.RoundTrip(r)
+	if err != nil {
+		t.logger.DebugContext(r.Context(), "opencode API error",
+			"method", r.Method, "url", r.URL.String(), "err", err)
+		return nil, err
+	}
+
+	data, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(data))
+	snippet := data
+	if len(snippet) > 1024 {
+		snippet = append(snippet[:1024:1024], "..."...)
+	}
+	t.logger.DebugContext(r.Context(), "opencode API response",
+		"method", r.Method,
+		"url", r.URL.String(),
+		"status", resp.StatusCode,
+		"body", string(snippet),
+	)
+	return resp, nil
 }

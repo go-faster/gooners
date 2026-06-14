@@ -94,6 +94,7 @@ type opencodeCfg struct {
 	RequestTimeout   time.Duration
 	SyncTimeout      time.Duration
 	StateDir         string
+	LogAPI           bool
 
 	BaseURL  string
 	Username string
@@ -109,6 +110,7 @@ func (o *opencodeCfg) Register(_ *flag.FlagSet) {
 	flag.DurationVar(&o.RequestTimeout, "request-timeout", 30*time.Second, "timeout for regular opencode HTTP calls")
 	flag.DurationVar(&o.SyncTimeout, "sync-timeout", 5*time.Minute, "timeout for blocking prompt calls (session message POST) used by handoff_run and handoff_fire")
 	flag.StringVar(&o.StateDir, "state-dir", envDefault("OPENCODE_HANDOFF_STATE_DIR", defaultStateDir()), "directory for persisting job state across restarts (env: OPENCODE_HANDOFF_STATE_DIR)")
+	flag.BoolVar(&o.LogAPI, "log-api", false, "log opencode HTTP request/response bodies at debug level (requires -log-level debug or -log-file)")
 	flag.StringVar(&o.BaseURL, "opencode-url", os.Getenv("OPENCODE_URL"), "opencode server base URL (env: OPENCODE_URL); defaults to http://localhost:4096 in local mode")
 	flag.StringVar(&o.Username, "opencode-username", envDefault("OPENCODE_USERNAME", "opencode"), "opencode basic auth username (env: OPENCODE_USERNAME)")
 	flag.StringVar(&o.Password, "opencode-password", os.Getenv("OPENCODE_PASSWORD"), "opencode basic auth password (env: OPENCODE_PASSWORD)")
@@ -138,7 +140,7 @@ func (o *opencodeCfg) Create(ctx context.Context, lg *slog.Logger) (*opencode.Cl
 		}
 		return client, stop, nil
 	case "remote":
-		client, err := o.createRemote(ctx, baseURL)
+		client, err := o.createRemote(ctx, baseURL, lg)
 		if err != nil {
 			return nil, clean, err
 		}
@@ -148,7 +150,7 @@ func (o *opencodeCfg) Create(ctx context.Context, lg *slog.Logger) (*opencode.Cl
 	}
 }
 
-func (o *opencodeCfg) createRemote(_ context.Context, baseURL string) (*opencode.Client, error) {
+func (o *opencodeCfg) createRemote(_ context.Context, baseURL string, lg *slog.Logger) (*opencode.Client, error) {
 	if o.BaseURL == "" {
 		return nil, errors.New("remote mode requires -opencode-url or OPENCODE_URL")
 	}
@@ -159,9 +161,17 @@ func (o *opencodeCfg) createRemote(_ context.Context, baseURL string) (*opencode
 			Password:         o.Password,
 			DefaultDirectory: o.DefaultDirectory,
 			SyncTimeout:      o.SyncTimeout,
+			APILogger:        o.apiLogger(lg),
 		},
 		o.RequestTimeout,
 	)
+}
+
+func (o *opencodeCfg) apiLogger(lg *slog.Logger) *slog.Logger {
+	if !o.LogAPI {
+		return nil
+	}
+	return lg.With("component", "opencode-api")
 }
 
 func (o *opencodeCfg) createLocal(ctx context.Context, defaultBaseURL string, lg *slog.Logger) (_ *opencode.Client, _ func(), rerr error) {
@@ -182,6 +192,7 @@ func (o *opencodeCfg) createLocal(ctx context.Context, defaultBaseURL string, lg
 			Password:         o.Password,
 			DefaultDirectory: o.DefaultDirectory,
 			SyncTimeout:      o.SyncTimeout,
+			APILogger:        o.apiLogger(lg),
 		},
 		o.RequestTimeout,
 	)

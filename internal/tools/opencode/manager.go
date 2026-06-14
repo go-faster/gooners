@@ -18,27 +18,30 @@ const (
 	JobRunning JobStatus = "running"
 	JobDone    JobStatus = "done"
 	JobError   JobStatus = "error"
+	// JobUnknown means the server restarted while the job was running;
+	// the actual outcome must be determined by querying opencode.
+	JobUnknown JobStatus = "unknown"
 )
 
 type Job struct {
-	SessionID    string          `json:"session_id"`
-	Status       JobStatus       `json:"status"`
-	PromptResult json.RawMessage `json:"prompt_result,omitempty"`
-	Err          error           `json:"-"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-	mu           sync.Mutex
+	SessionID       string    `json:"session_id"`
+	Status          JobStatus `json:"status"`
+	PromptMessageID string    `json:"prompt_message_id,omitempty"`
+	Err             error     `json:"-"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	mu              sync.Mutex
 }
 
 // jobRecord is the on-disk representation of a Job. Err is stored as a string
 // because the error interface is not JSON-serializable.
 type jobRecord struct {
-	SessionID    string          `json:"session_id"`
-	Status       JobStatus       `json:"status"`
-	PromptResult json.RawMessage `json:"prompt_result,omitempty"`
-	ErrMessage   string          `json:"err_message,omitempty"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	SessionID       string    `json:"session_id"`
+	Status          JobStatus `json:"status"`
+	PromptMessageID string    `json:"prompt_message_id,omitempty"`
+	ErrMessage      string    `json:"err_message,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type Manager struct {
@@ -103,19 +106,19 @@ func (m *Manager) loadJobs() {
 			continue
 		}
 		job := &Job{
-			SessionID:    rec.SessionID,
-			Status:       rec.Status,
-			PromptResult: rec.PromptResult,
-			CreatedAt:    rec.CreatedAt,
-			UpdatedAt:    rec.UpdatedAt,
+			SessionID:       rec.SessionID,
+			Status:          rec.Status,
+			PromptMessageID: rec.PromptMessageID,
+			CreatedAt:       rec.CreatedAt,
+			UpdatedAt:       rec.UpdatedAt,
 		}
 		if rec.ErrMessage != "" {
 			job.Err = errors.New(rec.ErrMessage)
 		}
-		// A job persisted as "running" means the server crashed before it finished.
+		// A job persisted as "running" means the server crashed before it finished;
+		// the real outcome is unknown until opencode is queried.
 		if job.Status == JobRunning {
-			job.Status = JobError
-			job.Err = errors.New("server restarted before job completed")
+			job.Status = JobUnknown
 			job.UpdatedAt = time.Now()
 		}
 		m.jobs[rec.SessionID] = job
@@ -132,11 +135,11 @@ func (m *Manager) saveJob(job *Job) {
 		return
 	}
 	rec := jobRecord{
-		SessionID:    job.SessionID,
-		Status:       job.Status,
-		PromptResult: job.PromptResult,
-		CreatedAt:    job.CreatedAt,
-		UpdatedAt:    job.UpdatedAt,
+		SessionID:       job.SessionID,
+		Status:          job.Status,
+		PromptMessageID: job.PromptMessageID,
+		CreatedAt:       job.CreatedAt,
+		UpdatedAt:       job.UpdatedAt,
 	}
 	if job.Err != nil {
 		rec.ErrMessage = job.Err.Error()
@@ -226,7 +229,7 @@ func (m *Manager) run(job *Job, loc Location, req PromptRequest) {
 	res, err := m.client.Prompt(m.ctx, loc, job.SessionID, req)
 	job.mu.Lock()
 	defer job.mu.Unlock()
-	job.PromptResult = append(json.RawMessage(nil), res...)
+	job.PromptMessageID = extractMessageID(res)
 	job.UpdatedAt = time.Now()
 	if err != nil {
 		job.Status = JobError
@@ -243,11 +246,11 @@ func snapshotJob(job *Job) *Job {
 	job.mu.Lock()
 	defer job.mu.Unlock()
 	return &Job{
-		SessionID:    job.SessionID,
-		Status:       job.Status,
-		PromptResult: append(json.RawMessage(nil), job.PromptResult...),
-		Err:          job.Err,
-		CreatedAt:    job.CreatedAt,
-		UpdatedAt:    job.UpdatedAt,
+		SessionID:       job.SessionID,
+		Status:          job.Status,
+		PromptMessageID: job.PromptMessageID,
+		Err:             job.Err,
+		CreatedAt:       job.CreatedAt,
+		UpdatedAt:       job.UpdatedAt,
 	}
 }
