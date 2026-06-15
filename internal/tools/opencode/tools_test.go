@@ -40,8 +40,8 @@ func TestRunHandlerHappyPathCompactResult(t *testing.T) {
 			}
 		case "/api/session/ses_1/context":
 			writeJSON(w, `{"data":{"tokens":1}}`)
-		case "/api/session/ses_1/permission/request", "/api/question/request":
-			writeJSON(w, `{"data":[]}`)
+		case "/permission", "/question":
+			writeJSON(w, `[]`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -103,10 +103,10 @@ func TestCheckHandlerReportsPendingPermission(t *testing.T) {
 			writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"waiting"}]}]`)
 		case "/api/session/ses_1/context":
 			writeJSON(w, `{"data":{"tokens":1}}`)
-		case "/api/session/ses_1/permission/request":
-			writeJSON(w, `{"data":[{"id":"perm_1","sessionID":"ses_1","title":"shell","text":"approve?"}]}`)
-		case "/api/question/request":
-			writeJSON(w, `{"data":[]}`)
+		case "/permission":
+			writeJSON(w, `[{"id":"perm_1","sessionID":"ses_1","title":"shell","text":"approve?"}]`)
+		case "/question":
+			writeJSON(w, `[]`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -131,8 +131,8 @@ func TestCheckHandlerVerboseReturnsDecodedRawJSON(t *testing.T) {
 			writeJSON(w, `[{"info":{"id":"msg_1","role":"assistant"},"parts":[{"text":"done"}]}]`)
 		case "/api/session/ses_1/context":
 			writeJSON(w, `{"data":{"tokens":1}}`)
-		case "/api/session/ses_1/permission/request", "/api/question/request":
-			writeJSON(w, `{"data":[]}`)
+		case "/permission", "/question":
+			writeJSON(w, `[]`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -161,8 +161,8 @@ func TestCheckHandlerReportsRunningJob(t *testing.T) {
 			writeJSON(w, `[]`)
 		case "/api/session/ses_1/context":
 			writeJSON(w, `{}`)
-		case "/api/session/ses_1/permission/request", "/api/question/request":
-			writeJSON(w, `{"data":[]}`)
+		case "/permission", "/question":
+			writeJSON(w, `[]`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -186,8 +186,8 @@ func TestCheckHandlerReportsDoneJob(t *testing.T) {
 			writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"all done"}]}]`)
 		case "/api/session/ses_1/context":
 			writeJSON(w, `{"data":{"tokens":1}}`)
-		case "/api/session/ses_1/permission/request", "/api/question/request":
-			writeJSON(w, `{"data":[]}`)
+		case "/permission", "/question":
+			writeJSON(w, `[]`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -221,7 +221,7 @@ func TestCheckHandlerReportsErrorJob(t *testing.T) {
 				writeJSON(w, `[{"id":"msg_1","role":"assistant","content":[{"text":"partial"}]}]`)
 			case "/api/session/ses_1/context":
 				writeJSON(w, `{"data":{"tokens":1}}`)
-			case "/api/session/ses_1/permission/request", "/api/question/request":
+			case "/permission", "/question":
 				writeJSON(w, `{"data":[]}`)
 			default:
 				require.Failf(t, "unexpected request", "path %s", r.URL.Path)
@@ -252,7 +252,7 @@ func TestCheckHandlerReportsErrorJob(t *testing.T) {
 				writeJSON(w, `[]`)
 			case "/api/session/ses_1/context":
 				writeJSON(w, `{}`)
-			case "/api/session/ses_1/permission/request", "/api/question/request":
+			case "/permission", "/question":
 				writeJSON(w, `{"data":[]}`)
 			default:
 				require.Failf(t, "unexpected request", "path %s", r.URL.Path)
@@ -289,8 +289,8 @@ func TestRunHandlerBlockedState(t *testing.T) {
 			}
 		case "/api/session/ses_1/context":
 			writeJSON(w, `{"data":{"tokens":1}}`)
-		case "/api/session/ses_1/permission/request", "/api/question/request":
-			writeJSON(w, `{"data":[]}`)
+		case "/permission", "/question":
+			writeJSON(w, `[]`)
 		default:
 			require.Failf(t, "unexpected request", "path %s", r.URL.Path)
 		}
@@ -435,9 +435,9 @@ func TestPermissionsHandler(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/session/ses_1/permission/request", r.URL.Path)
+		require.Equal(t, "/permission", r.URL.Path)
 		require.Equal(t, dir, r.URL.Query().Get("directory"))
-		writeJSON(w, `{"data":[{"id":"perm_1","sessionID":"ses_1","title":"shell","text":"approve?"}]}`)
+		writeJSON(w, `[{"id":"perm_1","sessionID":"ses_1","title":"shell","text":"approve?"}]`)
 	}))
 	t.Cleanup(server.Close)
 
@@ -455,14 +455,14 @@ func TestPermissionReplyHandler(t *testing.T) {
 	dir := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, http.MethodPost, r.Method)
-		require.Equal(t, "/session/ses_1/permissions/perm_1", r.URL.Path)
+		require.Equal(t, "/permission/perm_1/reply", r.URL.Path)
 		require.Equal(t, dir, r.URL.Query().Get("directory"))
 
 		var body struct {
-			Response string `json:"response"`
+			Reply string `json:"reply"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-		require.Equal(t, "always", body.Response)
+		require.Equal(t, "always", body.Reply)
 		writeJSON(w, "true")
 	}))
 	t.Cleanup(server.Close)
@@ -483,9 +483,9 @@ func TestQuestionsHandler(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/question/request", r.URL.Path)
+		require.Equal(t, "/question", r.URL.Path)
 		require.Equal(t, dir, r.URL.Query().Get("directory"))
-		writeJSON(w, `{"data":[{"id":"q_1","sessionID":"ses_1","title":"which?","text":"pick one"}]}`)
+		writeJSON(w, `[{"id":"q_1","sessionID":"ses_1","title":"which?","text":"pick one"}]`)
 	}))
 	t.Cleanup(server.Close)
 
@@ -509,13 +509,13 @@ func TestQuestionReplyHandler(t *testing.T) {
 		{
 			name:     "reply",
 			reject:   false,
-			path:     "/api/session/ses_1/question/request/q_1/reply",
+			path:     "/question/q_1/reply",
 			wantBody: `{"answers":[["yes","no"]]}`,
 		},
 		{
 			name:     "reject",
 			reject:   true,
-			path:     "/api/session/ses_1/question/request/q_1/reject",
+			path:     "/question/q_1/reject",
 			wantBody: "",
 		},
 	}
@@ -532,7 +532,7 @@ func TestQuestionReplyHandler(t *testing.T) {
 				body, err := io.ReadAll(r.Body)
 				require.NoError(t, err)
 				require.Equal(t, tc.wantBody, string(body))
-				writeJSON(w, `{"data":{"ok":true}}`)
+				writeJSON(w, "true")
 			}))
 			t.Cleanup(server.Close)
 
@@ -546,7 +546,6 @@ func TestQuestionReplyHandler(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.True(t, got.OK)
-			require.JSONEq(t, `{"data":{"ok":true}}`, string(got.Data))
 		})
 	}
 }
@@ -655,16 +654,10 @@ func TestClientValidationErrors(t *testing.T) {
 	_, err = client.Prompt(t.Context(), Location{}, "", PromptRequest{})
 	require.EqualError(t, err, "session_id is required")
 
-	_, err = client.PermissionReply(t.Context(), Location{}, "", "perm_1", "always", "")
-	require.EqualError(t, err, "session_id is required")
-
-	_, err = client.PermissionReply(t.Context(), Location{}, "ses_1", "", "always", "")
+	_, err = client.PermissionReply(t.Context(), Location{}, "", "", "always", "")
 	require.EqualError(t, err, "request_id is required")
 
-	_, err = client.QuestionReply(t.Context(), Location{}, "", "q_1", false, nil)
-	require.EqualError(t, err, "session_id is required")
-
-	_, err = client.QuestionReply(t.Context(), Location{}, "ses_1", "", false, nil)
+	_, err = client.QuestionReply(t.Context(), Location{}, "", "", false, nil)
 	require.EqualError(t, err, "request_id is required")
 
 	mgr := NewManager(t.Context(), client, nil)
@@ -679,11 +672,11 @@ func TestHandlerErrors(t *testing.T) {
 	t.Parallel()
 	client := newTestClient(t, Config{BaseURL: "http://127.0.0.1:1"})
 
-	_, _, err := permissionReplyHandler(client)(t.Context(), nil, permissionReplyParams{SessionID: "ses_1"})
+	_, _, err := permissionReplyHandler(client)(t.Context(), nil, permissionReplyParams{})
 	require.EqualError(t, err, "request_id is required")
 
-	_, _, err = questionReplyHandler(client)(t.Context(), nil, questionReplyParams{RequestID: "q_1"})
-	require.EqualError(t, err, "session_id is required")
+	_, _, err = questionReplyHandler(client)(t.Context(), nil, questionReplyParams{})
+	require.EqualError(t, err, "request_id is required")
 
 	_, _, err = runHandler(client, NewManager(t.Context(), client, nil))(t.Context(), nil, runParams{})
 	require.EqualError(t, err, "prompt is required")

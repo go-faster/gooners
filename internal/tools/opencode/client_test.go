@@ -178,8 +178,8 @@ func TestClientSessionsDirectory(t *testing.T) {
 func TestClientQuestionsUsesGlobalRequestRoute(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/question/request", r.URL.Path)
-		_, _ = w.Write([]byte(`{"data":[]}`))
+		require.Equal(t, "/question", r.URL.Path)
+		_, _ = w.Write([]byte(`[]`))
 	}))
 	t.Cleanup(server.Close)
 

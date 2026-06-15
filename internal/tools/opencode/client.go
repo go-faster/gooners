@@ -304,49 +304,40 @@ func (c *Client) Context(ctx context.Context, loc Location, sessionID string) (j
 	return c.v2Get(ctx, fmt.Sprintf("/api/session/%s/context", sessionID), c.dir(loc))
 }
 
-func (c *Client) Permissions(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
-	if sessionID != "" {
-		return c.v2Get(ctx, fmt.Sprintf("/api/session/%s/permission/request", sessionID), c.dir(loc))
-	}
-	return c.v2Get(ctx, "/api/permission/request", c.dir(loc))
+// Permissions returns all pending permission requests as a flat JSON array.
+// Results are not scoped server-side; the caller (summarizeRequests) filters
+// by sessionID when needed.
+func (c *Client) Permissions(ctx context.Context, loc Location, _ string) (json.RawMessage, error) {
+	return c.instanceGet(ctx, "permission", c.dir(loc))
 }
 
-func (c *Client) PermissionReply(ctx context.Context, loc Location, sessionID, requestID, reply, _ string) (json.RawMessage, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
+func (c *Client) PermissionReply(ctx context.Context, loc Location, _, requestID, reply, message string) (json.RawMessage, error) {
 	if requestID == "" {
 		return nil, fmt.Errorf("request_id is required")
 	}
-	res, err := c.sdk.Session.Permissions.Respond(ctx, sessionID, requestID,
-		opencodesdk.SessionPermissionRespondParams{
-			Response:  opencodesdk.F(opencodesdk.SessionPermissionRespondParamsResponse(reply)),
-			Directory: opencodesdk.F(c.dir(loc)),
-		})
-	if err != nil {
-		return nil, err
+	type body struct {
+		Reply   string `json:"reply"`
+		Message string `json:"message,omitempty"`
 	}
-	return json.Marshal(res)
+	return c.instancePost(ctx, fmt.Sprintf("permission/%s/reply", requestID), c.dir(loc), body{Reply: reply, Message: message})
 }
 
+// Questions returns all pending question requests as a flat JSON array.
 func (c *Client) Questions(ctx context.Context, loc Location, _ string) (json.RawMessage, error) {
-	return c.v2Get(ctx, "/api/question/request", c.dir(loc))
+	return c.instanceGet(ctx, "question", c.dir(loc))
 }
 
-func (c *Client) QuestionReply(ctx context.Context, loc Location, sessionID, requestID string, reject bool, answers [][]string) (json.RawMessage, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
+func (c *Client) QuestionReply(ctx context.Context, loc Location, _, requestID string, reject bool, answers [][]string) (json.RawMessage, error) {
 	if requestID == "" {
 		return nil, fmt.Errorf("request_id is required")
 	}
 	if reject {
-		return c.v2Post(ctx, fmt.Sprintf("/api/session/%s/question/request/%s/reject", sessionID, requestID), c.dir(loc), nil)
+		return c.instancePost(ctx, fmt.Sprintf("question/%s/reject", requestID), c.dir(loc), nil)
 	}
 	type replyBody struct {
 		Answers [][]string `json:"answers"`
 	}
-	return c.v2Post(ctx, fmt.Sprintf("/api/session/%s/question/request/%s/reply", sessionID, requestID), c.dir(loc), replyBody{Answers: answers})
+	return c.instancePost(ctx, fmt.Sprintf("question/%s/reply", requestID), c.dir(loc), replyBody{Answers: answers})
 }
 
 // instanceGet makes a GET request to an instance route (no /api/ prefix).
@@ -357,6 +348,11 @@ func (c *Client) instanceGet(ctx context.Context, path, dir string) (json.RawMes
 	}
 	setDirQuery(req, dir)
 	return c.doRaw(req)
+}
+
+// instancePost makes a POST request to an instance route (no /api/ prefix).
+func (c *Client) instancePost(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
+	return c.doPost(ctx, c.httpClient, "/"+path, dir, body)
 }
 
 // syncPost makes a POST request to an instance route using the sync HTTP client (longer timeout).
@@ -372,11 +368,6 @@ func (c *Client) v2Get(ctx context.Context, path, dir string) (json.RawMessage, 
 	}
 	setDirQuery(req, dir)
 	return c.doRaw(req)
-}
-
-// v2Post makes a POST request to a v2 API route (/api/...).
-func (c *Client) v2Post(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
-	return c.doPost(ctx, c.httpClient, path, dir, body)
 }
 
 func (c *Client) doPost(ctx context.Context, hc *http.Client, path, dir string, body any) (json.RawMessage, error) {
