@@ -63,12 +63,10 @@ func summarizeRequests(raw json.RawMessage, kind, sessionID string) []RequestSum
 		}
 		text := strings.Join(collectText(nil, item), "\n")
 		out = append(out, RequestSummary{
-			ID:        firstStringField(item, "id", "requestID", "request_id"),
-			SessionID: itemSessionID,
-			Kind:      kind,
-			Title:     firstStringField(item, "title", "tool", "type", "action"),
-			Text:      text,
-			Preview:   preview(text),
+			Kind:    kind,
+			Title:   firstStringField(item, "title", "tool", "type", "action"),
+			Text:    text,
+			Preview: preview(text),
 		})
 	}
 	return out

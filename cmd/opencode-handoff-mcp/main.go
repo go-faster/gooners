@@ -72,7 +72,7 @@ func main() {
 		Logger:   logger.With("component", "opencode-manager"),
 		StateDir: ocode.StateDir,
 	})
-	opencode.Register(s, client, mgr, logger.With("component", "opencode-tools"))
+	opencode.Register(s, client, mgr)
 
 	if err := transport.Run(ctx, "opencode-handoff-mcp", s, logger.WithGroup("transport")); err != nil {
 		slog.Error("failed to run server", "err", err)

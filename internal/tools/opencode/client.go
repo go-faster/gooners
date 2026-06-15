@@ -14,40 +14,21 @@ import (
 	"strings"
 	"time"
 
-	opencodesdk "github.com/sst/opencode-sdk-go"
-	"github.com/sst/opencode-sdk-go/option"
+	"github.com/ogen-go/ogen/validate"
+
+	"github.com/go-faster/jx"
+
+	api "github.com/go-faster/gooners/internal/tools/opencode/opencodeapi"
 )
 
 const defaultBaseURL = "http://localhost:4096"
 
-// Client calls opencode HTTP API endpoints via the official SDK (instance routes)
-// and direct HTTP calls for v2 API endpoints not covered by the SDK.
+// Client calls opencode HTTP API endpoints via the generated client.
 type Client struct {
-	sdk              *opencodesdk.Client
-	httpClient       *http.Client
-	syncHTTPClient   *http.Client
+	apiClient        *api.Client
 	syncTimeout      time.Duration
 	baseURL          string
 	defaultDirectory string
-}
-
-type apiModel struct {
-	Name string `json:"name"`
-}
-
-type apiProvider struct {
-	ID     string              `json:"id"`
-	Name   string              `json:"name"`
-	Models map[string]apiModel `json:"models"`
-}
-
-type apiProviderList struct {
-	All       []apiProvider `json:"all"`
-	Connected []string      `json:"connected"`
-}
-
-type apiDataProviderList struct {
-	Data []apiProvider `json:"data"`
 }
 
 // NewClient creates an opencode API client.
@@ -77,21 +58,15 @@ func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 		return c
 	}
 
-	httpClient := newHTTPClient(timeout)
 	syncTimeout := cmp.Or(cfg.SyncTimeout, timeout)
-	syncHTTPClient := httpClient
-	if syncTimeout != timeout {
-		syncHTTPClient = newHTTPClient(syncTimeout)
+	httpClient := newHTTPClient(timeout)
+	apiClient, err := api.NewClient(baseURL, api.WithClient(httpClient))
+	if err != nil {
+		return nil, fmt.Errorf("create API client: %w", err)
 	}
 
-	sdk := opencodesdk.NewClient(
-		option.WithBaseURL(baseURL),
-		option.WithHTTPClient(httpClient),
-	)
 	return &Client{
-		sdk:              sdk,
-		httpClient:       httpClient,
-		syncHTTPClient:   syncHTTPClient,
+		apiClient:        apiClient,
 		syncTimeout:      syncTimeout,
 		baseURL:          strings.TrimRight(baseURL, "/"),
 		defaultDirectory: cfg.DefaultDirectory,
@@ -111,101 +86,169 @@ func (c *Client) SyncTimeout() time.Duration {
 }
 
 func (c *Client) Health(ctx context.Context) (json.RawMessage, error) {
-	return c.v2Get(ctx, "/api/health", "")
-}
-
-func (c *Client) Agents(ctx context.Context, loc Location) ([]Agent, error) {
-	params := opencodesdk.AgentListParams{}
-	if dir := c.dir(loc); dir != "" {
-		params.Directory = opencodesdk.F(dir)
-	}
-	res, err := c.sdk.Agent.List(ctx, params)
+	res, err := c.apiClient.V2HealthGet(ctx)
 	if err != nil {
 		return nil, err
 	}
-	agents := make([]Agent, 0, len(*res))
-	for _, a := range *res {
-		agents = append(agents, Agent{Name: a.Name, Description: a.Description, Mode: string(a.Mode)})
+	switch r := res.(type) {
+	case *api.V2HealthGetOK:
+		raw, err := json.Marshal(r)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(raw), nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	default:
+		return nil, fmt.Errorf("unexpected health response type: %T", res)
 	}
-	slices.SortFunc(agents, func(a, b Agent) int { return cmp.Compare(a.Name, b.Name) })
-	return agents, nil
+}
+
+func (c *Client) Agents(ctx context.Context, loc Location) ([]Agent, error) {
+	var params api.V2AgentListParams
+	var listLoc api.V2AgentListLocation
+	if dir := c.dir(loc); dir != "" {
+		listLoc.Directory = api.NewOptString(dir)
+	}
+	if loc.Workspace != "" {
+		listLoc.Workspace = api.NewOptString(loc.Workspace)
+	}
+	if listLoc.Directory.Set || listLoc.Workspace.Set {
+		params.Location = api.NewOptV2AgentListLocation(listLoc)
+	}
+
+	res, err := c.apiClient.V2AgentList(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	switch r := res.(type) {
+	case *api.V2AgentListOK:
+		agents := make([]Agent, 0, len(r.Data))
+		for _, a := range r.Data {
+			agents = append(agents, Agent{
+				Name:        a.ID,
+				Description: a.Description.Value,
+				Mode:        string(a.Mode),
+			})
+		}
+		slices.SortFunc(agents, func(a, b Agent) int { return cmp.Compare(a.Name, b.Name) })
+		return agents, nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	default:
+		return nil, fmt.Errorf("unexpected agent list response: %T", res)
+	}
 }
 
 func (c *Client) ProvidersAndModels(ctx context.Context, loc Location) (ModelsResult, error) {
-	if res, ok, err := c.apiProvidersAndModels(ctx, loc); err != nil {
-		return ModelsResult{}, err
-	} else if ok {
-		return res, nil
-	}
-
-	res, err := c.appProviders(ctx, loc)
+	res, ok, err := c.apiProvidersAndModels(ctx, loc)
 	if err != nil {
 		return ModelsResult{}, err
 	}
-	return modelsResultFromProviders(res.Providers), nil
+	if ok {
+		return res, nil
+	}
+	return ModelsResult{}, fmt.Errorf("failed to retrieve providers and models")
 }
 
 func (c *Client) apiProvidersAndModels(ctx context.Context, loc Location) (ModelsResult, bool, error) {
-	raw, err := c.v2Get(ctx, "/api/provider", c.dir(loc))
+	var (
+		providerParams api.V2ProviderListParams
+		providerLoc    api.V2ProviderListLocation
+	)
+	if dir := c.dir(loc); dir != "" {
+		providerLoc.Directory = api.NewOptString(dir)
+	}
+	if loc.Workspace != "" {
+		providerLoc.Workspace = api.NewOptString(loc.Workspace)
+	}
+	if providerLoc.Directory.Set || providerLoc.Workspace.Set {
+		providerParams.Location = api.NewOptV2ProviderListLocation(providerLoc)
+	}
+
+	providerRes, err := c.apiClient.V2ProviderList(ctx, providerParams)
 	if err != nil {
-		// 404 means the endpoint doesn't exist in this opencode version; fall back
-		// to the SDK app-route path instead of propagating the error.
-		var httpErr *HTTPError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+		var statusErr *validate.UnexpectedStatusCodeError
+		if errors.As(err, &statusErr) && statusErr.StatusCode == http.StatusNotFound {
 			return ModelsResult{}, false, nil
 		}
 		return ModelsResult{}, false, err
 	}
 
-	// opencode exposes two response shapes for /api/provider depending on version:
-	//   {all:[...], connected:[...]} — filter to connected providers only
-	//   {data:[...]}                 — all providers, no connected filter
-	// If neither shape matches, return (_, false, nil) so the caller falls back
-	// to the SDK app-route path.
-	var list apiProviderList
-	if err := json.Unmarshal(raw, &list); err == nil && (list.All != nil || list.Connected != nil) {
-		connected := make(map[string]bool, len(list.Connected))
-		for _, id := range list.Connected {
-			connected[id] = true
-		}
-		providers := make([]apiProvider, 0, len(list.All))
-		for _, p := range list.All {
-			if connected[p.ID] {
-				providers = append(providers, p)
+	var providerList *api.V2ProviderListOK
+	switch r := providerRes.(type) {
+	case *api.V2ProviderListOK:
+		providerList = r
+	case *api.InvalidRequestError:
+		return ModelsResult{}, false, fmt.Errorf("invalid provider list request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return ModelsResult{}, false, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.ServiceUnavailableError:
+		return ModelsResult{}, false, fmt.Errorf("service unavailable: %s", r.Message)
+	default:
+		return ModelsResult{}, false, fmt.Errorf("unexpected provider list response: %T", providerRes)
+	}
+
+	var modelParams api.V2ModelListParams
+	var modelLoc api.V2ModelListLocation
+	if dir := c.dir(loc); dir != "" {
+		modelLoc.Directory = api.NewOptString(dir)
+	}
+	if loc.Workspace != "" {
+		modelLoc.Workspace = api.NewOptString(loc.Workspace)
+	}
+	if modelLoc.Directory.Set || modelLoc.Workspace.Set {
+		modelParams.Location = api.NewOptV2ModelListLocation(modelLoc)
+	}
+
+	modelRes, err := c.apiClient.V2ModelList(ctx, modelParams)
+	if err != nil {
+		return ModelsResult{}, false, err
+	}
+
+	var modelList *api.V2ModelListOK
+	switch r := modelRes.(type) {
+	case *api.V2ModelListOK:
+		modelList = r
+	case *api.InvalidRequestError:
+		return ModelsResult{}, false, fmt.Errorf("invalid model list request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return ModelsResult{}, false, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.ServiceUnavailableError:
+		return ModelsResult{}, false, fmt.Errorf("service unavailable: %s", r.Message)
+	default:
+		return ModelsResult{}, false, fmt.Errorf("unexpected model list response: %T", modelRes)
+	}
+
+	var providers []ProviderSummary
+	for _, p := range providerList.Data {
+		modelCount := 0
+		for _, m := range modelList.Data {
+			if m.ProviderID == p.ID {
+				modelCount++
 			}
 		}
-		return modelsResultFromAPIProviders(providers), true, nil
+		providers = append(providers, ProviderSummary{
+			ID:     p.ID,
+			Name:   p.Name,
+			Models: modelCount,
+		})
 	}
 
-	var dataList apiDataProviderList
-	if err := json.Unmarshal(raw, &dataList); err == nil && dataList.Data != nil {
-		return modelsResultFromAPIProviders(dataList.Data), true, nil
-	}
-	return ModelsResult{}, false, nil
-}
-
-func modelsResultFromProviders(input []opencodesdk.Provider) ModelsResult {
-	converted := make([]apiProvider, 0, len(input))
-	for _, p := range input {
-		models := make(map[string]apiModel, len(p.Models))
-		for id, m := range p.Models {
-			models[id] = apiModel{Name: m.Name}
-		}
-		converted = append(converted, apiProvider{ID: p.ID, Name: p.Name, Models: models})
-	}
-	return modelsResultFromAPIProviders(converted)
-}
-
-func modelsResultFromAPIProviders(input []apiProvider) ModelsResult {
-	providers := make([]ProviderSummary, 0, len(input))
 	var models []ModelSummary
-	for _, p := range input {
-		providers = append(providers, ProviderSummary{ID: p.ID, Name: p.Name, Models: len(p.Models)})
-		for id, m := range p.Models {
-			models = append(models, ModelSummary{ProviderID: p.ID, ID: id, Name: m.Name})
-		}
+	for _, m := range modelList.Data {
+		models = append(models, ModelSummary{
+			ProviderID: m.ProviderID,
+			ID:         m.ID,
+			Name:       m.Name,
+		})
 	}
-	return sortModelsResult(ModelsResult{Providers: providers, Models: models})
+
+	return sortModelsResult(ModelsResult{Providers: providers, Models: models}), true, nil
 }
 
 func sortModelsResult(res ModelsResult) ModelsResult {
@@ -219,238 +262,463 @@ func sortModelsResult(res ModelsResult) ModelsResult {
 	return res
 }
 
-func (c *Client) appProviders(ctx context.Context, loc Location) (*opencodesdk.AppProvidersResponse, error) {
-	params := opencodesdk.AppProvidersParams{}
-	if dir := c.dir(loc); dir != "" {
-		params.Directory = opencodesdk.F(dir)
-	}
-	return c.sdk.App.Providers(ctx, params)
-}
-
 func (c *Client) Sessions(ctx context.Context, req SessionsRequest) (SessionsResult, error) {
+	var params api.V2SessionListParams
 	dir := cmp.Or(req.Directory, c.defaultDirectory)
-	params := opencodesdk.SessionListParams{}
 	if dir != "" {
-		params.Directory = opencodesdk.F(dir)
+		params.Directory = api.NewOptString(dir)
 	}
-	res, err := c.sdk.Session.List(ctx, params)
+
+	res, err := c.apiClient.V2SessionList(ctx, params)
 	if err != nil {
 		return SessionsResult{}, err
 	}
-	sessions := make([]Session, 0, len(*res))
-	for _, s := range *res {
-		sessions = append(sessions, sessionFromSDK(s))
+	switch r := res.(type) {
+	case *api.SessionsResponse:
+		sessions := make([]Session, 0, len(r.Data))
+		for _, s := range r.Data {
+			sessions = append(sessions, sessionFromV2(s))
+		}
+		return SessionsResult{Sessions: sessions}, nil
+	case *api.UnauthorizedError:
+		return SessionsResult{}, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.V2SessionListBadRequestApplicationJSON:
+		return SessionsResult{}, fmt.Errorf("bad request: %s", string(*r))
+	default:
+		return SessionsResult{}, fmt.Errorf("unexpected sessions response: %T", res)
 	}
-	return SessionsResult{Sessions: sessions}, nil
 }
 
 func (c *Client) CreateSession(ctx context.Context, loc Location, req CreateSessionRequest) (Session, error) {
-	params := opencodesdk.SessionNewParams{
-		Directory: opencodesdk.F(c.dir(loc)),
-	}
+	var body api.SessionCreateReq
 	if req.Title != "" {
-		params.Title = opencodesdk.F(req.Title)
+		body.Title = api.NewOptString(req.Title)
 	}
 	if req.ParentID != "" {
-		params.ParentID = opencodesdk.F(req.ParentID)
+		body.ParentID = api.NewOptString(req.ParentID)
 	}
-	res, err := c.sdk.Session.New(ctx, params)
+	if loc.Workspace != "" {
+		body.WorkspaceID = api.NewOptString(loc.Workspace)
+	}
+
+	var params api.SessionCreateParams
+	if dir := c.dir(loc); dir != "" {
+		params.Directory = api.NewOptString(dir)
+	}
+	if loc.Workspace != "" {
+		params.Workspace = api.NewOptString(loc.Workspace)
+	}
+
+	res, err := c.apiClient.SessionCreate(ctx, api.NewOptSessionCreateReq(body), params)
 	if err != nil {
 		return Session{}, fmt.Errorf("POST /session: %w", err)
 	}
-	return sessionFromSDK(*res), nil
+	switch r := res.(type) {
+	case *api.Session:
+		return sessionFromAPI(*r), nil
+	case *api.SessionCreateBadRequestApplicationJSON:
+		return Session{}, fmt.Errorf("POST /session bad request: %s", string(*r))
+	default:
+		return Session{}, fmt.Errorf("unexpected SessionCreate response: %T", res)
+	}
 }
 
-func (c *Client) Prompt(ctx context.Context, loc Location, sessionID string, req PromptRequest) (json.RawMessage, error) {
+func (c *Client) Prompt(ctx context.Context, _ Location, sessionID string, req PromptRequest) (json.RawMessage, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
-	type textPart struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	type modelRef struct {
-		ModelID    string `json:"modelID"`
-		ProviderID string `json:"providerID"`
-	}
-	type promptBody struct {
-		Parts []textPart `json:"parts"`
-		Agent string     `json:"agent,omitempty"`
-		Model *modelRef  `json:"model,omitempty"`
-	}
-	body := promptBody{
-		Parts: []textPart{{Type: "text", Text: req.Prompt.Text}},
-		Agent: req.Agent,
-	}
-	if req.Model != nil && req.Model.ModelID != "" {
-		body.Model = &modelRef{
-			ModelID:    req.Model.ModelID,
-			ProviderID: req.Model.ProviderID,
-		}
-	}
-	return c.syncPost(ctx, fmt.Sprintf("session/%s/message", sessionID), c.dir(loc), body)
-}
 
-func (c *Client) Messages(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
-	}
-	return c.instanceGet(ctx, fmt.Sprintf("session/%s/message", sessionID), c.dir(loc))
-}
+	var p api.Prompt
+	p.Text = req.Prompt.Text
 
-func (c *Client) Context(ctx context.Context, loc Location, sessionID string) (json.RawMessage, error) {
-	if sessionID == "" {
-		return nil, fmt.Errorf("session_id is required")
+	if req.Agent != "" {
+		p.Agents = []api.PromptAgentAttachment{{
+			Name: req.Agent,
+		}}
 	}
-	return c.v2Get(ctx, fmt.Sprintf("/api/session/%s/context", sessionID), c.dir(loc))
-}
 
-// Permissions returns all pending permission requests as a flat JSON array.
-// Results are not scoped server-side; the caller (summarizeRequests) filters
-// by sessionID when needed.
-func (c *Client) Permissions(ctx context.Context, loc Location, _ string) (json.RawMessage, error) {
-	return c.instanceGet(ctx, "permission", c.dir(loc))
-}
+	var body api.V2SessionPromptReq
+	body.Prompt = p
 
-func (c *Client) PermissionReply(ctx context.Context, loc Location, _, requestID, reply, message string) (json.RawMessage, error) {
-	if requestID == "" {
-		return nil, fmt.Errorf("request_id is required")
-	}
-	type body struct {
-		Reply   string `json:"reply"`
-		Message string `json:"message,omitempty"`
-	}
-	return c.instancePost(ctx, fmt.Sprintf("permission/%s/reply", requestID), c.dir(loc), body{Reply: reply, Message: message})
-}
+	var params api.V2SessionPromptParams
+	params.SessionID = sessionID
 
-// Questions returns all pending question requests as a flat JSON array.
-func (c *Client) Questions(ctx context.Context, loc Location, _ string) (json.RawMessage, error) {
-	return c.instanceGet(ctx, "question", c.dir(loc))
-}
-
-func (c *Client) QuestionReply(ctx context.Context, loc Location, _, requestID string, reject bool, answers [][]string) (json.RawMessage, error) {
-	if requestID == "" {
-		return nil, fmt.Errorf("request_id is required")
-	}
-	if reject {
-		return c.instancePost(ctx, fmt.Sprintf("question/%s/reject", requestID), c.dir(loc), nil)
-	}
-	type replyBody struct {
-		Answers [][]string `json:"answers"`
-	}
-	return c.instancePost(ctx, fmt.Sprintf("question/%s/reply", requestID), c.dir(loc), replyBody{Answers: answers})
-}
-
-// instanceGet makes a GET request to an instance route (no /api/ prefix).
-func (c *Client) instanceGet(ctx context.Context, path, dir string) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/"+path, http.NoBody)
+	res, err := c.apiClient.V2SessionPrompt(ctx, &body, params)
 	if err != nil {
 		return nil, err
 	}
-	setDirQuery(req, dir)
-	return c.doRaw(req)
-}
-
-// instancePost makes a POST request to an instance route (no /api/ prefix).
-func (c *Client) instancePost(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
-	return c.doPost(ctx, c.httpClient, "/"+path, dir, body)
-}
-
-// syncPost makes a POST request to an instance route using the sync HTTP client (longer timeout).
-func (c *Client) syncPost(ctx context.Context, path, dir string, body any) (json.RawMessage, error) {
-	return c.doPost(ctx, c.syncHTTPClient, "/"+path, dir, body)
-}
-
-// v2Get makes a GET request to a v2 API route (/api/...).
-func (c *Client) v2Get(ctx context.Context, path, dir string) (json.RawMessage, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, http.NoBody)
-	if err != nil {
-		return nil, err
-	}
-	setDirQuery(req, dir)
-	return c.doRaw(req)
-}
-
-func (c *Client) doPost(ctx context.Context, hc *http.Client, path, dir string, body any) (json.RawMessage, error) {
-	var bodyReader io.Reader
-	if body != nil {
-		payload, err := json.Marshal(body)
+	switch r := res.(type) {
+	case *api.V2SessionPromptOK:
+		raw, err := json.Marshal(r)
 		if err != nil {
 			return nil, err
 		}
-		bodyReader = bytes.NewReader(payload)
+		return json.RawMessage(raw), nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.ConflictError:
+		return nil, fmt.Errorf("conflict: %s", r.Message)
+	case *api.V2SessionPromptNotFoundApplicationJSON:
+		return nil, fmt.Errorf("session not found: %s", string(*r))
+	default:
+		return nil, fmt.Errorf("unexpected session prompt response: %T", res)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bodyReader)
+}
+
+func (c *Client) Messages(ctx context.Context, _ Location, sessionID string) (json.RawMessage, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+
+	var params api.V2SessionMessagesParams
+	params.SessionID = sessionID
+
+	res, err := c.apiClient.V2SessionMessages(ctx, params)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	setDirQuery(req, dir)
-	return c.doRawWith(hc, req)
-}
-
-func setDirQuery(req *http.Request, dir string) {
-	if dir == "" {
-		return
-	}
-	q := req.URL.Query()
-	q.Set("directory", dir)
-	req.URL.RawQuery = q.Encode()
-}
-
-func (c *Client) doRaw(req *http.Request) (json.RawMessage, error) {
-	return c.doRawWith(c.httpClient, req)
-}
-
-// HTTPError is returned by client methods when the server responds with a
-// non-2xx status code.
-type HTTPError struct {
-	Method     string
-	Path       string
-	StatusCode int
-	Body       string
-}
-
-func (e *HTTPError) Error() string {
-	return fmt.Sprintf("opencode API %s %s: HTTP %d: %s", e.Method, e.Path, e.StatusCode, e.Body)
-}
-
-func (c *Client) doRawWith(hc *http.Client, req *http.Request) (json.RawMessage, error) {
-	resp, err := hc.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		snippet := data
-		if len(snippet) > 256 {
-			snippet = snippet[:256]
+	switch r := res.(type) {
+	case *api.SessionMessagesResponse:
+		raw, err := json.Marshal(r.Data)
+		if err != nil {
+			return nil, err
 		}
-		return nil, &HTTPError{
-			Method:     req.Method,
-			Path:       req.URL.Path,
-			StatusCode: resp.StatusCode,
-			Body:       string(snippet),
-		}
+		return json.RawMessage(raw), nil
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.UnknownError1:
+		return nil, fmt.Errorf("unknown error: %s", r.Message)
+	case *api.V2SessionMessagesBadRequestApplicationJSON:
+		return nil, fmt.Errorf("bad request: %s", string(*r))
+	case *api.V2SessionMessagesNotFoundApplicationJSON:
+		return nil, fmt.Errorf("session not found: %s", string(*r))
+	default:
+		return nil, fmt.Errorf("unexpected session messages response: %T", res)
 	}
-	return json.RawMessage(data), nil
 }
 
-func sessionFromSDK(s opencodesdk.Session) Session {
-	raw, _ := json.Marshal(s)
+func (c *Client) Context(ctx context.Context, _ Location, sessionID string) (json.RawMessage, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+
+	var params api.V2SessionContextParams
+	params.SessionID = sessionID
+
+	res, err := c.apiClient.V2SessionContext(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	switch r := res.(type) {
+	case *api.V2SessionContextOK:
+		raw, err := json.Marshal(r.Data)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(raw), nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.UnknownError1:
+		return nil, fmt.Errorf("unknown error: %s", r.Message)
+	case *api.V2SessionContextNotFoundApplicationJSON:
+		return nil, fmt.Errorf("session context not found: %s", string(*r))
+	default:
+		return nil, fmt.Errorf("unexpected session context response: %T", res)
+	}
+}
+
+func (c *Client) Permissions(ctx context.Context, loc Location, _ string) (json.RawMessage, error) {
+	var params api.V2PermissionRequestListParams
+	var listLoc api.V2PermissionRequestListLocation
+	if dir := c.dir(loc); dir != "" {
+		listLoc.Directory = api.NewOptString(dir)
+	}
+	if loc.Workspace != "" {
+		listLoc.Workspace = api.NewOptString(loc.Workspace)
+	}
+	if listLoc.Directory.Set || listLoc.Workspace.Set {
+		params.Location = api.NewOptV2PermissionRequestListLocation(listLoc)
+	}
+
+	res, err := c.apiClient.V2PermissionRequestList(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	switch r := res.(type) {
+	case *api.V2PermissionRequestListOK:
+		raw, err := json.Marshal(r.Data)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(raw), nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	default:
+		return nil, fmt.Errorf("unexpected permission requests response: %T", res)
+	}
+}
+
+func (c *Client) PermissionReply(ctx context.Context, _ Location, sessionID, requestID, reply, message string) (json.RawMessage, error) {
+	if requestID == "" {
+		return nil, fmt.Errorf("request_id is required")
+	}
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+
+	var body api.V2SessionPermissionReplyReq
+	body.Reply = api.PermissionV2Reply(reply)
+	if message != "" {
+		body.Message = api.NewOptString(message)
+	}
+
+	var params api.V2SessionPermissionReplyParams
+	params.SessionID = sessionID
+	params.RequestID = requestID
+
+	res, err := c.apiClient.V2SessionPermissionReply(ctx, &body, params)
+	if err != nil {
+		return nil, err
+	}
+	switch r := res.(type) {
+	case *api.V2SessionPermissionReplyNoContent:
+		return json.RawMessage("{}"), nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.V2SessionPermissionReplyNotFoundApplicationJSON:
+		return nil, fmt.Errorf("permission request not found: %s", string(*r))
+	default:
+		return nil, fmt.Errorf("unexpected permission reply response: %T", res)
+	}
+}
+
+func (c *Client) Questions(ctx context.Context, loc Location, _ string) (json.RawMessage, error) {
+	var params api.V2QuestionRequestListParams
+	var listLoc api.V2QuestionRequestListLocation
+	if dir := c.dir(loc); dir != "" {
+		listLoc.Directory = api.NewOptString(dir)
+	}
+	if loc.Workspace != "" {
+		listLoc.Workspace = api.NewOptString(loc.Workspace)
+	}
+	if listLoc.Directory.Set || listLoc.Workspace.Set {
+		params.Location = api.NewOptV2QuestionRequestListLocation(listLoc)
+	}
+
+	res, err := c.apiClient.V2QuestionRequestList(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	switch r := res.(type) {
+	case *api.V2QuestionRequestListOK:
+		raw, err := json.Marshal(r.Data)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(raw), nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	default:
+		return nil, fmt.Errorf("unexpected question requests response: %T", res)
+	}
+}
+
+func (c *Client) QuestionReply(ctx context.Context, _ Location, sessionID, requestID string, reject bool, answers [][]string) (json.RawMessage, error) {
+	if requestID == "" {
+		return nil, fmt.Errorf("request_id is required")
+	}
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+
+	if reject {
+		var params api.V2SessionQuestionRejectParams
+		params.SessionID = sessionID
+		params.RequestID = requestID
+
+		res, err := c.apiClient.V2SessionQuestionReject(ctx, params)
+		if err != nil {
+			return nil, err
+		}
+		switch r := res.(type) {
+		case *api.V2SessionQuestionRejectNoContent:
+			return json.RawMessage("{}"), nil
+		case *api.InvalidRequestError:
+			return nil, fmt.Errorf("invalid request: %s", r.Message)
+		case *api.UnauthorizedError:
+			return nil, fmt.Errorf("unauthorized: %s", r.Message)
+		case *api.V2SessionQuestionRejectNotFoundApplicationJSON:
+			return nil, fmt.Errorf("question request not found: %s", string(*r))
+		default:
+			return nil, fmt.Errorf("unexpected question reject response: %T", res)
+		}
+	}
+
+	var answersList []api.QuestionV2Answer
+	for _, ans := range answers {
+		answersList = append(answersList, api.QuestionV2Answer(ans))
+	}
+	reqBody := api.QuestionV2Reply{Answers: answersList}
+
+	var params api.V2SessionQuestionReplyParams
+	params.SessionID = sessionID
+	params.RequestID = requestID
+
+	res, err := c.apiClient.V2SessionQuestionReply(ctx, &reqBody, params)
+	if err != nil {
+		return nil, err
+	}
+	switch r := res.(type) {
+	case *api.V2SessionQuestionReplyNoContent:
+		return json.RawMessage("{}"), nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.V2SessionQuestionReplyNotFoundApplicationJSON:
+		return nil, fmt.Errorf("question request not found: %s", string(*r))
+	default:
+		return nil, fmt.Errorf("unexpected question reply response: %T", res)
+	}
+}
+
+func (c *Client) SessionPermissionRequests(ctx context.Context, _ Location, sessionID string) ([]map[string]any, error) {
+	if sessionID == "" {
+		return nil, fmt.Errorf("sessionID is required")
+	}
+	var params api.V2SessionPermissionListParams
+	params.SessionID = sessionID
+
+	res, err := c.apiClient.V2SessionPermissionList(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	switch r := res.(type) {
+	case *api.V2SessionPermissionListOK:
+		raw, err := json.Marshal(r.Data)
+		if err != nil {
+			return nil, err
+		}
+		var list []map[string]any
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return nil, err
+		}
+		return list, nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.V2SessionPermissionListNotFoundApplicationJSON:
+		return nil, fmt.Errorf("session not found: %s", string(*r))
+	default:
+		return nil, fmt.Errorf("unexpected session permission list response: %T", res)
+	}
+}
+
+func (c *Client) SessionQuestionRequests(ctx context.Context, loc Location, sessionID string) ([]map[string]any, error) {
+	var params api.V2QuestionRequestListParams
+	var listLoc api.V2QuestionRequestListLocation
+	if dir := c.dir(loc); dir != "" {
+		listLoc.Directory = api.NewOptString(dir)
+	}
+	if loc.Workspace != "" {
+		listLoc.Workspace = api.NewOptString(loc.Workspace)
+	}
+	if listLoc.Directory.Set || listLoc.Workspace.Set {
+		params.Location = api.NewOptV2QuestionRequestListLocation(listLoc)
+	}
+
+	res, err := c.apiClient.V2QuestionRequestList(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	switch r := res.(type) {
+	case *api.V2QuestionRequestListOK:
+		raw, err := json.Marshal(r.Data)
+		if err != nil {
+			return nil, err
+		}
+		var list []map[string]any
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return nil, err
+		}
+		var filtered []map[string]any
+		for _, q := range list {
+			if q["sessionID"] == sessionID || q["session_id"] == sessionID {
+				filtered = append(filtered, q)
+			}
+		}
+		return filtered, nil
+	case *api.InvalidRequestError:
+		return nil, fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return nil, fmt.Errorf("unauthorized: %s", r.Message)
+	default:
+		return nil, fmt.Errorf("unexpected question request list response: %T", res)
+	}
+}
+
+func (c *Client) Wait(ctx context.Context, _ Location, sessionID string) error {
+	if sessionID == "" {
+		return fmt.Errorf("session_id is required")
+	}
+
+	var params api.V2SessionWaitParams
+	params.SessionID = sessionID
+
+	res, err := c.apiClient.V2SessionWait(ctx, params)
+	if err != nil {
+		return err
+	}
+	switch r := res.(type) {
+	case *api.V2SessionWaitNoContent:
+		return nil
+	case *api.InvalidRequestError:
+		return fmt.Errorf("invalid request: %s", r.Message)
+	case *api.UnauthorizedError:
+		return fmt.Errorf("unauthorized: %s", r.Message)
+	case *api.ServiceUnavailableError:
+		return fmt.Errorf("service unavailable: %s", r.Message)
+	case *api.V2SessionWaitNotFoundApplicationJSON:
+		return fmt.Errorf("session not found: %s", string(*r))
+	default:
+		return fmt.Errorf("unexpected session wait response: %T", res)
+	}
+}
+
+func sessionFromV2(s api.SessionV2Info) Session {
+	var e jx.Encoder
+	s.Encode(&e)
 	return Session{
 		ID:        s.ID,
 		Title:     s.Title,
-		ParentID:  s.ParentID,
+		ParentID:  s.ParentID.Value,
 		CreatedAt: int64(s.Time.Created),
 		UpdatedAt: int64(s.Time.Updated),
-		Raw:       raw,
+		Raw:       e.Bytes(),
+	}
+}
+
+func sessionFromAPI(s api.Session) Session {
+	var e jx.Encoder
+	s.Encode(&e)
+	return Session{
+		ID:        s.ID,
+		Title:     s.Title,
+		ParentID:  s.ParentID.Value,
+		CreatedAt: int64(s.Time.Created),
+		UpdatedAt: int64(s.Time.Updated),
+		Raw:       e.Bytes(),
 	}
 }
 
@@ -483,7 +751,11 @@ func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 		r.Body = io.NopCloser(bytes.NewReader(data))
 
 		snippetLen := min(len(data), 512)
-		reqSnippet = string(data[:snippetLen]) + "..."
+		snippet := slices.Clip(data[:snippetLen])
+		if len(data) > snippetLen {
+			snippet = append(snippet, "..."...)
+		}
+		reqSnippet = string(snippet)
 	}
 	t.logger.DebugContext(r.Context(), "opencode API request",
 		"method", r.Method,
@@ -506,13 +778,14 @@ func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
-	resp.Body = io.NopCloser(bytes.NewReader(data))
 
 	snippetLen := min(len(data), 1024)
-	snippet := slices.Concat(
-		slices.Clip(data[:snippetLen]),
-		[]byte("..."),
-	)
+	snippet := slices.Clip(data[:snippetLen])
+	if len(data) > snippetLen {
+		snippet = append(snippet, "..."...)
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(snippet))
+
 	t.logger.DebugContext(r.Context(), "opencode API response",
 		"method", r.Method,
 		"url", r.URL.String(),
