@@ -52,7 +52,8 @@
         ],
         "type": "object"
       },
-      "Agent": {
+      "agent": {
+        "nullable": true,
         "additionalProperties": false,
         "properties": {
           "color": {
@@ -86,7 +87,8 @@
               "modelID",
               "providerID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "name": {
             "type": "string"
@@ -113,6 +115,7 @@
             "type": "number"
           },
           "variant": {
+            "nullable": true,
             "type": "string"
           }
         },
@@ -171,7 +174,8 @@
             "type": "string"
           },
           "model": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "options": {
             "type": "object"
@@ -200,6 +204,7 @@
             "type": "number"
           },
           "variant": {
+            "nullable": true,
             "type": "string"
           }
         },
@@ -356,6 +361,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -363,7 +369,8 @@
               "id",
               "providerID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "permissions": {
             "$ref": "#/components/schemas/PermissionV2Ruleset"
@@ -434,6 +441,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "cost": {
@@ -551,6 +559,7 @@
                 "type": "object"
               },
               "input": {
+                "nullable": true,
                 "type": "number"
               },
               "output": {
@@ -572,6 +581,7 @@
             "type": "object"
           },
           "variant": {
+            "nullable": true,
             "type": "string"
           }
         },
@@ -740,6 +750,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "description": {
@@ -752,7 +763,8 @@
             "type": "array"
           },
           "model": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "name": {
             "type": "string"
@@ -783,6 +795,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "description": {
@@ -798,6 +811,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -805,7 +819,8 @@
               "id",
               "providerID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "name": {
             "type": "string"
@@ -871,6 +886,7 @@
             "type": "string"
           },
           "agent": {
+            "nullable": true,
             "additionalProperties": {
               "$ref": "#/components/schemas/AgentConfig"
             },
@@ -924,13 +940,15 @@
               "additionalProperties": false,
               "properties": {
                 "agent": {
+                  "nullable": true,
                   "type": "string"
                 },
                 "description": {
                   "type": "string"
                 },
                 "model": {
-                  "type": "string"
+                  "type": "string",
+                  "nullable": true
                 },
                 "subtask": {
                   "type": "boolean"
@@ -939,6 +957,7 @@
                   "type": "string"
                 },
                 "variant": {
+                  "nullable": true,
                   "type": "string"
                 }
               },
@@ -1185,7 +1204,8 @@
             "type": "object"
           },
           "model": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "permission": {
             "$ref": "#/components/schemas/PermissionConfig"
@@ -1815,6 +1835,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "enum": [
                   "info",
                   "success",
@@ -3645,6 +3666,7 @@
             "additionalProperties": false,
             "properties": {
               "agent": {
+                "nullable": true,
                 "type": "string"
               },
               "messageID": {
@@ -3947,6 +3969,7 @@
                     "type": "string"
                   },
                   "variant": {
+                    "nullable": true,
                     "type": "string"
                   }
                 },
@@ -4546,6 +4569,7 @@
                     "type": "object"
                   },
                   "input": {
+                    "nullable": true,
                     "type": "number"
                   },
                   "output": {
@@ -4646,6 +4670,7 @@
             "additionalProperties": false,
             "properties": {
               "agent": {
+                "nullable": true,
                 "type": "string"
               },
               "assistantMessageID": {
@@ -4662,6 +4687,7 @@
                     "type": "string"
                   },
                   "variant": {
+                    "nullable": true,
                     "type": "string"
                   }
                 },
@@ -4919,6 +4945,7 @@
                 "type": "string"
               },
               "input": {
+                "nullable": true,
                 "type": "object"
               },
               "provider": {
@@ -5601,6 +5628,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "enum": [
                   "info",
                   "success",
@@ -5746,7 +5774,8 @@
               },
               "workspaceID": {
                 "pattern": "^wrk",
-                "type": "string"
+                "type": "string",
+                "nullable": true
               }
             },
             "required": [
@@ -6621,6 +6650,7 @@
                     "additionalProperties": false,
                     "properties": {
                       "agent": {
+                        "nullable": true,
                         "type": "string"
                       },
                       "messageID": {
@@ -6681,6 +6711,7 @@
                             "type": "string"
                           },
                           "variant": {
+                            "nullable": true,
                             "type": "string"
                           }
                         },
@@ -7166,6 +7197,7 @@
                     "additionalProperties": false,
                     "properties": {
                       "agent": {
+                        "nullable": true,
                         "type": "string"
                       },
                       "assistantMessageID": {
@@ -7182,6 +7214,7 @@
                             "type": "string"
                           },
                           "variant": {
+                            "nullable": true,
                             "type": "string"
                           }
                         },
@@ -7275,6 +7308,7 @@
                             "type": "object"
                           },
                           "input": {
+                            "nullable": true,
                             "type": "number"
                           },
                           "output": {
@@ -7845,6 +7879,7 @@
                         "type": "string"
                       },
                       "input": {
+                        "nullable": true,
                         "type": "object"
                       },
                       "provider": {
@@ -9409,6 +9444,7 @@
                         "type": "string"
                       },
                       "variant": {
+                        "nullable": true,
                         "enum": [
                           "info",
                           "success",
@@ -10151,7 +10187,8 @@
                       },
                       "workspaceID": {
                         "pattern": "^wrk",
-                        "type": "string"
+                        "type": "string",
+                        "nullable": true
                       }
                     },
                     "required": [
@@ -10348,6 +10385,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "cost": {
@@ -10373,6 +10411,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -10473,7 +10512,8 @@
             "additionalProperties": false,
             "properties": {
               "archived": {
-                "type": "number"
+                "type": "number",
+                "nullable": true
               },
               "compacting": {
                 "minimum": 0,
@@ -10517,6 +10557,7 @@
                 "type": "object"
               },
               "input": {
+                "nullable": true,
                 "type": "number"
               },
               "output": {
@@ -10539,7 +10580,8 @@
           },
           "workspaceID": {
             "pattern": "^wrk",
-            "type": "string"
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -10685,7 +10727,8 @@
           },
           "workspaceID": {
             "pattern": "^wrk",
-            "type": "string"
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -10702,7 +10745,8 @@
           },
           "workspaceID": {
             "pattern": "^wrk",
-            "type": "string"
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -11081,6 +11125,7 @@
                 "type": "boolean"
               },
               "input": {
+                "nullable": true,
                 "additionalProperties": false,
                 "properties": {
                   "audio": {
@@ -11219,6 +11264,7 @@
                     "type": "object"
                   },
                   "input": {
+                    "nullable": true,
                     "type": "number"
                   },
                   "output": {
@@ -11233,6 +11279,7 @@
                 "type": "object"
               },
               "input": {
+                "nullable": true,
                 "type": "number"
               },
               "output": {
@@ -11259,6 +11306,7 @@
                       "type": "object"
                     },
                     "input": {
+                      "nullable": true,
                       "type": "number"
                     },
                     "output": {
@@ -11303,7 +11351,8 @@
             "type": "object"
           },
           "family": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "headers": {
             "additionalProperties": {
@@ -11321,6 +11370,7 @@
                 "type": "number"
               },
               "input": {
+                "nullable": true,
                 "type": "number"
               },
               "output": {
@@ -11442,6 +11492,7 @@
             "additionalProperties": false,
             "properties": {
               "input": {
+                "nullable": true,
                 "items": {
                   "type": "string"
                 },
@@ -11485,6 +11536,7 @@
                   "type": "object"
                 },
                 "input": {
+                  "nullable": true,
                   "type": "number"
                 },
                 "output": {
@@ -11523,7 +11575,8 @@
             "type": "boolean"
           },
           "family": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "id": {
             "type": "string"
@@ -11535,6 +11588,7 @@
                 "type": "integer"
               },
               "input": {
+                "nullable": true,
                 "type": "integer"
               },
               "output": {
@@ -11812,6 +11866,7 @@
                 "type": "object"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -12163,6 +12218,7 @@
       },
       "ModelV2Info1": {
         "additionalProperties": false,
+        "nullable": true,
         "properties": {
           "api": {
             "x-anyOf": [
@@ -12227,6 +12283,7 @@
             "additionalProperties": false,
             "properties": {
               "input": {
+                "nullable": true,
                 "items": {
                   "type": "string"
                 },
@@ -12270,6 +12327,7 @@
                   "type": "object"
                 },
                 "input": {
+                  "nullable": true,
                   "type": "number"
                 },
                 "output": {
@@ -12308,7 +12366,8 @@
             "type": "boolean"
           },
           "family": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "id": {
             "type": "string"
@@ -12320,6 +12379,7 @@
                 "type": "integer"
               },
               "input": {
+                "nullable": true,
                 "type": "integer"
               },
               "output": {
@@ -12541,6 +12601,7 @@
                 "type": "object"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -14055,6 +14116,7 @@
                           "type": "number"
                         },
                         "input": {
+                          "nullable": true,
                           "type": "number"
                         },
                         "output": {
@@ -14068,6 +14130,7 @@
                       "type": "object"
                     },
                     "input": {
+                      "nullable": true,
                       "type": "number"
                     },
                     "output": {
@@ -14084,7 +14147,8 @@
                   "type": "boolean"
                 },
                 "family": {
-                  "type": "string"
+                  "type": "string",
+                  "nullable": true
                 },
                 "headers": {
                   "additionalProperties": {
@@ -14128,6 +14192,7 @@
                       "type": "number"
                     },
                     "input": {
+                      "nullable": true,
                       "type": "number"
                     },
                     "output": {
@@ -14144,6 +14209,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "input": {
+                      "nullable": true,
                       "items": {
                         "enum": [
                           "text",
@@ -15216,6 +15282,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "cost": {
@@ -15241,14 +15308,16 @@
                 "type": "string"
               },
               "variant": {
-                "type": "string"
+                "type": "string",
+                "nullable": true
               }
             },
             "required": [
               "id",
               "providerID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "parentID": {
             "pattern": "^ses",
@@ -15331,7 +15400,8 @@
             "additionalProperties": false,
             "properties": {
               "archived": {
-                "type": "number"
+                "type": "number",
+                "nullable": true
               },
               "compacting": {
                 "minimum": 0,
@@ -15375,6 +15445,7 @@
                 "type": "object"
               },
               "input": {
+                "nullable": true,
                 "type": "number"
               },
               "output": {
@@ -15397,7 +15468,8 @@
           },
           "workspaceID": {
             "pattern": "^wrk",
-            "type": "string"
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -15528,6 +15600,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "id": {
@@ -15568,6 +15641,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "content": {
@@ -15612,6 +15686,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -15619,7 +15694,8 @@
               "id",
               "providerID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "snapshot": {
             "additionalProperties": false,
@@ -15668,6 +15744,7 @@
                 "type": "object"
               },
               "input": {
+                "nullable": true,
                 "type": "number"
               },
               "output": {
@@ -15912,6 +15989,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -15919,7 +15997,8 @@
               "id",
               "providerID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "time": {
             "additionalProperties": false,
@@ -16107,6 +16186,7 @@
             "type": "array"
           },
           "input": {
+            "nullable": true,
             "type": "object"
           },
           "outputPaths": {
@@ -16154,6 +16234,7 @@
             "$ref": "#/components/schemas/SessionErrorUnknown"
           },
           "input": {
+            "nullable": true,
             "type": "object"
           },
           "result": {},
@@ -16180,6 +16261,7 @@
         "additionalProperties": false,
         "properties": {
           "input": {
+            "nullable": true,
             "type": "string"
           },
           "status": {
@@ -16212,6 +16294,7 @@
             "type": "array"
           },
           "input": {
+            "nullable": true,
             "type": "object"
           },
           "status": {
@@ -16473,6 +16556,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "cost": {
@@ -16495,6 +16579,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -16502,7 +16587,8 @@
               "id",
               "providerID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "parentID": {
             "pattern": "^ses",
@@ -16512,19 +16598,23 @@
             "type": "string"
           },
           "subpath": {
-            "type": "string"
+            "type": "string",
+            "nullable": true
           },
           "time": {
             "additionalProperties": false,
             "properties": {
               "archived": {
-                "type": "number"
+                "type": "number",
+                "nullable": true
               },
               "created": {
-                "type": "number"
+                "type": "number",
+                "nullable": true
               },
               "updated": {
-                "type": "number"
+                "type": "number",
+                "nullable": true
               }
             },
             "required": [
@@ -16556,6 +16646,7 @@
                 "type": "object"
               },
               "input": {
+                "nullable": true,
                 "type": "number"
               },
               "output": {
@@ -16747,6 +16838,7 @@
                 "type": "object"
               },
               "input": {
+                "nullable": true,
                 "type": "number"
               },
               "output": {
@@ -16855,6 +16947,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "command": {
@@ -16885,7 +16978,8 @@
               "providerID",
               "modelID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "prompt": {
             "type": "string"
@@ -16916,6 +17010,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "command": {
@@ -16942,7 +17037,8 @@
               "providerID",
               "modelID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "prompt": {
             "type": "string"
@@ -17462,6 +17558,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
+                    "nullable": true,
                     "type": "string"
                   },
                   "messageID": {
@@ -17862,6 +17959,7 @@
                         "type": "string"
                       },
                       "variant": {
+                        "nullable": true,
                         "type": "string"
                       }
                     },
@@ -17869,7 +17967,8 @@
                       "id",
                       "providerID"
                     ],
-                    "type": "object"
+                    "type": "object",
+                    "nullable": true
                   },
                   "sessionID": {
                     "pattern": "^ses",
@@ -18700,6 +18799,7 @@
                         "type": "object"
                       },
                       "input": {
+                        "nullable": true,
                         "type": "number"
                       },
                       "output": {
@@ -18858,6 +18958,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
+                    "nullable": true,
                     "type": "string"
                   },
                   "assistantMessageID": {
@@ -18874,6 +18975,7 @@
                         "type": "string"
                       },
                       "variant": {
+                        "nullable": true,
                         "type": "string"
                       }
                     },
@@ -18881,7 +18983,8 @@
                       "id",
                       "providerID"
                     ],
-                    "type": "object"
+                    "type": "object",
+                    "nullable": true
                   },
                   "sessionID": {
                     "pattern": "^ses",
@@ -19196,6 +19299,7 @@
                     "type": "string"
                   },
                   "input": {
+                    "nullable": true,
                     "type": "object"
                   },
                   "provider": {
@@ -20133,6 +20237,7 @@
             "type": "array"
           },
           "input": {
+            "nullable": true,
             "type": "object"
           },
           "metadata": {
@@ -20190,6 +20295,7 @@
             "type": "string"
           },
           "input": {
+            "nullable": true,
             "type": "object"
           },
           "metadata": {
@@ -20232,6 +20338,7 @@
         "additionalProperties": false,
         "properties": {
           "input": {
+            "nullable": true,
             "type": "object"
           },
           "raw": {
@@ -20255,6 +20362,7 @@
         "additionalProperties": false,
         "properties": {
           "input": {
+            "nullable": true,
             "type": "object"
           },
           "metadata": {
@@ -20385,6 +20493,7 @@
         "additionalProperties": false,
         "properties": {
           "agent": {
+            "nullable": true,
             "type": "string"
           },
           "format": {
@@ -20404,6 +20513,7 @@
                 "type": "string"
               },
               "variant": {
+                "nullable": true,
                 "type": "string"
               }
             },
@@ -20411,7 +20521,8 @@
               "providerID",
               "modelID"
             ],
-            "type": "object"
+            "type": "object",
+            "nullable": true
           },
           "role": {
             "enum": [
@@ -22365,6 +22476,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "agent": {
+                    "nullable": true,
                     "type": "string"
                   },
                   "metadata": {
@@ -22380,6 +22492,7 @@
                         "type": "string"
                       },
                       "variant": {
+                        "nullable": true,
                         "type": "string"
                       }
                     },
@@ -22387,7 +22500,8 @@
                       "id",
                       "providerID"
                     ],
-                    "type": "object"
+                    "type": "object",
+                    "nullable": true
                   },
                   "parentID": {
                     "pattern": "^ses",
@@ -22401,7 +22515,8 @@
                   },
                   "workspaceID": {
                     "pattern": "^wrk",
-                    "type": "string"
+                    "type": "string",
+                    "nullable": true
                   }
                 },
                 "type": "object"
