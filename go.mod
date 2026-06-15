@@ -2,6 +2,11 @@ module github.com/go-faster/gooners
 
 go 1.26.3
 
+tool (
+	github.com/matryer/moq
+	github.com/ogen-go/ogen/cmd/ogen
+)
+
 require (
 	github.com/VictoriaMetrics/metricsql v0.87.1
 	github.com/go-faster/errors v0.7.1
@@ -55,6 +60,7 @@ require (
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
+	github.com/matryer/moq v0.7.1 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
@@ -96,5 +102,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
-
-tool github.com/ogen-go/ogen/cmd/ogen
