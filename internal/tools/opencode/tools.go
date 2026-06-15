@@ -184,15 +184,19 @@ func sessionsHandler(client *Client) mcp.ToolHandlerFor[SessionsRequest, Session
 
 type createSessionParams struct {
 	locationParams
-	Title    string `json:"title,omitempty" jsonschema:"Optional session title."`
-	ParentID string `json:"parent_id,omitempty" jsonschema:"Optional parent session ID."`
+	Title      string `json:"title,omitempty" jsonschema:"Optional session title."`
+	ParentID   string `json:"parent_id,omitempty" jsonschema:"Optional parent session ID."`
+	ProviderID string `json:"provider_id,omitempty" jsonschema:"Optional model provider id (e.g. 'anthropic')."`
+	ModelID    string `json:"model_id,omitempty" jsonschema:"Optional model id (e.g. 'claude-sonnet-4-5'). Model is fixed for the lifetime of the session."`
 }
 
 func createSessionHandler(client *Client) mcp.ToolHandlerFor[createSessionParams, CreateSessionResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args createSessionParams) (*mcp.CallToolResult, CreateSessionResult, error) {
 		session, err := client.CreateSession(ctx, args.location(), CreateSessionRequest{
-			Title:    args.Title,
-			ParentID: args.ParentID,
+			Title:      args.Title,
+			ParentID:   args.ParentID,
+			ProviderID: args.ProviderID,
+			ModelID:    args.ModelID,
 		})
 		if err != nil {
 			return nil, CreateSessionResult{}, err
@@ -206,8 +210,6 @@ type fireParams struct {
 	SessionID   string `json:"session_id" jsonschema:"Session id returned by handoff_create_session."`
 	Prompt      string `json:"prompt" jsonschema:"Task to delegate to opencode."`
 	Agent       string `json:"agent,omitempty" jsonschema:"Optional opencode agent name."`
-	ProviderID  string `json:"provider_id,omitempty" jsonschema:"Optional model provider id."`
-	ModelID     string `json:"model_id,omitempty" jsonschema:"Optional model id."`
 	Verbose     bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
 	WaitSeconds int    `json:"wait_seconds,omitempty" jsonschema:"Max seconds to wait for completion (0-300). 0 = fire and return immediately."`
 }
@@ -220,19 +222,32 @@ func fireHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[fireParams, Ha
 		if args.Prompt == "" {
 			return nil, HandoffFireResult{}, fmt.Errorf("prompt is required")
 		}
-		loc := args.location()
 
-		sessionID, err := mgr.Submit(ctx, loc, args.SessionID, promptRequest(args))
+		sessionID, err := mgr.Submit(ctx, args.location(), args.SessionID, promptRequest(args))
 		if err != nil {
 			return nil, HandoffFireResult{}, err
 		}
 
-		_, _, err = checkSession(ctx, client, loc, sessionID, args.Verbose)
-		if err != nil {
-			return nil, HandoffFireResult{}, err
+		res := HandoffFireResult{SessionID: sessionID}
+
+		if args.WaitSeconds > 0 {
+			waitCtx, cancel := context.WithTimeout(ctx, time.Duration(min(args.WaitSeconds, 300))*time.Second)
+			defer cancel()
+			_ = client.Wait(waitCtx, args.location(), sessionID)
 		}
 
-		return nil, HandoffFireResult{SessionID: sessionID, Message: "prompt submitted; use handoff_check with this session_id"}, nil
+		pending := fetchPending(ctx, client, args.location(), sessionID)
+		res.PendingPermissions = pending.Permissions
+		res.PendingQuestions = pending.Questions
+		res.Errors = pending.Errors
+
+		if len(res.PendingPermissions) > 0 || len(res.PendingQuestions) > 0 {
+			res.Message = "prompt submitted; pending action; use handoff_check,handoff_permission_reply,handoff_question_reply"
+		} else {
+			res.Message = "prompt submitted; use handoff_check with this session_id to monitor progress"
+		}
+
+		return nil, res, nil
 	}
 }
 
@@ -329,12 +344,41 @@ func permissionReplyHandler(client *Client) mcp.ToolHandlerFor[permissionReplyPa
 			return nil, PermissionReplyResult{}, fmt.Errorf("could not extract request ID from pending permission")
 		}
 
-		res, err := client.PermissionReply(ctx, args.location(), args.SessionID, requestID, args.Reply, args.Message)
+		raw, err := client.PermissionReply(ctx, args.location(), args.SessionID, requestID, args.Reply, args.Message)
 		if err != nil {
 			return nil, PermissionReplyResult{}, err
 		}
-		return nil, PermissionReplyResult{OK: true, Data: res}, nil
+
+		res := PermissionReplyResult{OK: true, Data: raw}
+		pending := fetchPending(ctx, client, args.location(), args.SessionID)
+		res.PendingPermissions = pending.Permissions
+		res.PendingQuestions = pending.Questions
+		res.Errors = pending.Errors
+		return nil, res, nil
 	}
+}
+
+type pendingRequests struct {
+	Permissions []RequestSummary
+	Questions   []RequestSummary
+	Errors      []string
+}
+
+func fetchPending(ctx context.Context, client *Client, loc Location, sessionID string) pendingRequests {
+	var out pendingRequests
+	perms, err := client.Permissions(ctx, loc, sessionID)
+	if err == nil {
+		out.Permissions = summarizeRequests(perms, "permission", sessionID)
+	} else {
+		out.Errors = append(out.Errors, fmt.Sprintf("get permission requests: %s", err))
+	}
+	questions, err := client.Questions(ctx, loc, sessionID)
+	if err == nil {
+		out.Questions = summarizeRequests(questions, "question", sessionID)
+	} else {
+		out.Errors = append(out.Errors, fmt.Sprintf("get questions: %s", err))
+	}
+	return out
 }
 
 type questionReplyParams struct {
@@ -365,23 +409,25 @@ func questionReplyHandler(client *Client) mcp.ToolHandlerFor[questionReplyParams
 			return nil, QuestionReplyResult{}, fmt.Errorf("could not extract request ID from pending question")
 		}
 
-		res, err := client.QuestionReply(ctx, args.location(), args.SessionID, requestID, args.Reject, args.Answers)
+		raw, err := client.QuestionReply(ctx, args.location(), args.SessionID, requestID, args.Reject, args.Answers)
 		if err != nil {
 			return nil, QuestionReplyResult{}, err
 		}
-		return nil, QuestionReplyResult{OK: true, Data: res}, nil
+
+		res := QuestionReplyResult{OK: true, Data: raw}
+		pending := fetchPending(ctx, client, args.location(), args.SessionID)
+		res.PendingPermissions = pending.Permissions
+		res.PendingQuestions = pending.Questions
+		res.Errors = pending.Errors
+		return nil, res, nil
 	}
 }
 
 func promptRequest(args fireParams) PromptRequest {
-	req := PromptRequest{
+	return PromptRequest{
 		Prompt: PromptPayload{Text: args.Prompt},
 		Agent:  args.Agent,
 	}
-	if args.ProviderID != "" || args.ModelID != "" {
-		req.Model = &ModelRef{ProviderID: args.ProviderID, ModelID: args.ModelID}
-	}
-	return req
 }
 
 func checkSession(ctx context.Context, client *Client, loc Location, sessionID string, verbose bool) (HandoffCheckResult, bool, error) {
@@ -392,10 +438,11 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 	var isFinished bool
 	msg, msgErr := client.Messages(ctx, loc, sessionID)
 	if msgErr == nil {
-		summaries := summarizeMessages(msg, 6)
+		limit := 3
 		if verbose {
-			res.Messages = summaries
+			limit = 6
 		}
+		res.Messages = summarizeMessages(msg, limit)
 		res.FinalText = truncateText(firstText(msg), 4000)
 		isFinished = isSessionFinishedJSON(msg)
 	}
@@ -413,19 +460,10 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 }
 
 func fillPendingRequests(ctx context.Context, client *Client, loc Location, res *HandoffCheckResult) {
-	perms, err := client.Permissions(ctx, loc, res.SessionID)
-	if err == nil {
-		res.PendingPermissions = summarizeRequests(perms, "permission", res.SessionID)
-	} else {
-		res.Errors = append(res.Errors, fmt.Sprintf("get permission requests: %s", err))
-	}
-
-	questions, err := client.Questions(ctx, loc, res.SessionID)
-	if err == nil {
-		res.PendingQuestions = summarizeRequests(questions, "question", res.SessionID)
-	} else {
-		res.Errors = append(res.Errors, fmt.Sprintf("get questions: %s", err))
-	}
+	pending := fetchPending(ctx, client, loc, res.SessionID)
+	res.PendingPermissions = pending.Permissions
+	res.PendingQuestions = pending.Questions
+	res.Errors = append(res.Errors, pending.Errors...)
 }
 
 func isSessionFinishedJSON(raw json.RawMessage) bool {

@@ -78,23 +78,19 @@ type SessionsRequest struct {
 }
 
 type CreateSessionRequest struct {
-	Title    string `json:"title,omitempty"`
-	ParentID string `json:"parentID,omitempty"`
+	Title      string `json:"title,omitempty"`
+	ParentID   string `json:"parentID,omitempty"`
+	ProviderID string `json:"providerID,omitempty"`
+	ModelID    string `json:"modelID,omitempty"`
 }
 
 type PromptRequest struct {
 	Prompt PromptPayload `json:"prompt"`
 	Agent  string        `json:"agent,omitempty"`
-	Model  *ModelRef     `json:"model,omitempty"`
 }
 
 type PromptPayload struct {
 	Text string `json:"text"`
-}
-
-type ModelRef struct {
-	ProviderID string `json:"providerID,omitempty"`
-	ModelID    string `json:"modelID,omitempty"`
 }
 
 type CreateSessionResult struct {
@@ -103,9 +99,12 @@ type CreateSessionResult struct {
 }
 
 type HandoffFireResult struct {
-	SessionID       string `json:"session_id"`
-	PromptMessageID string `json:"prompt_message_id,omitempty"`
-	Message         string `json:"message,omitempty"`
+	SessionID          string           `json:"session_id"`
+	PromptMessageID    string           `json:"prompt_message_id,omitempty"`
+	Message            string           `json:"message,omitempty"`
+	PendingPermissions []RequestSummary `json:"pending_permissions,omitempty"`
+	PendingQuestions   []RequestSummary `json:"pending_questions,omitempty"`
+	Errors             []string         `json:"errors,omitempty"`
 }
 
 type HandoffCheckResult struct {
@@ -133,13 +132,19 @@ type RequestSummary struct {
 }
 
 type PermissionReplyResult struct {
-	OK   bool            `json:"ok"`
-	Data json.RawMessage `json:"-"`
+	OK                 bool             `json:"ok"`
+	Data               json.RawMessage  `json:"-"`
+	PendingPermissions []RequestSummary `json:"pending_permissions,omitempty"`
+	PendingQuestions   []RequestSummary `json:"pending_questions,omitempty"`
+	Errors             []string         `json:"errors,omitempty"`
 }
 
 type QuestionReplyResult struct {
-	OK   bool            `json:"ok"`
-	Data json.RawMessage `json:"-"`
+	OK                 bool             `json:"ok"`
+	Data               json.RawMessage  `json:"-"`
+	PendingPermissions []RequestSummary `json:"pending_permissions,omitempty"`
+	PendingQuestions   []RequestSummary `json:"pending_questions,omitempty"`
+	Errors             []string         `json:"errors,omitempty"`
 }
 
 type RequestsResult struct {

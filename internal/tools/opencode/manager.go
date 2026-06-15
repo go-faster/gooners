@@ -237,6 +237,8 @@ func (m *Manager) run(job *Job, loc Location, req PromptRequest) {
 		job.Status = JobError
 		job.Err = err
 		m.logger.Warn("opencode handoff job failed", "session_id", job.SessionID, "err", err)
+	} else {
+		job.Status = JobDone
 	}
 	m.saveJob(job)
 }

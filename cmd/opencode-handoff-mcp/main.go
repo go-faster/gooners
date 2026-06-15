@@ -114,7 +114,7 @@ func (o *opencodeCfg) Register(_ *flag.FlagSet) {
 	flag.DurationVar(&o.SyncTimeout, "sync-timeout", 5*time.Minute, "timeout for blocking prompt calls (session message POST) used by handoff_run and handoff_fire")
 	flag.StringVar(&o.StateDir, "state-dir", envDefault("OPENCODE_HANDOFF_STATE_DIR", defaultStateDir()), "directory for persisting job state across restarts (env: OPENCODE_HANDOFF_STATE_DIR)")
 	flag.BoolVar(&o.LogAPI, "log-api", false, "log opencode HTTP request/response bodies at debug level (requires -log-level debug or -log-file)")
-	flag.StringVar(&o.BaseURL, "opencode-url", os.Getenv("OPENCODE_URL"), "opencode server base URL (env: OPENCODE_URL); defaults to http://localhost:4096 in local mode")
+	flag.StringVar(&o.BaseURL, "opencode-url", os.Getenv("OPENCODE_URL"), "opencode server base URL (env: OPENCODE_URL); defaults to localhost on random port in local mode")
 	flag.StringVar(&o.Username, "opencode-username", envDefault("OPENCODE_USERNAME", "opencode"), "opencode basic auth username (env: OPENCODE_USERNAME)")
 	flag.StringVar(&o.Password, "opencode-password", os.Getenv("OPENCODE_PASSWORD"), "opencode basic auth password (env: OPENCODE_PASSWORD)")
 	flag.Var(&o.Env, "opencode-env", "environment variable for local opencode serve, in KEY=VALUE form; may be repeated")
@@ -218,8 +218,13 @@ func (o *opencodeCfg) startLocal(ctx context.Context, defaultBaseURL string, lg 
 		if err != nil {
 			return "", nil, fmt.Errorf("listen for random port: %w", err)
 		}
-		port := l.Addr().(*net.TCPAddr).Port
+		addr, ok := l.Addr().(*net.TCPAddr)
+		if !ok {
+			return "", nil, fmt.Errorf("get addr from %#v", l.Addr())
+		}
 		_ = l.Close()
+		port := addr.Port
+
 		baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
 
 		argv = append(argv, "--port", strconv.Itoa(port), "--mdns-domain", fmt.Sprintf("opencode-handoff-%d.local", port))

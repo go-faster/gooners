@@ -297,6 +297,12 @@ func (c *Client) CreateSession(ctx context.Context, loc Location, req CreateSess
 	if req.ParentID != "" {
 		body.ParentID.SetTo(req.ParentID)
 	}
+	if req.ProviderID != "" || req.ModelID != "" {
+		body.Model.SetTo(api.SessionCreateReqModel{
+			ProviderID: req.ProviderID,
+			ID:         req.ModelID,
+		})
+	}
 	if loc.Workspace != "" {
 		body.WorkspaceID.SetTo(loc.Workspace)
 	}
@@ -324,76 +330,81 @@ func (c *Client) CreateSession(ctx context.Context, loc Location, req CreateSess
 	}
 }
 
-func (c *Client) Prompt(ctx context.Context, _ Location, sessionID string, req PromptRequest) (json.RawMessage, error) {
+func (c *Client) Prompt(ctx context.Context, loc Location, sessionID string, req PromptRequest) (json.RawMessage, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
 
-	var p api.Prompt
-	p.Text = req.Prompt.Text
+	textPart := api.SessionMessageReqPartsItem{}
+	textPart.SetType("text")
+	textPart.SetText(api.NewOptString(req.Prompt.Text))
 
+	body := api.SessionMessageReq{
+		Parts: []api.SessionMessageReqPartsItem{textPart},
+	}
 	if req.Agent != "" {
-		p.Agents = []api.PromptAgentAttachment{{
-			Name: req.Agent,
-		}}
+		body.SetAgent(api.NewOptString(req.Agent))
 	}
 
-	var body api.V2SessionPromptReq
-	body.Prompt = p
+	params := api.SessionMessageParams{
+		SessionID: sessionID,
+	}
+	if dir := c.dir(loc); dir != "" {
+		params.Directory = api.NewOptString(dir)
+	}
 
-	var params api.V2SessionPromptParams
-	params.SessionID = sessionID
-
-	res, err := c.apiClient.V2SessionPrompt(ctx, &body, params)
+	res, err := c.apiClient.SessionMessage(ctx, &body, params)
 	if err != nil {
 		return nil, err
 	}
 	switch r := res.(type) {
-	case *api.V2SessionPromptOK:
+	case *api.SessionMessageOK:
 		raw, err := json.Marshal(r)
 		if err != nil {
 			return nil, err
 		}
 		return json.RawMessage(raw), nil
-	case *api.InvalidRequestError:
-		return nil, fmt.Errorf("invalid request: %s", r.Message)
 	case *api.UnauthorizedError:
 		return nil, fmt.Errorf("unauthorized: %s", r.Message)
 	case *api.ConflictError:
 		return nil, fmt.Errorf("conflict: %s", r.Message)
-	case *api.V2SessionPromptNotFoundApplicationJSON:
+	case *api.SessionMessageBadRequestApplicationJSON:
+		return nil, fmt.Errorf("bad request: %s", string(*r))
+	case *api.SessionMessageNotFoundApplicationJSON:
 		return nil, fmt.Errorf("session not found: %s", string(*r))
 	default:
-		return nil, fmt.Errorf("unexpected session prompt response: %T", res)
+		return nil, fmt.Errorf("unexpected session message response: %T", res)
 	}
 }
 
+// Messages returns the raw message array for a session using the v1
+// GET /session/{id}/message endpoint. The v2 /api/session/{id}/message
+// endpoint returns only event stream items (e.g. agent-switched) and does
+// not include user/assistant message text.
 func (c *Client) Messages(ctx context.Context, _ Location, sessionID string) (json.RawMessage, error) {
 	if sessionID == "" {
 		return nil, fmt.Errorf("session_id is required")
 	}
 
-	var params api.V2SessionMessagesParams
+	var params api.SessionMessagesParams
 	params.SessionID = sessionID
 
-	res, err := c.apiClient.V2SessionMessages(ctx, params)
+	res, err := c.apiClient.SessionMessages(ctx, params)
 	if err != nil {
 		return nil, err
 	}
 	switch r := res.(type) {
-	case *api.SessionMessagesResponse:
-		raw, err := json.Marshal(r.Data)
+	case *api.SessionMessagesOKApplicationJSON:
+		raw, err := json.Marshal(r)
 		if err != nil {
 			return nil, err
 		}
 		return json.RawMessage(raw), nil
 	case *api.UnauthorizedError:
 		return nil, fmt.Errorf("unauthorized: %s", r.Message)
-	case *api.UnknownError1:
-		return nil, fmt.Errorf("unknown error: %s", r.Message)
-	case *api.V2SessionMessagesBadRequestApplicationJSON:
+	case *api.SessionMessagesBadRequestApplicationJSON:
 		return nil, fmt.Errorf("bad request: %s", string(*r))
-	case *api.V2SessionMessagesNotFoundApplicationJSON:
+	case *api.SessionMessagesNotFoundApplicationJSON:
 		return nil, fmt.Errorf("session not found: %s", string(*r))
 	default:
 		return nil, fmt.Errorf("unexpected session messages response: %T", res)
