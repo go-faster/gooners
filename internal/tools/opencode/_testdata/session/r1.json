@@ -1,0 +1,97 @@
+{
+    "data": [
+        {
+            "id": "ses_134ff2fd7ffehB1w1Aehhc47tm",
+            "projectID": "6aa7702d4beba3944cc6a9a1d70d71d9d3bcdc7e",
+            "agent": "build",
+            "model": {
+                "id": "grok-build-0.1",
+                "providerID": "xai",
+                "variant": "default"
+            },
+            "cost": 0.2749302,
+            "tokens": {
+                "input": 56847,
+                "output": 2377,
+                "reasoning": 32367,
+                "cache": {
+                    "read": 742976,
+                    "write": 0
+                }
+            },
+            "time": {
+                "created": 1781522288680,
+                "updated": 1781522649083,
+                "archived": null
+            },
+            "title": "Fix raw JSON tests in opencode tools",
+            "location": {
+                "directory": "/foobar",
+                "workspaceID": null
+            },
+            "subpath": null
+        },
+        {
+            "id": "ses_142dd2d03ffeUi7uYPo4RNdaZZ",
+            "projectID": "2f403a98f26d6d52b008632304ba5fe36f3a236a",
+            "agent": "build",
+            "model": {
+                "id": "gpt-5.5",
+                "providerID": "openai",
+                "variant": "medium"
+            },
+            "cost": 0,
+            "tokens": {
+                "input": 0,
+                "output": 0,
+                "reasoning": 0,
+                "cache": {
+                    "read": 0,
+                    "write": 0
+                }
+            },
+            "time": {
+                "created": 1781289636604,
+                "updated": 1781289636678,
+                "archived": null
+            },
+            "title": "New session - 2026-06-12T18:40:36.604Z",
+            "location": {
+                "directory": "/foobaz",
+                "workspaceID": null
+            },
+            "subpath": null
+        },
+        {
+            "id": "ses_15770de52ffehUF31iqNGKUnoB",
+            "projectID": "6aa7702d4beba3944cc6a9a1d70d71d9d3bcdc7e",
+            "agent": null,
+            "model": null,
+            "cost": 0,
+            "tokens": {
+                "input": 0,
+                "output": 0,
+                "reasoning": 0,
+                "cache": {
+                    "read": 0,
+                    "write": 0
+                }
+            },
+            "time": {
+                "created": 1780944413101,
+                "updated": 1780944413101,
+                "archived": null
+            },
+            "title": "GPT-5.5 review: internal/cmdutil",
+            "location": {
+                "directory": "/foobar",
+                "workspaceID": null
+            },
+            "subpath": null
+        }
+    ],
+    "cursor": {
+        "previous": "eyJhbmNob3IiOnsiaWQiOiJzZXNfMTM0ZmYyZmQ3ZmZlaEIxdzFBZWhoYzQ3dG0iLCJ0aW1lIjoxNzgxNTIyMjg4NjgwLCJkaXJlY3Rpb24iOiJwcmV2aW91cyJ9fQ",
+        "next": "eyJhbmNob3IiOnsiaWQiOiJzZXNfMTU4ZTA0MDE2ZmZlZ0RlMzJsQWtjblV4dEciLCJ0aW1lIjoxNzgwOTIwMzM2MzYxLCJkaXJlY3Rpb24iOiJuZXh0In19"
+    }
+}

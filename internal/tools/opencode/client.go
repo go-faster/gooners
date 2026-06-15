@@ -277,7 +277,7 @@ func (c *Client) Sessions(ctx context.Context, req SessionsRequest) (SessionsRes
 	case *api.SessionsResponse:
 		sessions := make([]Session, 0, len(r.Data))
 		for _, s := range r.Data {
-			sessions = append(sessions, sessionFromV2(s))
+			sessions = append(sessions, sessionFromSessionV2(s))
 		}
 		return SessionsResult{Sessions: sessions}, nil
 	case *api.UnauthorizedError:
@@ -292,21 +292,22 @@ func (c *Client) Sessions(ctx context.Context, req SessionsRequest) (SessionsRes
 func (c *Client) CreateSession(ctx context.Context, loc Location, req CreateSessionRequest) (Session, error) {
 	var body api.SessionCreateReq
 	if req.Title != "" {
-		body.Title = api.NewOptString(req.Title)
+		body.Title.SetTo(req.Title)
 	}
 	if req.ParentID != "" {
-		body.ParentID = api.NewOptString(req.ParentID)
+		body.ParentID.SetTo(req.ParentID)
 	}
 	if loc.Workspace != "" {
-		body.WorkspaceID = api.NewOptString(loc.Workspace)
+		body.WorkspaceID.SetTo(loc.Workspace)
 	}
 
 	var params api.SessionCreateParams
 	if dir := c.dir(loc); dir != "" {
 		params.Directory = api.NewOptString(dir)
+		params.Directory.SetTo(dir)
 	}
 	if loc.Workspace != "" {
-		params.Workspace = api.NewOptString(loc.Workspace)
+		params.Workspace.SetTo(loc.Workspace)
 	}
 
 	res, err := c.apiClient.SessionCreate(ctx, api.NewOptSessionCreateReq(body), params)
@@ -315,7 +316,7 @@ func (c *Client) CreateSession(ctx context.Context, loc Location, req CreateSess
 	}
 	switch r := res.(type) {
 	case *api.Session:
-		return sessionFromAPI(*r), nil
+		return sessionFromSessionV1(*r), nil
 	case *api.SessionCreateBadRequestApplicationJSON:
 		return Session{}, fmt.Errorf("POST /session bad request: %s", string(*r))
 	default:
@@ -696,20 +697,20 @@ func (c *Client) Wait(ctx context.Context, _ Location, sessionID string) error {
 	}
 }
 
-func sessionFromV2(s api.SessionV2Info) Session {
+func sessionFromSessionV2(s api.SessionV2Info) Session {
 	var e jx.Encoder
 	s.Encode(&e)
 	return Session{
 		ID:        s.ID,
 		Title:     s.Title,
 		ParentID:  s.ParentID.Value,
-		CreatedAt: int64(s.Time.Created),
-		UpdatedAt: int64(s.Time.Updated),
+		CreatedAt: int64(s.Time.Created.Or(-1)),
+		UpdatedAt: int64(s.Time.Updated.Or(-1)),
 		Raw:       e.Bytes(),
 	}
 }
 
-func sessionFromAPI(s api.Session) Session {
+func sessionFromSessionV1(s api.Session) Session {
 	var e jx.Encoder
 	s.Encode(&e)
 	return Session{

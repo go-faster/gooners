@@ -1,0 +1,507 @@
+{
+    "location": {
+        "directory": "/foobar",
+        "workspaceID": null,
+        "project": {
+            "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "directory": "/foobar"
+        }
+    },
+    "data": [
+        {
+            "id": "build",
+            "request": {
+                "headers": {},
+                "body": {}
+            },
+            "system": "You are an AI coding agent. Help the user accomplish software engineering tasks by inspecting the workspace, making targeted changes, and using tools according to the configured permissions.",
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "mode": "primary",
+            "hidden": false,
+            "permissions": [
+                {
+                    "action": "*",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "external_directory",
+                    "resource": "*",
+                    "effect": "ask"
+                },
+                {
+                    "action": "external_directory",
+                    "resource": "/tmp/opencode/*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "question",
+                    "resource": "*",
+                    "effect": "deny"
+                },
+                {
+                    "action": "plan_enter",
+                    "resource": "*",
+                    "effect": "deny"
+                },
+                {
+                    "action": "plan_exit",
+                    "resource": "*",
+                    "effect": "deny"
+                },
+                {
+                    "action": "read",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "read",
+                    "resource": "*.env",
+                    "effect": "ask"
+                },
+                {
+                    "action": "read",
+                    "resource": "*.env.*",
+                    "effect": "ask"
+                },
+                {
+                    "action": "read",
+                    "resource": "*.env.example",
+                    "effect": "allow"
+                },
+                {
+                    "action": "question",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "plan_enter",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "*",
+                    "effect": "ask"
+                },
+                {
+                    "action": "bash",
+                    "resource": "ls *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "cat *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "head *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "tail *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "sed -n *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "grep *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "rg *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "find *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "jq *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "xxd *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "echo *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "printf *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "go *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "golangci-lint *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh pr list *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh pr view *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh pr diff *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh issue *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh label *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh run view *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh api *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git status *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git diff *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git log *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git branch *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git ls-tree *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git ls-files *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git show *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "edit",
+                    "resource": "*",
+                    "effect": "ask"
+                },
+                {
+                    "action": "read",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "read",
+                    "resource": "~/go/pkg/mod/**",
+                    "effect": "allow"
+                },
+                {
+                    "action": "read",
+                    "resource": "~/workspace/**",
+                    "effect": "allow"
+                },
+                {
+                    "action": "read",
+                    "resource": "*.env*",
+                    "effect": "deny"
+                },
+                {
+                    "action": "webfetch",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "websearch",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "lsp",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "*",
+                    "effect": "ask"
+                },
+                {
+                    "action": "bash",
+                    "resource": "ls *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "cat *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "head *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "tail *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "sed -n *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "grep *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "rg *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "find *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "jq *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "xxd *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "echo *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "printf *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "go *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "golangci-lint *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh pr list *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh pr view *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh pr diff *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh issue *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh label *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh run view *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "gh api *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git status *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git diff *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git log *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git branch *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git ls-tree *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git ls-files *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "bash",
+                    "resource": "git show *",
+                    "effect": "allow"
+                },
+                {
+                    "action": "edit",
+                    "resource": "*",
+                    "effect": "ask"
+                },
+                {
+                    "action": "webfetch",
+                    "resource": "*",
+                    "effect": "allow"
+                }
+            ]
+        },
+        {
+            "id": "plan",
+            "request": {
+                "headers": {},
+                "body": {}
+            },
+            "description": "Plan mode. Disallows all edit tools.",
+            "mode": "primary",
+            "hidden": false,
+            "permissions": [
+                {
+                    "action": "*",
+                    "resource": "*",
+                    "effect": "allow"
+                }
+            ]
+        },
+        {
+            "id": "explore",
+            "request": {
+                "headers": {},
+                "body": {}
+            },
+            "system": "You are a file search specialist. You excel at thoroughly navigating and exploring codebases.\n\nYour strengths:\n- Rapidly finding files using glob patterns\n- Searching code and text with powerful regex patterns\n- Reading and analyzing file contents\n\nGuidelines:\n- Use Glob for broad file pattern matching\n- Use Grep for searching file contents with regex\n- Use Read when you know the specific file path you need to read\n- Adapt your search approach based on the thoroughness level specified by the caller\n- Return file paths as absolute paths in your final response\n- For clear communication, avoid using emojis\n- Do not create any files, or run bash commands that modify the user's system state in any way\n\nComplete the user's search request efficiently and report your findings clearly.",
+            "description": "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. \"src/components/**/*.tsx\"), search code for keywords (eg. \"API endpoints\"), or answer questions about the codebase (eg. \"how do API endpoints work?\"). When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis across multiple locations and naming conventions.",
+            "mode": "subagent",
+            "hidden": false,
+            "permissions": [
+                {
+                    "action": "*",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "external_directory",
+                    "resource": "*",
+                    "effect": "ask"
+                }
+            ]
+        },
+        {
+            "id": "title",
+            "request": {
+                "headers": {},
+                "body": {}
+            },
+            "system": "You are a title generator. You output ONLY a thread title. Nothing else.\n\n<task>\nGenerate a brief title that would help the user find this conversation later.\n\nFollow all rules in <rules>\nUse the <examples> so you know what a good title looks like.\nYour output must be:\n- A single line\n- <=50 characters\n- No explanations\n</task>\n\n<rules>\n- you MUST use the same language as the user message you are summarizing\n- Title must be grammatically correct and read naturally - no word salad\n- Never include tool names in the title (e.g. \"read tool\", \"bash tool\", \"edit tool\")\n- Focus on the main topic or question the user needs to retrieve\n- Vary your phrasing - avoid repetitive patterns like always starting with \"Analyzing\"\n- When a file is mentioned, focus on WHAT the user wants to do WITH the file, not just that they shared it\n- Keep exact: technical terms, numbers, filenames, HTTP codes\n- Remove: the, this, my, a, an\n- Never assume tech stack\n- Never use tools\n- NEVER respond to questions, just generate a title for the conversation\n- The title should NEVER include \"summarizing\" or \"generating\" when generating a title\n- DO NOT SAY YOU CANNOT GENERATE A TITLE OR COMPLAIN ABOUT THE INPUT\n- Always output something meaningful, even if the input is minimal.\n- If the user message is short or conversational (e.g. \"hello\", \"lol\", \"what's up\", \"hey\"):\n  -> create a title that reflects the user's tone or intent (such as Greeting, Quick check-in, Light chat, Intro message, etc.)\n</rules>\n\n<examples>\n\"debug 500 errors in production\" -> Debugging production 500 errors\n\"refactor user service\" -> Refactoring user service\n\"why is app.js failing\" -> app.js failure investigation\n\"implement rate limiting\" -> Rate limiting implementation\n\"how do I connect postgres to my API\" -> Postgres API connection\n\"best practices for React hooks\" -> React hooks best practices\n\"@src/credential.ts can you add refresh token support\" -> Credential refresh token support\n\"@utils/parser.ts this is broken\" -> Parser bug fix\n\"look at @config.json\" -> Config review\n\"@App.tsx add dark mode toggle\" -> Dark mode toggle in App\n</examples>",
+            "mode": "primary",
+            "hidden": true,
+            "permissions": [
+                {
+                    "action": "*",
+                    "resource": "*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "external_directory",
+                    "resource": "*",
+                    "effect": "ask"
+                },
+                {
+                    "action": "external_directory",
+                    "resource": "/tmp/opencode/*",
+                    "effect": "allow"
+                },
+                {
+                    "action": "question",
+                    "resource": "*",
+                    "effect": "deny"
+                },
+                {
+                    "action": "plan_enter",
+                    "resource": "*",
+                    "effect": "deny"
+                },
+                {
+                    "action": "plan_exit",
+                    "resource": "*",
+                    "effect": "deny"
+                }
+            ]
+        }
+    ]
+}

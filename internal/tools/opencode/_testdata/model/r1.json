@@ -1,0 +1,242 @@
+{
+    "location": {
+        "directory": "/foobar",
+        "workspaceID": null,
+        "project": {
+            "id": "6aa7702d4beba3944cc6a9a1d70d71d9d3bcdc7e",
+            "directory": "/foobar"
+        }
+    },
+    "data": [
+        {
+            "id": "openrouter/fusion",
+            "providerID": "openrouter",
+            "family": null,
+            "name": "Fusion",
+            "api": {
+                "id": "openrouter/fusion",
+                "type": "aisdk",
+                "package": "@openrouter/ai-sdk-provider",
+                "url": "https://openrouter.ai/api/v1"
+            },
+            "capabilities": {
+                "tools": false,
+                "input": [
+                    "text"
+                ],
+                "output": [
+                    "text"
+                ]
+            },
+            "request": {
+                "headers": {
+                    "HTTP-Referer": "https://opencode.ai/",
+                    "X-Title": "opencode"
+                },
+                "body": {
+                    "apiKey": "openrouter-key"
+                },
+                "generation": {},
+                "options": {},
+                "variant": null
+            },
+            "variants": [],
+            "time": {
+                "released": 1781308800000
+            },
+            "cost": [
+                {
+                    "input": 0,
+                    "output": 0,
+                    "cache": {
+                        "read": 0,
+                        "write": 0
+                    }
+                }
+            ],
+            "status": "active",
+            "enabled": true,
+            "limit": {
+                "context": 128000,
+                "input": null,
+                "output": 128000
+            }
+        },
+        {
+            "id": "moonshotai/kimi-k2.7-code",
+            "providerID": "openrouter",
+            "family": "kimi-k2",
+            "name": "Kimi K2.7 Code",
+            "api": {
+                "id": "moonshotai/kimi-k2.7-code",
+                "type": "aisdk",
+                "package": "@openrouter/ai-sdk-provider",
+                "url": "https://openrouter.ai/api/v1"
+            },
+            "capabilities": {
+                "tools": true,
+                "input": [
+                    "text",
+                    "image"
+                ],
+                "output": [
+                    "text"
+                ]
+            },
+            "request": {
+                "headers": {
+                    "HTTP-Referer": "https://opencode.ai/",
+                    "X-Title": "opencode"
+                },
+                "body": {
+                    "apiKey": "openrouter-key"
+                },
+                "generation": {},
+                "options": {},
+                "variant": null
+            },
+            "variants": [],
+            "time": {
+                "released": 1781222400000
+            },
+            "cost": [
+                {
+                    "input": 0.75,
+                    "output": 3.5,
+                    "cache": {
+                        "read": 0.16,
+                        "write": 0
+                    }
+                }
+            ],
+            "status": "active",
+            "enabled": true,
+            "limit": {
+                "context": 262144,
+                "input": null,
+                "output": 262144
+            }
+        },
+        {
+            "id": "~anthropic/claude-fable-latest",
+            "providerID": "openrouter",
+            "family": "claude-fable",
+            "name": "Claude Fable Latest",
+            "api": {
+                "id": "~anthropic/claude-fable-latest",
+                "type": "aisdk",
+                "package": "@openrouter/ai-sdk-provider",
+                "url": "https://openrouter.ai/api/v1"
+            },
+            "capabilities": {
+                "tools": true,
+                "input": [
+                    "text",
+                    "image",
+                    "pdf"
+                ],
+                "output": [
+                    "text"
+                ]
+            },
+            "request": {
+                "headers": {
+                    "HTTP-Referer": "https://opencode.ai/",
+                    "X-Title": "opencode"
+                },
+                "body": {
+                    "apiKey": "openrouter-key"
+                },
+                "generation": {},
+                "options": {},
+                "variant": null
+            },
+            "variants": [],
+            "time": {
+                "released": 1780963200000
+            },
+            "cost": [
+                {
+                    "input": 10,
+                    "output": 50,
+                    "cache": {
+                        "read": 1,
+                        "write": 12.5
+                    }
+                }
+            ],
+            "status": "active",
+            "enabled": true,
+            "limit": {
+                "context": 1000000,
+                "input": null,
+                "output": 128000
+            }
+        },
+        {
+            "id": "grok-4.3",
+            "providerID": "xai",
+            "family": "grok",
+            "name": "Grok 4.3",
+            "api": {
+                "id": "grok-4.3",
+                "type": "aisdk",
+                "package": "@ai-sdk/xai",
+                "url": null
+            },
+            "capabilities": {
+                "tools": true,
+                "input": [
+                    "text",
+                    "image",
+                    "pdf"
+                ],
+                "output": [
+                    "text"
+                ]
+            },
+            "request": {
+                "headers": {},
+                "body": {
+                    "apiKey": "xai-token"
+                },
+                "generation": {},
+                "options": {},
+                "variant": null
+            },
+            "variants": [],
+            "time": {
+                "released": 1776384000000
+            },
+            "cost": [
+                {
+                    "input": 1.25,
+                    "output": 2.5,
+                    "cache": {
+                        "read": 0.2,
+                        "write": 0
+                    }
+                },
+                {
+                    "tier": {
+                        "type": "context",
+                        "size": 200000
+                    },
+                    "input": 2.5,
+                    "output": 5,
+                    "cache": {
+                        "read": 0.4,
+                        "write": 0
+                    }
+                }
+            ],
+            "status": "active",
+            "enabled": true,
+            "limit": {
+                "context": 1000000,
+                "input": null,
+                "output": 30000
+            }
+        }
+    ]
+}
