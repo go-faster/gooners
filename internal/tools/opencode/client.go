@@ -779,13 +779,13 @@ func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
+	resp.Body = io.NopCloser(bytes.NewReader(data))
 
 	snippetLen := min(len(data), 1024)
 	snippet := slices.Clip(data[:snippetLen])
 	if len(data) > snippetLen {
 		snippet = append(snippet, "..."...)
 	}
-	resp.Body = io.NopCloser(bytes.NewReader(snippet))
 
 	t.logger.DebugContext(r.Context(), "opencode API response",
 		"method", r.Method,
