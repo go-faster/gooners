@@ -97,6 +97,11 @@ type ModelRef struct {
 	ModelID    string `json:"modelID,omitempty"`
 }
 
+type CreateSessionResult struct {
+	SessionID string `json:"session_id"`
+	Title     string `json:"title,omitempty"`
+}
+
 type HandoffFireResult struct {
 	SessionID       string `json:"session_id"`
 	PromptMessageID string `json:"prompt_message_id,omitempty"`

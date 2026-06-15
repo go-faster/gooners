@@ -125,9 +125,12 @@ func TestClientValidationErrors(t *testing.T) {
 	require.EqualError(t, err, "request_id is required")
 
 	mgr := NewManager(t.Context(), client, ManagerOptions{})
-	_, err = mgr.Submit(t.Context(), Location{}, "", CreateSessionRequest{}, PromptRequest{})
+	_, err = mgr.Submit(t.Context(), Location{}, "", PromptRequest{})
 	require.EqualError(t, err, "prompt is required")
 
-	_, err = mgr.Submit(t.Context(), Location{}, "../bad", CreateSessionRequest{}, PromptRequest{Prompt: PromptPayload{Text: "do it"}})
+	_, err = mgr.Submit(t.Context(), Location{}, "../bad", PromptRequest{Prompt: PromptPayload{Text: "do it"}})
 	require.ErrorContains(t, err, "invalid sessionID")
+
+	_, err = mgr.Submit(t.Context(), Location{}, "", PromptRequest{Prompt: PromptPayload{Text: "do it"}})
+	require.EqualError(t, err, "session_id is required")
 }

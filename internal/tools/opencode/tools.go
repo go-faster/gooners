@@ -42,9 +42,14 @@ func Register(s *mcp.Server, client *Client, mgr *Manager) {
 	}, sessionsHandler(client))
 
 	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "handoff_create_session",
+		Description: "Create a new opencode session and return its session_id. Use the returned session_id with handoff_fire to submit prompts.",
+	}, createSessionHandler(client))
+
+	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_fire",
-		Description: "Background handoff: create or reuse an opencode session, submit a prompt, and return immediately. Use handoff_check with the returned session_id to poll progress.",
-	}, fireHandler(mgr))
+		Description: "Submit a prompt to an existing opencode session and return immediately. Requires a session_id from handoff_create_session. Use handoff_check with the session_id to poll progress.",
+	}, fireHandler(client, mgr))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_check",
@@ -177,39 +182,56 @@ func sessionsHandler(client *Client) mcp.ToolHandlerFor[SessionsRequest, Session
 	}
 }
 
+type createSessionParams struct {
+	locationParams
+	Title    string `json:"title,omitempty" jsonschema:"Optional session title."`
+	ParentID string `json:"parent_id,omitempty" jsonschema:"Optional parent session ID."`
+}
+
+func createSessionHandler(client *Client) mcp.ToolHandlerFor[createSessionParams, CreateSessionResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args createSessionParams) (*mcp.CallToolResult, CreateSessionResult, error) {
+		session, err := client.CreateSession(ctx, args.location(), CreateSessionRequest{
+			Title:    args.Title,
+			ParentID: args.ParentID,
+		})
+		if err != nil {
+			return nil, CreateSessionResult{}, err
+		}
+		return nil, CreateSessionResult{SessionID: session.ID, Title: session.Title}, nil
+	}
+}
+
 type fireParams struct {
 	locationParams
+	SessionID   string `json:"session_id" jsonschema:"Session id returned by handoff_create_session."`
 	Prompt      string `json:"prompt" jsonschema:"Task to delegate to opencode."`
-	Title       string `json:"title,omitempty" jsonschema:"Optional session title."`
 	Agent       string `json:"agent,omitempty" jsonschema:"Optional opencode agent name."`
 	ProviderID  string `json:"provider_id,omitempty" jsonschema:"Optional model provider id."`
 	ModelID     string `json:"model_id,omitempty" jsonschema:"Optional model id."`
 	Verbose     bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
 	WaitSeconds int    `json:"wait_seconds,omitempty" jsonschema:"Max seconds to wait for completion (0-300). 0 = fire and return immediately."`
-	SessionID   string `json:"session_id,omitempty" jsonschema:"Existing session id to reuse; omitted means create a new session."`
 }
 
-func fireHandler(mgr *Manager) mcp.ToolHandlerFor[fireParams, HandoffFireResult] {
+func fireHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[fireParams, HandoffFireResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args fireParams) (*mcp.CallToolResult, HandoffFireResult, error) {
+		if args.SessionID == "" {
+			return nil, HandoffFireResult{}, fmt.Errorf("session_id is required; use handoff_create_session first")
+		}
 		if args.Prompt == "" {
 			return nil, HandoffFireResult{}, fmt.Errorf("prompt is required")
 		}
 		loc := args.location()
 
-		title := args.Title
-		if title != "" {
-			title = "[handoff] " + title
-		}
-
-		sessionID, err := mgr.Submit(ctx,
-			loc,
-			args.SessionID,
-			CreateSessionRequest{Title: title},
-			promptRequest(args),
-		)
+		sessionID, err := mgr.Submit(ctx, loc, args.SessionID, promptRequest(args))
 		if err != nil {
 			return nil, HandoffFireResult{}, err
 		}
+
+		_, _, err = checkSession(ctx, client, loc, sessionID, args.Verbose)
+		if err != nil {
+			return nil, HandoffFireResult{}, err
+		}
+
 		return nil, HandoffFireResult{SessionID: sessionID, Message: "prompt submitted; use handoff_check with this session_id"}, nil
 	}
 }

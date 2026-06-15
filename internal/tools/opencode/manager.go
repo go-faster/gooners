@@ -163,7 +163,7 @@ func (m *Manager) saveJob(job *Job) {
 	}
 }
 
-func (m *Manager) Submit(ctx context.Context, loc Location, sessionID string, createReq CreateSessionRequest, req PromptRequest) (string, error) {
+func (m *Manager) Submit(_ context.Context, loc Location, sessionID string, req PromptRequest) (string, error) {
 	if req.Prompt.Text == "" {
 		return "", fmt.Errorf("prompt is required")
 	}
@@ -171,11 +171,7 @@ func (m *Manager) Submit(ctx context.Context, loc Location, sessionID string, cr
 		return "", err
 	}
 	if sessionID == "" {
-		session, err := m.client.CreateSession(ctx, loc, createReq)
-		if err != nil {
-			return "", err
-		}
-		sessionID = session.ID
+		return "", fmt.Errorf("session_id is required")
 	}
 
 	now := time.Now()
@@ -229,18 +225,18 @@ func (m *Manager) Jobs() []Job {
 }
 
 func (m *Manager) run(job *Job, loc Location, req PromptRequest) {
+	m.logger.Debug("running job", "session_id", job.SessionID)
 	res, err := m.client.Prompt(m.ctx, loc, job.SessionID, req)
+
 	job.mu.Lock()
 	defer job.mu.Unlock()
+
 	job.PromptMessageID = extractMessageID(res)
 	job.UpdatedAt = time.Now()
 	if err != nil {
 		job.Status = JobError
 		job.Err = err
 		m.logger.Warn("opencode handoff job failed", "session_id", job.SessionID, "err", err)
-	} else {
-		job.Status = JobDone
-		m.logger.Debug("opencode handoff job completed", "session_id", job.SessionID)
 	}
 	m.saveJob(job)
 }
