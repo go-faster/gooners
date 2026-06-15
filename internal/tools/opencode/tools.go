@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"slices"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 )
 
 // Register adds opencode handoff tools to an MCP server.
-func Register(s *mcp.Server, client *Client, mgr *Manager) {
+func Register(s *mcp.Server, client *Client, mgr *Manager, logger *slog.Logger) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_health",
 		Description: "Check connectivity to the configured opencode HTTP server. Call this if other handoff tools return connection or authentication errors.",
@@ -41,7 +42,7 @@ func Register(s *mcp.Server, client *Client, mgr *Manager) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_run",
 		Description: "Blocking handoff: create an opencode session, submit a prompt to an agent, wait for completion, and return a compact result.",
-	}, runHandler(client, mgr))
+	}, runHandler(client, mgr, logger))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_fire",
@@ -52,7 +53,7 @@ func Register(s *mcp.Server, client *Client, mgr *Manager) {
 		Name:        "handoff_check",
 		Description: "Poll progress for a session_id returned by handoff_fire, or inspect sessions for pending permissions/questions.",
 		Flags:       mcputil.ReadOnly,
-	}, checkHandler(client, mgr))
+	}, checkHandler(client, mgr, logger))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_permissions",
@@ -142,7 +143,10 @@ type fireParams struct {
 	SessionID string `json:"session_id,omitempty" jsonschema:"Existing session id to reuse; omitted means create a new session."`
 }
 
-func runHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[runParams, HandoffRunResult] {
+func runHandler(client *Client, mgr *Manager, logger *slog.Logger) mcp.ToolHandlerFor[runParams, HandoffRunResult] {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args runParams) (*mcp.CallToolResult, HandoffRunResult, error) {
 		if args.Prompt == "" {
 			return nil, HandoffRunResult{}, fmt.Errorf("prompt is required")
@@ -159,6 +163,8 @@ func runHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[runParams, Hand
 
 		deadline := time.Now().Add(client.SyncTimeout())
 		for {
+			logger.DebugContext(ctx, "polling session (handoff_run)", "session_id", session.ID)
+
 			res, isFinished, err := checkSession(ctx, client, loc, session.ID, args.Verbose)
 			if err != nil {
 				return nil, HandoffRunResult{}, err
@@ -223,9 +229,13 @@ type requestListParams struct {
 	SessionID string `json:"session_id,omitempty" jsonschema:"Optional opencode session id. Omit to list global pending requests when supported by opencode."`
 }
 
-func checkHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[checkParams, HandoffCheckResult] {
+func checkHandler(client *Client, mgr *Manager, logger *slog.Logger) mcp.ToolHandlerFor[checkParams, HandoffCheckResult] {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args checkParams) (*mcp.CallToolResult, HandoffCheckResult, error) {
 		for {
+			logger.DebugContext(ctx, "polling session (handoff_check)", "session_id", args.SessionID)
 			res, err := doCheck(ctx, client, mgr, args)
 			if err != nil {
 				return nil, HandoffCheckResult{}, err

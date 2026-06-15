@@ -474,14 +474,15 @@ type loggingTransport struct {
 func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	var reqSnippet string
 	if r.Body != nil {
-		data, _ := io.ReadAll(r.Body)
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			return nil, fmt.Errorf("read request body: %w", err)
+		}
 		_ = r.Body.Close()
 		r.Body = io.NopCloser(bytes.NewReader(data))
-		if len(data) > 512 {
-			reqSnippet = string(data[:512]) + "..."
-		} else {
-			reqSnippet = string(data)
-		}
+
+		snippetLen := min(len(data), 512)
+		reqSnippet = string(data[:snippetLen]) + "..."
 	}
 	t.logger.DebugContext(r.Context(), "opencode API request",
 		"method", r.Method,
@@ -495,14 +496,22 @@ func (t *loggingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 			"method", r.Method, "url", r.URL.String(), "err", err)
 		return nil, err
 	}
+	oldBody := resp.Body
+	defer func() {
+		_ = oldBody.Close()
+	}()
 
-	data, _ := io.ReadAll(resp.Body)
-	_ = resp.Body.Close()
-	resp.Body = io.NopCloser(bytes.NewReader(data))
-	snippet := data
-	if len(snippet) > 1024 {
-		snippet = append(snippet[:1024:1024], "..."...)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
 	}
+	resp.Body = io.NopCloser(bytes.NewReader(data))
+
+	snippetLen := min(len(data), 1024)
+	snippet := slices.Concat(
+		slices.Clip(data[:snippetLen]),
+		[]byte("..."),
+	)
 	t.logger.DebugContext(r.Context(), "opencode API response",
 		"method", r.Method,
 		"url", r.URL.String(),

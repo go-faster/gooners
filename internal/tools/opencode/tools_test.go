@@ -49,8 +49,8 @@ func TestRunHandlerHappyPathCompactResult(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
 
-	mgr := NewManager(t.Context(), client, nil)
-	_, res, err := runHandler(client, mgr)(t.Context(), nil, runParams{Prompt: "do it"})
+	mgr := NewManager(t.Context(), client, ManagerOptions{})
+	_, res, err := runHandler(client, mgr, slog.Default())(t.Context(), nil, runParams{Prompt: "do it"})
 	require.NoError(t, err)
 	require.Equal(t, "done", res.Status)
 	require.Equal(t, "msg_prompt", res.PromptMessageID)
@@ -78,7 +78,7 @@ func TestFireHandlerReturnsSessionID(t *testing.T) {
 	t.Cleanup(server.Close)
 	t.Cleanup(func() { close(releasePrompt) })
 	client := newTestClient(t, Config{BaseURL: server.URL})
-	mgr := NewManager(t.Context(), client, slog.Default())
+	mgr := NewManager(t.Context(), client, ManagerOptions{Logger: slog.Default()})
 
 	_, res, err := fireHandler(mgr)(t.Context(), nil, fireParams{runParams: runParams{Prompt: "do it"}})
 	require.NoError(t, err)
@@ -113,9 +113,9 @@ func TestCheckHandlerReportsPendingPermission(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
-	mgr := NewManager(t.Context(), client, slog.Default())
+	mgr := NewManager(t.Context(), client, ManagerOptions{Logger: slog.Default()})
 
-	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+	_, res, err := checkHandler(client, mgr, nil)(t.Context(), nil, checkParams{SessionID: "ses_1"})
 	require.NoError(t, err)
 	// No job tracked by this server — status comes from opencode session state.
 	require.Equal(t, string(JobRunning), res.Status)
@@ -139,9 +139,9 @@ func TestCheckHandlerVerboseReturnsDecodedRawJSON(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
-	mgr := NewManager(t.Context(), client, slog.Default())
+	mgr := NewManager(t.Context(), client, ManagerOptions{Logger: slog.Default()})
 
-	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1", Verbose: true})
+	_, res, err := checkHandler(client, mgr, nil)(t.Context(), nil, checkParams{SessionID: "ses_1", Verbose: true})
 	require.NoError(t, err)
 	require.IsType(t, []map[string]any{}, res.RawMessages)
 	require.IsType(t, map[string]any{}, res.RawContext)
@@ -169,10 +169,10 @@ func TestCheckHandlerReportsRunningJob(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
-	mgr := NewManager(t.Context(), client, slog.Default())
+	mgr := NewManager(t.Context(), client, ManagerOptions{Logger: slog.Default()})
 	mgr.jobs["ses_1"] = &Job{SessionID: "ses_1", Status: JobRunning}
 
-	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+	_, res, err := checkHandler(client, mgr, nil)(t.Context(), nil, checkParams{SessionID: "ses_1"})
 	require.NoError(t, err)
 	require.Equal(t, string(JobRunning), res.Status)
 	require.Equal(t, "handoff is still running", res.Message)
@@ -194,14 +194,14 @@ func TestCheckHandlerReportsDoneJob(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 	client := newTestClient(t, Config{BaseURL: server.URL})
-	mgr := NewManager(t.Context(), client, slog.Default())
+	mgr := NewManager(t.Context(), client, ManagerOptions{Logger: slog.Default()})
 	mgr.jobs["ses_1"] = &Job{
 		SessionID:       "ses_1",
 		Status:          JobDone,
 		PromptMessageID: "msg_prompt",
 	}
 
-	_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+	_, res, err := checkHandler(client, mgr, nil)(t.Context(), nil, checkParams{SessionID: "ses_1"})
 	require.NoError(t, err)
 	require.Equal(t, string(JobDone), res.Status)
 	require.Equal(t, "msg_prompt", res.PromptMessageID)
@@ -229,14 +229,14 @@ func TestCheckHandlerReportsErrorJob(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 		client := newTestClient(t, Config{BaseURL: server.URL})
-		mgr := NewManager(t.Context(), client, slog.Default())
+		mgr := NewManager(t.Context(), client, ManagerOptions{Logger: slog.Default()})
 		mgr.jobs["ses_1"] = &Job{
 			SessionID: "ses_1",
 			Status:    JobError,
 			Err:       errors.New("context deadline exceeded"),
 		}
 
-		_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+		_, res, err := checkHandler(client, mgr, nil)(t.Context(), nil, checkParams{SessionID: "ses_1"})
 		require.NoError(t, err)
 		require.Equal(t, string(JobError), res.Status)
 		require.Equal(t, "context deadline exceeded", res.Error)
@@ -260,14 +260,14 @@ func TestCheckHandlerReportsErrorJob(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 		client := newTestClient(t, Config{BaseURL: server.URL})
-		mgr := NewManager(t.Context(), client, slog.Default())
+		mgr := NewManager(t.Context(), client, ManagerOptions{Logger: slog.Default()})
 		mgr.jobs["ses_1"] = &Job{
 			SessionID: "ses_1",
 			Status:    JobError,
 			Err:       errors.New("connection refused"),
 		}
 
-		_, res, err := checkHandler(client, mgr)(t.Context(), nil, checkParams{SessionID: "ses_1"})
+		_, res, err := checkHandler(client, mgr, nil)(t.Context(), nil, checkParams{SessionID: "ses_1"})
 		require.NoError(t, err)
 		require.Equal(t, string(JobError), res.Status)
 		require.Equal(t, "connection refused", res.Error)
@@ -299,8 +299,8 @@ func TestRunHandlerBlockedState(t *testing.T) {
 	client := newTestClient(t, Config{BaseURL: server.URL})
 
 	// Wait is a no-op so runHandler always sees "done" unless prompt itself fails.
-	mgr := NewManager(t.Context(), client, nil)
-	_, res, err := runHandler(client, mgr)(t.Context(), nil, runParams{Prompt: "do it"})
+	mgr := NewManager(t.Context(), client, ManagerOptions{})
+	_, res, err := runHandler(client, mgr, nil)(t.Context(), nil, runParams{Prompt: "do it"})
 	require.NoError(t, err)
 	require.Equal(t, "done", res.Status)
 	require.Equal(t, "still working", res.FinalText)
@@ -552,7 +552,7 @@ func TestQuestionReplyHandler(t *testing.T) {
 
 func TestManagerJobsReturnsSnapshots(t *testing.T) {
 	t.Parallel()
-	mgr := NewManager(t.Context(), nil, nil)
+	mgr := NewManager(t.Context(), nil, ManagerOptions{})
 	mgr.jobs["ses_1"] = &Job{
 		SessionID:       "ses_1",
 		Status:          JobRunning,
@@ -591,7 +591,7 @@ func TestManagerStateDirPersistence(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "bad.json"), []byte(`{`), 0o600))
 	require.NoError(t, os.Mkdir(filepath.Join(stateDir, "nested.json"), 0o700))
 
-	mgr := NewManagerWithStateDir(t.Context(), nil, nil, stateDir)
+	mgr := NewManager(t.Context(), nil, ManagerOptions{StateDir: stateDir})
 	job, ok := mgr.Job("ses_1")
 	require.True(t, ok)
 	require.Equal(t, "ses_1", job.SessionID)
@@ -634,10 +634,10 @@ func TestRegister(t *testing.T) {
 	t.Parallel()
 	server := mcp.NewServer(&mcp.Implementation{Name: "test", Version: "test"}, nil)
 	client := newTestClient(t, Config{BaseURL: "http://127.0.0.1:1"})
-	mgr := NewManager(t.Context(), client, nil)
+	mgr := NewManager(t.Context(), client, ManagerOptions{})
 
 	require.NotPanics(t, func() {
-		Register(server, client, mgr)
+		Register(server, client, mgr, nil)
 	})
 }
 
@@ -660,7 +660,7 @@ func TestClientValidationErrors(t *testing.T) {
 	_, err = client.QuestionReply(t.Context(), Location{}, "", "", false, nil)
 	require.EqualError(t, err, "request_id is required")
 
-	mgr := NewManager(t.Context(), client, nil)
+	mgr := NewManager(t.Context(), client, ManagerOptions{})
 	_, err = mgr.Submit(t.Context(), Location{}, "", CreateSessionRequest{}, PromptRequest{})
 	require.EqualError(t, err, "prompt is required")
 
@@ -678,12 +678,12 @@ func TestHandlerErrors(t *testing.T) {
 	_, _, err = questionReplyHandler(client)(t.Context(), nil, questionReplyParams{})
 	require.EqualError(t, err, "request_id is required")
 
-	_, _, err = runHandler(client, NewManager(t.Context(), client, nil))(t.Context(), nil, runParams{})
+	_, _, err = runHandler(client, NewManager(t.Context(), client, ManagerOptions{}), nil)(t.Context(), nil, runParams{})
 	require.EqualError(t, err, "prompt is required")
 
-	_, _, err = fireHandler(NewManager(t.Context(), client, nil))(t.Context(), nil, fireParams{})
+	_, _, err = fireHandler(NewManager(t.Context(), client, ManagerOptions{}))(t.Context(), nil, fireParams{})
 	require.EqualError(t, err, "prompt is required")
 
-	_, _, err = checkHandler(client, NewManager(t.Context(), client, nil))(t.Context(), nil, checkParams{})
+	_, _, err = checkHandler(client, NewManager(t.Context(), client, ManagerOptions{}), nil)(t.Context(), nil, checkParams{})
 	require.EqualError(t, err, "session_id is required")
 }

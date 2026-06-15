@@ -53,27 +53,30 @@ type Manager struct {
 	stateDir string
 }
 
-func NewManager(ctx context.Context, client *Client, logger *slog.Logger) *Manager {
-	return NewManagerWithStateDir(ctx, client, logger, "")
+type ManagerOptions struct {
+	Logger   *slog.Logger
+	StateDir string
 }
 
-// NewManagerWithStateDir creates a Manager that persists job state to stateDir.
-// An empty stateDir disables persistence (suitable for tests).
-func NewManagerWithStateDir(ctx context.Context, client *Client, logger *slog.Logger, stateDir string) *Manager {
+func (opts *ManagerOptions) setDefaults() {
+	if opts.Logger == nil {
+		opts.Logger = slog.Default()
+	}
+}
+
+func NewManager(ctx context.Context, client *Client, opts ManagerOptions) *Manager {
+	opts.setDefaults()
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if logger == nil {
-		logger = slog.Default()
 	}
 	m := &Manager{
 		ctx:      ctx,
 		client:   client,
 		jobs:     make(map[string]*Job),
-		logger:   logger,
-		stateDir: stateDir,
+		logger:   opts.Logger,
+		stateDir: opts.StateDir,
 	}
-	if stateDir != "" {
+	if opts.StateDir != "" {
 		m.loadJobs()
 	}
 	return m
