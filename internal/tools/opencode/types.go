@@ -97,17 +97,6 @@ type ModelRef struct {
 	ModelID    string `json:"modelID,omitempty"`
 }
 
-type HandoffRunResult struct {
-	SessionID     string           `json:"session_id"`
-	Status        string           `json:"status"`
-	FinalText     string           `json:"final_text,omitempty"`
-	PendingAction string           `json:"pending_action,omitempty"`
-	Error         string           `json:"error,omitempty"`
-	Messages      []MessageSummary `json:"messages,omitempty"`
-	RawMessages   []map[string]any `json:"raw_messages,omitempty"`
-	RawContext    map[string]any   `json:"raw_context,omitempty"`
-}
-
 type HandoffFireResult struct {
 	SessionID       string `json:"session_id"`
 	PromptMessageID string `json:"prompt_message_id,omitempty"`
@@ -115,14 +104,14 @@ type HandoffFireResult struct {
 }
 
 type HandoffCheckResult struct {
-	SessionID     string           `json:"session_id"`
-	Status        string           `json:"status,omitempty"`
-	FinalText     string           `json:"final_text,omitempty"`
-	PendingAction string           `json:"pending_action,omitempty"`
-	Error         string           `json:"error,omitempty"`
-	Messages      []MessageSummary `json:"messages,omitempty"`
-	RawMessages   []map[string]any `json:"raw_messages,omitempty"`
-	RawContext    map[string]any   `json:"raw_context,omitempty"`
+	SessionID          string           `json:"session_id"`
+	Status             string           `json:"status,omitempty"`
+	FinalText          string           `json:"final_text,omitempty"`
+	PendingPermissions []RequestSummary `json:"pending_permissions,omitempty"`
+	PendingQuestions   []RequestSummary `json:"pending_questions,omitempty"`
+	JobError           string           `json:"job_error,omitempty"`
+	Errors             []string         `json:"errors,omitempty"`
+	Messages           []MessageSummary `json:"messages,omitempty"`
 }
 
 type MessageSummary struct {

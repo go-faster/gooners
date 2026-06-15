@@ -42,11 +42,6 @@ func Register(s *mcp.Server, client *Client, mgr *Manager) {
 	}, sessionsHandler(client))
 
 	mcputil.Register(s, mcputil.ToolDef{
-		Name:        "handoff_run",
-		Description: "Blocking handoff: create an opencode session, submit a prompt to an agent, wait for completion, and return a compact result.",
-	}, runHandler(client, mgr))
-
-	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_fire",
 		Description: "Background handoff: create or reuse an opencode session, submit a prompt, and return immediately. Use handoff_check with the returned session_id to poll progress.",
 	}, fireHandler(mgr))
@@ -58,25 +53,13 @@ func Register(s *mcp.Server, client *Client, mgr *Manager) {
 	}, checkHandler(client, mgr))
 
 	mcputil.Register(s, mcputil.ToolDef{
-		Name:        "handoff_permissions",
-		Description: "List pending opencode permission requests globally or for one session.",
-		Flags:       mcputil.ReadOnly,
-	}, permissionsHandler(client))
-
-	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_permission_reply",
-		Description: "Reply to an opencode permission request for a session.",
+		Description: "Reply to an opencode permission request for a session. Use handoff_check to see pending permissions.",
 	}, permissionReplyHandler(client))
 
 	mcputil.Register(s, mcputil.ToolDef{
-		Name:        "handoff_questions",
-		Description: "List pending opencode clarification questions.",
-		Flags:       mcputil.ReadOnly,
-	}, questionsHandler(client))
-
-	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_question_reply",
-		Description: "Reply to or reject an opencode clarification question for a session.",
+		Description: "Reply to or reject an opencode clarification question for a session. Use handoff_check to see pending questions.",
 	}, questionReplyHandler(client))
 }
 
@@ -194,57 +177,16 @@ func sessionsHandler(client *Client) mcp.ToolHandlerFor[SessionsRequest, Session
 	}
 }
 
-type runParams struct {
-	locationParams
-	Prompt          string `json:"prompt" jsonschema:"Task to delegate to opencode."`
-	Title           string `json:"title,omitempty" jsonschema:"Optional session title."`
-	Agent           string `json:"agent,omitempty" jsonschema:"Optional opencode agent name."`
-	ProviderID      string `json:"provider_id,omitempty" jsonschema:"Optional model provider id."`
-	ModelID         string `json:"model_id,omitempty" jsonschema:"Optional model id."`
-	ParentSessionID string `json:"parent_session_id,omitempty" jsonschema:"Optional parent session id."`
-	Verbose         bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
-	WaitSeconds     int    `json:"wait_seconds,omitempty" jsonschema:"Max seconds to wait for completion (0-300). 0 = fire and return immediately."`
-}
-
 type fireParams struct {
-	runParams
-	SessionID string `json:"session_id,omitempty" jsonschema:"Existing session id to reuse; omitted means create a new session."`
-}
-
-func runHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[runParams, HandoffRunResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args runParams) (*mcp.CallToolResult, HandoffRunResult, error) {
-		if args.Prompt == "" {
-			return nil, HandoffRunResult{}, fmt.Errorf("prompt is required")
-		}
-		loc := args.location()
-		session, err := client.CreateSession(ctx, loc, CreateSessionRequest{Title: args.Title, ParentID: args.ParentSessionID})
-		if err != nil {
-			return nil, HandoffRunResult{}, err
-		}
-		_, err = mgr.Submit(ctx, loc, session.ID, CreateSessionRequest{}, promptRequest(args))
-		if err != nil {
-			return nil, HandoffRunResult{}, err
-		}
-
-		if args.WaitSeconds > 0 {
-			waitCtx, cancel := context.WithTimeout(ctx, time.Duration(min(args.WaitSeconds, 300))*time.Second)
-			defer cancel()
-			_ = client.Wait(waitCtx, loc, session.ID)
-		}
-
-		res, _, err := checkSession(ctx, client, loc, session.ID, args.Verbose)
-		if err != nil {
-			return nil, HandoffRunResult{}, err
-		}
-
-		job, ok := mgr.Job(session.ID)
-		if ok && job.Status == JobError {
-			res.Status = string(JobError)
-			res.Error = job.Err.Error()
-		}
-
-		return nil, runResultFromCheck(session.ID, res.Status, res), nil
-	}
+	locationParams
+	Prompt      string `json:"prompt" jsonschema:"Task to delegate to opencode."`
+	Title       string `json:"title,omitempty" jsonschema:"Optional session title."`
+	Agent       string `json:"agent,omitempty" jsonschema:"Optional opencode agent name."`
+	ProviderID  string `json:"provider_id,omitempty" jsonschema:"Optional model provider id."`
+	ModelID     string `json:"model_id,omitempty" jsonschema:"Optional model id."`
+	Verbose     bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
+	WaitSeconds int    `json:"wait_seconds,omitempty" jsonschema:"Max seconds to wait for completion (0-300). 0 = fire and return immediately."`
+	SessionID   string `json:"session_id,omitempty" jsonschema:"Existing session id to reuse; omitted means create a new session."`
 }
 
 func fireHandler(mgr *Manager) mcp.ToolHandlerFor[fireParams, HandoffFireResult] {
@@ -253,9 +195,17 @@ func fireHandler(mgr *Manager) mcp.ToolHandlerFor[fireParams, HandoffFireResult]
 			return nil, HandoffFireResult{}, fmt.Errorf("prompt is required")
 		}
 		loc := args.location()
-		sessionID, err := mgr.Submit(ctx, loc, args.SessionID,
-			CreateSessionRequest{Title: args.Title, ParentID: args.ParentSessionID},
-			promptRequest(args.runParams),
+
+		title := args.Title
+		if title != "" {
+			title = "[handoff] " + title
+		}
+
+		sessionID, err := mgr.Submit(ctx,
+			loc,
+			args.SessionID,
+			CreateSessionRequest{Title: title},
+			promptRequest(args),
 		)
 		if err != nil {
 			return nil, HandoffFireResult{}, err
@@ -269,11 +219,6 @@ type checkParams struct {
 	SessionID   string `json:"session_id" jsonschema:"opencode session id."`
 	Verbose     bool   `json:"verbose,omitempty" jsonschema:"Include raw messages/context returned by opencode."`
 	WaitSeconds int    `json:"wait_seconds,omitempty" jsonschema:"Max seconds to wait for completion (0-300). 0 = no wait."`
-}
-
-type requestListParams struct {
-	locationParams
-	SessionID string `json:"session_id,omitempty" jsonschema:"Optional opencode session id. Omit to list global pending requests when supported by opencode."`
 }
 
 func checkHandler(client *Client, mgr *Manager) mcp.ToolHandlerFor[checkParams, HandoffCheckResult] {
@@ -320,7 +265,7 @@ func doCheck(ctx context.Context, client *Client, mgr *Manager, args checkParams
 
 	res.Status = string(job.Status)
 	if job.Err != nil {
-		res.Error = job.Err.Error()
+		res.JobError = job.Err.Error()
 	}
 	return res, nil
 }
@@ -332,17 +277,6 @@ func sessionStatus(isFinished bool) string {
 		return string(JobDone)
 	}
 	return string(JobRunning)
-}
-
-func permissionsHandler(client *Client) mcp.ToolHandlerFor[requestListParams, RequestsResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args requestListParams) (*mcp.CallToolResult, RequestsResult, error) {
-		res, err := client.Permissions(ctx, args.location(), args.SessionID)
-		if err != nil {
-			return nil, RequestsResult{}, err
-		}
-		requests := summarizeRequests(res, "permission", args.SessionID)
-		return nil, RequestsResult{Requests: requests, Count: len(requests)}, nil
-	}
 }
 
 type permissionReplyParams struct {
@@ -378,17 +312,6 @@ func permissionReplyHandler(client *Client) mcp.ToolHandlerFor[permissionReplyPa
 			return nil, PermissionReplyResult{}, err
 		}
 		return nil, PermissionReplyResult{OK: true, Data: res}, nil
-	}
-}
-
-func questionsHandler(client *Client) mcp.ToolHandlerFor[requestListParams, RequestsResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args requestListParams) (*mcp.CallToolResult, RequestsResult, error) {
-		res, err := client.Questions(ctx, args.location(), args.SessionID)
-		if err != nil {
-			return nil, RequestsResult{}, err
-		}
-		requests := summarizeRequests(res, "question", args.SessionID)
-		return nil, RequestsResult{Requests: requests, Count: len(requests)}, nil
 	}
 }
 
@@ -428,7 +351,7 @@ func questionReplyHandler(client *Client) mcp.ToolHandlerFor[questionReplyParams
 	}
 }
 
-func promptRequest(args runParams) PromptRequest {
+func promptRequest(args fireParams) PromptRequest {
 	req := PromptRequest{
 		Prompt: PromptPayload{Text: args.Prompt},
 		Agent:  args.Agent,
@@ -450,16 +373,12 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 		summaries := summarizeMessages(msg, 6)
 		if verbose {
 			res.Messages = summaries
-			res.RawMessages = rawJSONArray(msg)
 		}
 		res.FinalText = truncateText(firstText(msg), 4000)
 		isFinished = isSessionFinishedJSON(msg)
 	}
 	ctxData, ctxErr := client.Context(ctx, loc, sessionID)
 	if ctxErr == nil {
-		if verbose {
-			res.RawContext = rawJSONObject(ctxData)
-		}
 		if res.FinalText == "" {
 			res.FinalText = truncateText(firstText(ctxData), 4000)
 		}
@@ -471,42 +390,19 @@ func checkSession(ctx context.Context, client *Client, loc Location, sessionID s
 	return res, isFinished, nil
 }
 
-func rawJSONArray(raw json.RawMessage) []map[string]any {
-	var v []map[string]any
-	_ = json.Unmarshal(raw, &v)
-	return v
-}
-
-func rawJSONObject(raw json.RawMessage) map[string]any {
-	var v map[string]any
-	_ = json.Unmarshal(raw, &v)
-	return v
-}
-
 func fillPendingRequests(ctx context.Context, client *Client, loc Location, res *HandoffCheckResult) {
-	perms, _ := client.Permissions(ctx, loc, res.SessionID)
-	pendingPerms := summarizeRequests(perms, "permission", res.SessionID)
-	if len(pendingPerms) > 0 {
-		res.PendingAction = fmt.Sprintf("permission requested: %s", pendingPerms[0].Title)
-		return
+	perms, err := client.Permissions(ctx, loc, res.SessionID)
+	if err == nil {
+		res.PendingPermissions = summarizeRequests(perms, "permission", res.SessionID)
+	} else {
+		res.Errors = append(res.Errors, fmt.Sprintf("get permission requests: %s", err))
 	}
-	questions, _ := client.Questions(ctx, loc, res.SessionID)
-	pendingQuestions := summarizeRequests(questions, "question", res.SessionID)
-	if len(pendingQuestions) > 0 {
-		res.PendingAction = fmt.Sprintf("question requested: %s", pendingQuestions[0].Title)
-	}
-}
 
-func runResultFromCheck(sessionID, status string, check HandoffCheckResult) HandoffRunResult {
-	return HandoffRunResult{
-		SessionID:     sessionID,
-		Status:        status,
-		FinalText:     check.FinalText,
-		PendingAction: check.PendingAction,
-		Error:         check.Error,
-		Messages:      check.Messages,
-		RawMessages:   check.RawMessages,
-		RawContext:    check.RawContext,
+	questions, err := client.Questions(ctx, loc, res.SessionID)
+	if err == nil {
+		res.PendingQuestions = summarizeRequests(questions, "question", res.SessionID)
+	} else {
+		res.Errors = append(res.Errors, fmt.Sprintf("get questions: %s", err))
 	}
 }
 
