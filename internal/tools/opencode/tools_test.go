@@ -392,23 +392,131 @@ func TestAgentsHandler(t *testing.T) {
 	require.Equal(t, AgentsResult{Agents: []Agent{{Name: "build", Description: "Build things", Mode: "subagent"}}}, got)
 }
 
+const multiProviderResponse = `{"data":[
+	{"id":"anthropic","name":"Anthropic","models":{
+		"claude-3-5-sonnet":{"name":"Claude 3.5 Sonnet"},
+		"claude-3-opus":{"name":"Claude 3 Opus"}
+	}},
+	{"id":"openai","name":"OpenAI","models":{
+		"gpt-4o":{"name":"GPT-4o"},
+		"gpt-4o-mini":{"name":"GPT-4o mini"}
+	}},
+	{"id":"xai","name":"xAI","models":{
+		"grok-3":{"name":"Grok 3"}
+	}}
+]}`
+
+func newMultiProviderServer(t *testing.T, dir string) *httptest.Server {
+	t.Helper()
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/provider", r.URL.Path)
+		require.Equal(t, dir, r.URL.Query().Get("directory"))
+		writeJSON(w, multiProviderResponse)
+	}))
+	t.Cleanup(s.Close)
+	return s
+}
+
 func TestModelsHandler(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		require.Equal(t, "/api/provider", r.URL.Path)
-		require.Equal(t, dir, r.URL.Query().Get("directory"))
-		writeJSON(w, `{"data":[{"id":"anthropic","name":"Anthropic","models":{"claude-3-5-sonnet":{"name":"Sonnet"}}}]}`)
-	}))
-	t.Cleanup(server.Close)
+	server := newMultiProviderServer(t, dir)
 
 	client := newTestClient(t, Config{BaseURL: server.URL})
-	_, got, err := modelsHandler(client)(t.Context(), nil, locationParams{Directory: dir})
-	require.NoError(t, err)
-	require.Equal(t, ModelsResult{
-		Providers: []ProviderSummary{{ID: "anthropic", Name: "Anthropic", Models: 1}},
-		Models:    []ModelSummary{{ProviderID: "anthropic", ID: "claude-3-5-sonnet", Name: "Sonnet"}},
-	}, got)
+
+	t.Run("include_models=false returns only providers", func(t *testing.T) {
+		t.Parallel()
+		_, got, err := modelsHandler(client)(t.Context(), nil, modelsParams{
+			locationParams: locationParams{Directory: dir},
+		})
+		require.NoError(t, err)
+		require.Len(t, got.Providers, 3)
+		require.Nil(t, got.Models)
+	})
+
+	t.Run("include_models=true returns all models", func(t *testing.T) {
+		t.Parallel()
+		_, got, err := modelsHandler(client)(t.Context(), nil, modelsParams{
+			locationParams: locationParams{Directory: dir},
+			IncludeModels:  true,
+			Limit:          -1,
+		})
+		require.NoError(t, err)
+		require.Len(t, got.Providers, 3)
+		require.Len(t, got.Models, 5)
+	})
+
+	t.Run("filter by provider prefix substring", func(t *testing.T) {
+		t.Parallel()
+		_, got, err := modelsHandler(client)(t.Context(), nil, modelsParams{
+			locationParams: locationParams{Directory: dir},
+			Filter:         "xai/",
+			Limit:          -1,
+		})
+		require.NoError(t, err)
+		require.Len(t, got.Models, 1)
+		require.Equal(t, "grok-3", got.Models[0].ID)
+	})
+
+	t.Run("filter by glob", func(t *testing.T) {
+		t.Parallel()
+		_, got, err := modelsHandler(client)(t.Context(), nil, modelsParams{
+			locationParams: locationParams{Directory: dir},
+			Filter:         "openai/gpt-*-mini",
+			Limit:          -1,
+		})
+		require.NoError(t, err)
+		require.Len(t, got.Models, 1)
+		require.Equal(t, "gpt-4o-mini", got.Models[0].ID)
+	})
+
+	t.Run("filter by regex", func(t *testing.T) {
+		t.Parallel()
+		// Anchors (^ $) are not substring or glob chars, so this falls through to
+		// the regex path. It matches exactly "openai/gpt-4o" but not "openai/gpt-4o-mini".
+		_, got, err := modelsHandler(client)(t.Context(), nil, modelsParams{
+			locationParams: locationParams{Directory: dir},
+			Filter:         `^openai/gpt-4o$`,
+			Limit:          -1,
+		})
+		require.NoError(t, err)
+		require.Len(t, got.Models, 1)
+		require.Equal(t, "gpt-4o", got.Models[0].ID)
+	})
+
+	t.Run("filter implies include_models", func(t *testing.T) {
+		t.Parallel()
+		_, got, err := modelsHandler(client)(t.Context(), nil, modelsParams{
+			locationParams: locationParams{Directory: dir},
+			Filter:         "grok",
+			Limit:          -1,
+		})
+		require.NoError(t, err)
+		require.Len(t, got.Models, 1)
+	})
+
+	t.Run("limit truncates results", func(t *testing.T) {
+		t.Parallel()
+		_, got, err := modelsHandler(client)(t.Context(), nil, modelsParams{
+			locationParams: locationParams{Directory: dir},
+			IncludeModels:  true,
+			Limit:          2,
+		})
+		require.NoError(t, err)
+		require.Len(t, got.Models, 2)
+	})
+
+	t.Run("default limit is 50", func(t *testing.T) {
+		t.Parallel()
+		_, got, err := modelsHandler(client)(t.Context(), nil, modelsParams{
+			locationParams: locationParams{Directory: dir},
+			IncludeModels:  true,
+			// Limit == 0: default
+		})
+		require.NoError(t, err)
+		// 5 models total, well under default 50 — all returned
+		require.Len(t, got.Models, 5)
+	})
 }
 
 func TestSessionsHandler(t *testing.T) {

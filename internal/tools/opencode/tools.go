@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path"
+	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -29,7 +32,7 @@ func Register(s *mcp.Server, client *Client, mgr *Manager, logger *slog.Logger) 
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "handoff_models",
-		Description: "List opencode providers and models available for a directory/workspace.",
+		Description: "List opencode providers and optionally models. Supports substring, glob (e.g. 'openai/gpt-*-mini'), or regex filtering and a result limit to avoid cluttering context with large provider catalogues (e.g. OpenRouter).",
 		Flags:       mcputil.ReadOnly,
 	}, modelsHandler(client))
 
@@ -107,14 +110,79 @@ func agentsHandler(client *Client) mcp.ToolHandlerFor[locationParams, AgentsResu
 	}
 }
 
-func modelsHandler(client *Client) mcp.ToolHandlerFor[locationParams, ModelsResult] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, args locationParams) (*mcp.CallToolResult, ModelsResult, error) {
+type modelsParams struct {
+	locationParams
+	IncludeModels bool   `json:"include_models,omitempty" jsonschema:"If true, includes the list of individual models. Defaults to false."`
+	Filter        string `json:"filter,omitempty" jsonschema:"Optional substring, glob, or regex to filter models (e.g., 'xai/', 'openai/gpt-*-mini'). Implies include_models=true."`
+	Limit         int    `json:"limit,omitempty" jsonschema:"Maximum number of models to return when include_models is true. Defaults to 50; pass -1 for no limit. Zero is treated as the default."`
+}
+
+func modelsHandler(client *Client) mcp.ToolHandlerFor[modelsParams, ModelsResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args modelsParams) (*mcp.CallToolResult, ModelsResult, error) {
 		res, err := client.ProvidersAndModels(ctx, args.location())
 		if err != nil {
 			return nil, ModelsResult{}, err
 		}
+
+		includeModels := args.IncludeModels || args.Filter != ""
+		if !includeModels {
+			res.Models = nil
+			return nil, res, nil
+		}
+
+		if args.Filter != "" {
+			var filtered []ModelSummary
+			for _, m := range res.Models {
+				if matchModel(args.Filter, m) {
+					filtered = append(filtered, m)
+				}
+			}
+			res.Models = filtered
+		}
+
+		limit := 50
+		if args.Limit != 0 {
+			limit = args.Limit
+		}
+
+		if limit > 0 && len(res.Models) > limit {
+			res.Models = res.Models[:limit]
+		}
+
 		return nil, res, nil
 	}
+}
+
+// matchModel reports whether m matches filter using substring, then glob
+// (path.Match), then regex — in that order. Regex is only attempted when
+// neither substring nor glob matches, so a glob like "openai/gpt-*-mini" is
+// never re-interpreted as a regex. Substring matching means a bare "xai/"
+// matches all xai models without needing the "xai/*" glob form.
+func matchModel(filter string, m ModelSummary) bool {
+	if filter == "" {
+		return true
+	}
+
+	fullID := m.ProviderID + "/" + m.ID
+
+	if strings.Contains(fullID, filter) || strings.Contains(m.ID, filter) || strings.Contains(m.Name, filter) {
+		return true
+	}
+
+	if matched, _ := path.Match(filter, fullID); matched {
+		return true
+	}
+	if matched, _ := path.Match(filter, m.ID); matched {
+		return true
+	}
+
+	if re, err := regexp.Compile(filter); err == nil {
+		if re.MatchString(fullID) || re.MatchString(m.ID) || re.MatchString(m.Name) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func sessionsHandler(client *Client) mcp.ToolHandlerFor[SessionsRequest, SessionsResult] {

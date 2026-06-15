@@ -59,7 +59,8 @@ func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 
 	newHTTPClient := func(t time.Duration) *http.Client {
 		c := &http.Client{Timeout: t}
-		var base http.RoundTripper = http.DefaultTransport
+		var base http.RoundTripper
+		base = http.DefaultTransport
 		if cfg.Username != "" || cfg.Password != "" {
 			base = &basicAuthTransport{
 				username: cfg.Username,
