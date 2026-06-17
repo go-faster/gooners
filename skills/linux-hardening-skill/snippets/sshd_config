@@ -1,0 +1,21 @@
+# Hardened sshd_config baseline.
+# Copy to /etc/ssh/sshd_config.d/10-hardening.conf (or replace /etc/ssh/sshd_config).
+# Verify with: sshd -t && systemctl reload sshd
+#
+# Only apply PasswordAuthentication no AFTER verifying key login works in a separate session.
+Protocol 2
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+UsePAM yes
+
+AllowGroups sshadmins
+MaxAuthTries 3
+LoginGraceTime 20
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+PermitEmptyPasswords no
+ClientAliveInterval 300
+ClientAliveCountMax 2

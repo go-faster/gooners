@@ -1,0 +1,32 @@
+#!/usr/sbin/nft -f
+# Minimal deny-by-default nftables ruleset.
+# Replace the SSH source IPs with your bastion/admin ranges before applying.
+# Apply: nft -f nftables-minimal.nft
+# Persist: cp nftables-minimal.nft /etc/nftables.conf && systemctl enable --now nftables
+table inet filter {
+  chain input {
+    type filter hook input priority 0; policy drop;
+
+    iif "lo" accept
+    ct state established,related accept
+    ct state invalid drop
+
+    # ICMP/ICMPv6: do not block completely — breaks path MTU discovery.
+    ip protocol icmp accept
+    ip6 nexthdr ipv6-icmp accept
+
+    # SSH only from bastion/admin ranges. Replace with your real IPs.
+    ip saddr { 198.51.100.10/32, 203.0.113.0/24 } tcp dport 22 ct state new accept
+
+    # Public app ports.
+    tcp dport { 80, 443 } ct state new accept
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+  }
+
+  chain output {
+    type filter hook output priority 0; policy accept;
+  }
+}

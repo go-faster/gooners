@@ -27,7 +27,7 @@ Agent skills (slash commands) that can be installed into AI coding assistants.
 |-------|-------------|
 | [jx](skills/jx/SKILL.md) | Correct, high-performance JSON encoding/decoding with `github.com/go-faster/jx` |
 | [golang-refactor-tools](skills/golang-refactor-tools/SKILL.md) | Mechanical Go rewrites with `gofmt -r`, `gopatch`, `rsc.io/rf`, and `eg` |
-| [linux-hardening-skill](skills/linux-hardening-skill/SKILL.md) | Guidelines and audit script for hardening Linux servers exposed to the public internet |
+| [linux-hardening-skill](skills/linux-hardening-skill/SKILL.md) | Harden Linux servers, Docker/containerd, and Kubernetes workloads on public IPs — host OS, SSH, network, container runtime, supply chain, and K8s security |
 
 ## 🚀 Installing skills
 

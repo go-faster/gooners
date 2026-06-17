@@ -1,0 +1,52 @@
+# Kubernetes Pod spec meeting the "restricted" Pod Security Standard.
+# Key settings:
+#   automountServiceAccountToken: false  — do not expose the k8s API token unless needed
+#   runAsNonRoot + runAsUser             — never run as root
+#   seccompProfile: RuntimeDefault       — apply the default seccomp syscall filter
+#   allowPrivilegeEscalation: false      — block setuid escalation
+#   readOnlyRootFilesystem: true         — root FS is immutable
+#   capabilities.drop: ["ALL"]           — drop every Linux capability
+#   resources.limits                     — OOM Kill protection and DoS containment
+#   emptyDir medium: Memory              — /tmp in RAM (no disk writes)
+#
+# Replace sha256:REPLACE_ME with the actual image digest before deployment.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-app
+  labels:
+    app: secure-app
+spec:
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: registry.example.com/app@sha256:REPLACE_ME
+      ports:
+        - containerPort: 8080
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: tmp
+      emptyDir:
+        medium: Memory
+        sizeLimit: 64Mi

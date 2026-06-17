@@ -1,0 +1,16 @@
+# auditd rules for identity, SSH, sudo, privilege commands, and Docker.
+# Copy to /etc/audit/rules.d/40-hardening.rules and reload:
+#   augenrules --load
+#   systemctl reload auditd
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p wa -k identity
+-w /etc/group -p wa -k identity
+-w /etc/sudoers -p wa -k privilege
+-w /etc/sudoers.d/ -p wa -k privilege
+-w /etc/ssh/sshd_config -p wa -k sshd
+-w /usr/bin/sudo -p x -k priv_cmd
+-w /usr/bin/su -p x -k priv_cmd
+-w /usr/bin/ssh -p x -k ssh_client
+-w /usr/bin/dockerd -p x -k docker_audit
+-w /var/run/docker.sock -p wa -k docker_audit
+-w /etc/docker/daemon.json -p wa -k docker_audit

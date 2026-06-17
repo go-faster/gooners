@@ -1,0 +1,19 @@
+# Kubernetes API server audit policy.
+# Logs secrets, configmaps, and service accounts at Metadata level (no body, preserves confidentiality).
+# Logs RBAC mutations at RequestResponse level for full accountability.
+# Catches everything else at Metadata level as a baseline.
+#
+# Pass to kube-apiserver: --audit-policy-file=k8s-audit-policy.yaml --audit-log-path=/var/log/kubernetes/audit.log
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+  - level: Metadata
+    resources:
+      - group: ""
+        resources: ["secrets", "configmaps", "serviceaccounts"]
+  - level: RequestResponse
+    verbs: ["create", "update", "patch", "delete"]
+    resources:
+      - group: "rbac.authorization.k8s.io"
+        resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+  - level: Metadata

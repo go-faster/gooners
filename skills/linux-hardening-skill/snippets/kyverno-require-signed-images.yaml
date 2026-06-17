@@ -1,0 +1,31 @@
+# Kyverno ClusterPolicy: enforce keyless Cosign image signatures.
+# All pods using images from registry.example.com/* must have a valid Sigstore
+# signature from a GitHub Actions OIDC-signed certificate.
+#
+# Requirements:
+#   - Kyverno >= 1.10 installed
+#   - Images signed via: cosign sign --oidc-issuer https://token.actions.githubusercontent.com
+#
+# Replace registry.example.com/* and the subject/issuer with your values.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-signed-images
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: verify-image-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "registry.example.com/*"
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/example/*"
+                    issuer: "https://token.actions.githubusercontent.com"

@@ -1,0 +1,13 @@
+# Default-deny NetworkPolicy: blocks all ingress and egress for all pods in the namespace.
+# Apply per namespace, then add explicit allow policies on top for each required flow.
+# Requires a CNI that enforces NetworkPolicy (Cilium, Calico, Weave, etc.).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: default
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress

@@ -1,0 +1,11 @@
+# Drop-in for /etc/sudoers.d/admins
+# Grants full sudo to ADMINS alias with pty and env_reset.
+# Stricter variant: restrict to PKG and SVC commands only.
+Defaults        env_reset
+Defaults        use_pty
+User_Alias      ADMINS = alice, bob
+Cmnd_Alias      PKG = /usr/bin/apt, /usr/bin/apt-get, /usr/bin/dnf, /usr/bin/yum
+Cmnd_Alias      SVC = /usr/bin/systemctl, /usr/bin/journalctl
+ADMINS ALL=(ALL:ALL) ALL
+# Stricter variant:
+# ADMINS ALL=(ALL:ALL) PKG, SVC
