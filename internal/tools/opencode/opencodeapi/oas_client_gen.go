@@ -4,6 +4,7 @@ package opencodeapi
 
 import (
 	"context"
+	"io"
 	"net/url"
 	"strings"
 	"time"
@@ -96,8 +97,8 @@ type Invoker interface {
 	V2SessionList(ctx context.Context, params V2SessionListParams) (V2SessionListRes, error)
 	// V2SessionMessages invokes v2.session.messages operation.
 	//
-	// Retrieve projected messages for a session. Items keep the requested order across pages; use cursor.
-	// next or cursor.previous to move through the ordered timeline.
+	// Retrieve projected messages for a session. Items keep the requested order across pages; use
+	// cursor.next or cursor.previous to move through the ordered timeline.
 	//
 	// GET /api/session/{sessionID}/message
 	V2SessionMessages(ctx context.Context, params V2SessionMessagesParams) (V2SessionMessagesRes, error)
@@ -282,7 +283,13 @@ func (c *Client) sendSessionCreate(ctx context.Context, request OptSessionCreate
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSessionCreateResponse(resp)
@@ -399,7 +406,13 @@ func (c *Client) sendSessionMessage(ctx context.Context, request *SessionMessage
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSessionMessageResponse(resp)
@@ -547,7 +560,13 @@ func (c *Client) sendSessionMessages(ctx context.Context, params SessionMessages
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeSessionMessagesResponse(resp)
@@ -642,7 +661,13 @@ func (c *Client) sendV2AgentList(ctx context.Context, params V2AgentListParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2AgentListResponse(resp)
@@ -716,7 +741,13 @@ func (c *Client) sendV2HealthGet(ctx context.Context) (res V2HealthGetRes, err e
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2HealthGetResponse(resp)
@@ -811,7 +842,13 @@ func (c *Client) sendV2ModelList(ctx context.Context, params V2ModelListParams) 
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2ModelListResponse(resp)
@@ -906,7 +943,13 @@ func (c *Client) sendV2PermissionRequestList(ctx context.Context, params V2Permi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2PermissionRequestListResponse(resp)
@@ -1001,7 +1044,13 @@ func (c *Client) sendV2ProviderList(ctx context.Context, params V2ProviderListPa
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2ProviderListResponse(resp)
@@ -1096,7 +1145,13 @@ func (c *Client) sendV2QuestionRequestList(ctx context.Context, params V2Questio
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2QuestionRequestListResponse(resp)
@@ -1189,7 +1244,13 @@ func (c *Client) sendV2SessionContext(ctx context.Context, params V2SessionConte
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionContextResponse(resp)
@@ -1404,7 +1465,13 @@ func (c *Client) sendV2SessionList(ctx context.Context, params V2SessionListPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionListResponse(resp)
@@ -1417,8 +1484,8 @@ func (c *Client) sendV2SessionList(ctx context.Context, params V2SessionListPara
 
 // V2SessionMessages invokes v2.session.messages operation.
 //
-// Retrieve projected messages for a session. Items keep the requested order across pages; use cursor.
-// next or cursor.previous to move through the ordered timeline.
+// Retrieve projected messages for a session. Items keep the requested order across pages; use
+// cursor.next or cursor.previous to move through the ordered timeline.
 //
 // GET /api/session/{sessionID}/message
 func (c *Client) V2SessionMessages(ctx context.Context, params V2SessionMessagesParams) (V2SessionMessagesRes, error) {
@@ -1553,7 +1620,13 @@ func (c *Client) sendV2SessionMessages(ctx context.Context, params V2SessionMess
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionMessagesResponse(resp)
@@ -1646,7 +1719,13 @@ func (c *Client) sendV2SessionPermissionList(ctx context.Context, params V2Sessi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionPermissionListResponse(resp)
@@ -1761,7 +1840,13 @@ func (c *Client) sendV2SessionPermissionReply(ctx context.Context, request *V2Se
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionPermissionReplyResponse(resp)
@@ -1857,7 +1942,13 @@ func (c *Client) sendV2SessionPrompt(ctx context.Context, request *V2SessionProm
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionPromptResponse(resp)
@@ -1969,7 +2060,13 @@ func (c *Client) sendV2SessionQuestionReject(ctx context.Context, params V2Sessi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionQuestionRejectResponse(resp)
@@ -2084,7 +2181,13 @@ func (c *Client) sendV2SessionQuestionReply(ctx context.Context, request *Questi
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionQuestionReplyResponse(resp)
@@ -2177,7 +2280,13 @@ func (c *Client) sendV2SessionWait(ctx context.Context, params V2SessionWaitPara
 		return res, errors.Wrap(err, "do request")
 	}
 	body := resp.Body
-	defer body.Close()
+	defer func() {
+		// Drain the body to EOF before closing, so the underlying
+		// connection can be reused by the Transport regardless of the
+		// response status code. See https://github.com/ogen-go/ogen/issues/1670.
+		_, _ = io.Copy(io.Discard, body)
+		_ = body.Close()
+	}()
 
 	stage = "DecodeResponse"
 	result, err := decodeV2SessionWaitResponse(resp)

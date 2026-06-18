@@ -16,7 +16,6 @@ func encodeSessionCreateResponse(response SessionCreateRes, w http.ResponseWrite
 	case *Session:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -29,7 +28,6 @@ func encodeSessionCreateResponse(response SessionCreateRes, w http.ResponseWrite
 	case *SessionCreateBadRequestApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -49,7 +47,6 @@ func encodeSessionMessageResponse(response SessionMessageRes, w http.ResponseWri
 	case *SessionMessageOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -62,7 +59,6 @@ func encodeSessionMessageResponse(response SessionMessageRes, w http.ResponseWri
 	case *SessionMessageBadRequestApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -75,7 +71,6 @@ func encodeSessionMessageResponse(response SessionMessageRes, w http.ResponseWri
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -88,7 +83,6 @@ func encodeSessionMessageResponse(response SessionMessageRes, w http.ResponseWri
 	case *SessionMessageNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -101,7 +95,6 @@ func encodeSessionMessageResponse(response SessionMessageRes, w http.ResponseWri
 	case *ConflictError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(409)
-		span.SetStatus(codes.Error, http.StatusText(409))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -121,7 +114,6 @@ func encodeSessionMessagesResponse(response SessionMessagesRes, w http.ResponseW
 	case *SessionMessagesOKApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -134,7 +126,6 @@ func encodeSessionMessagesResponse(response SessionMessagesRes, w http.ResponseW
 	case *SessionMessagesBadRequestApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -147,7 +138,6 @@ func encodeSessionMessagesResponse(response SessionMessagesRes, w http.ResponseW
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -160,7 +150,6 @@ func encodeSessionMessagesResponse(response SessionMessagesRes, w http.ResponseW
 	case *SessionMessagesNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -180,7 +169,6 @@ func encodeV2AgentListResponse(response V2AgentListRes, w http.ResponseWriter, s
 	case *V2AgentListOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -193,7 +181,6 @@ func encodeV2AgentListResponse(response V2AgentListRes, w http.ResponseWriter, s
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -206,7 +193,6 @@ func encodeV2AgentListResponse(response V2AgentListRes, w http.ResponseWriter, s
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -226,7 +212,6 @@ func encodeV2HealthGetResponse(response V2HealthGetRes, w http.ResponseWriter, s
 	case *V2HealthGetOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -239,7 +224,6 @@ func encodeV2HealthGetResponse(response V2HealthGetRes, w http.ResponseWriter, s
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -252,7 +236,6 @@ func encodeV2HealthGetResponse(response V2HealthGetRes, w http.ResponseWriter, s
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -272,7 +255,6 @@ func encodeV2ModelListResponse(response V2ModelListRes, w http.ResponseWriter, s
 	case *V2ModelListOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -285,7 +267,6 @@ func encodeV2ModelListResponse(response V2ModelListRes, w http.ResponseWriter, s
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -298,7 +279,6 @@ func encodeV2ModelListResponse(response V2ModelListRes, w http.ResponseWriter, s
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -331,7 +311,6 @@ func encodeV2PermissionRequestListResponse(response V2PermissionRequestListRes, 
 	case *V2PermissionRequestListOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -344,7 +323,6 @@ func encodeV2PermissionRequestListResponse(response V2PermissionRequestListRes, 
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -357,7 +335,6 @@ func encodeV2PermissionRequestListResponse(response V2PermissionRequestListRes, 
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -377,7 +354,6 @@ func encodeV2ProviderListResponse(response V2ProviderListRes, w http.ResponseWri
 	case *V2ProviderListOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -390,7 +366,6 @@ func encodeV2ProviderListResponse(response V2ProviderListRes, w http.ResponseWri
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -403,7 +378,6 @@ func encodeV2ProviderListResponse(response V2ProviderListRes, w http.ResponseWri
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -436,7 +410,6 @@ func encodeV2QuestionRequestListResponse(response V2QuestionRequestListRes, w ht
 	case *V2QuestionRequestListOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -449,7 +422,6 @@ func encodeV2QuestionRequestListResponse(response V2QuestionRequestListRes, w ht
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -462,7 +434,6 @@ func encodeV2QuestionRequestListResponse(response V2QuestionRequestListRes, w ht
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -482,7 +453,6 @@ func encodeV2SessionContextResponse(response V2SessionContextRes, w http.Respons
 	case *V2SessionContextOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -495,7 +465,6 @@ func encodeV2SessionContextResponse(response V2SessionContextRes, w http.Respons
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -508,7 +477,6 @@ func encodeV2SessionContextResponse(response V2SessionContextRes, w http.Respons
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -521,7 +489,6 @@ func encodeV2SessionContextResponse(response V2SessionContextRes, w http.Respons
 	case *V2SessionContextNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -554,7 +521,6 @@ func encodeV2SessionListResponse(response V2SessionListRes, w http.ResponseWrite
 	case *SessionsResponse:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -567,7 +533,6 @@ func encodeV2SessionListResponse(response V2SessionListRes, w http.ResponseWrite
 	case *V2SessionListBadRequestApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -580,7 +545,6 @@ func encodeV2SessionListResponse(response V2SessionListRes, w http.ResponseWrite
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -600,7 +564,6 @@ func encodeV2SessionMessagesResponse(response V2SessionMessagesRes, w http.Respo
 	case *SessionMessagesResponse:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -613,7 +576,6 @@ func encodeV2SessionMessagesResponse(response V2SessionMessagesRes, w http.Respo
 	case *V2SessionMessagesBadRequestApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -626,7 +588,6 @@ func encodeV2SessionMessagesResponse(response V2SessionMessagesRes, w http.Respo
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -639,7 +600,6 @@ func encodeV2SessionMessagesResponse(response V2SessionMessagesRes, w http.Respo
 	case *V2SessionMessagesNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -672,7 +632,6 @@ func encodeV2SessionPermissionListResponse(response V2SessionPermissionListRes, 
 	case *V2SessionPermissionListOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -685,7 +644,6 @@ func encodeV2SessionPermissionListResponse(response V2SessionPermissionListRes, 
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -698,7 +656,6 @@ func encodeV2SessionPermissionListResponse(response V2SessionPermissionListRes, 
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -711,7 +668,6 @@ func encodeV2SessionPermissionListResponse(response V2SessionPermissionListRes, 
 	case *V2SessionPermissionListNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -730,14 +686,12 @@ func encodeV2SessionPermissionReplyResponse(response V2SessionPermissionReplyRes
 	switch response := response.(type) {
 	case *V2SessionPermissionReplyNoContent:
 		w.WriteHeader(204)
-		span.SetStatus(codes.Ok, http.StatusText(204))
 
 		return nil
 
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -750,7 +704,6 @@ func encodeV2SessionPermissionReplyResponse(response V2SessionPermissionReplyRes
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -763,7 +716,6 @@ func encodeV2SessionPermissionReplyResponse(response V2SessionPermissionReplyRes
 	case *V2SessionPermissionReplyNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -783,7 +735,6 @@ func encodeV2SessionPromptResponse(response V2SessionPromptRes, w http.ResponseW
 	case *V2SessionPromptOK:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(200)
-		span.SetStatus(codes.Ok, http.StatusText(200))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -796,7 +747,6 @@ func encodeV2SessionPromptResponse(response V2SessionPromptRes, w http.ResponseW
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -809,7 +759,6 @@ func encodeV2SessionPromptResponse(response V2SessionPromptRes, w http.ResponseW
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -822,7 +771,6 @@ func encodeV2SessionPromptResponse(response V2SessionPromptRes, w http.ResponseW
 	case *V2SessionPromptNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -835,7 +783,6 @@ func encodeV2SessionPromptResponse(response V2SessionPromptRes, w http.ResponseW
 	case *ConflictError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(409)
-		span.SetStatus(codes.Error, http.StatusText(409))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -854,14 +801,12 @@ func encodeV2SessionQuestionRejectResponse(response V2SessionQuestionRejectRes, 
 	switch response := response.(type) {
 	case *V2SessionQuestionRejectNoContent:
 		w.WriteHeader(204)
-		span.SetStatus(codes.Ok, http.StatusText(204))
 
 		return nil
 
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -874,7 +819,6 @@ func encodeV2SessionQuestionRejectResponse(response V2SessionQuestionRejectRes, 
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -887,7 +831,6 @@ func encodeV2SessionQuestionRejectResponse(response V2SessionQuestionRejectRes, 
 	case *V2SessionQuestionRejectNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -906,14 +849,12 @@ func encodeV2SessionQuestionReplyResponse(response V2SessionQuestionReplyRes, w 
 	switch response := response.(type) {
 	case *V2SessionQuestionReplyNoContent:
 		w.WriteHeader(204)
-		span.SetStatus(codes.Ok, http.StatusText(204))
 
 		return nil
 
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -926,7 +867,6 @@ func encodeV2SessionQuestionReplyResponse(response V2SessionQuestionReplyRes, w 
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -939,7 +879,6 @@ func encodeV2SessionQuestionReplyResponse(response V2SessionQuestionReplyRes, w 
 	case *V2SessionQuestionReplyNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -958,14 +897,12 @@ func encodeV2SessionWaitResponse(response V2SessionWaitRes, w http.ResponseWrite
 	switch response := response.(type) {
 	case *V2SessionWaitNoContent:
 		w.WriteHeader(204)
-		span.SetStatus(codes.Ok, http.StatusText(204))
 
 		return nil
 
 	case *InvalidRequestError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(400)
-		span.SetStatus(codes.Error, http.StatusText(400))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -978,7 +915,6 @@ func encodeV2SessionWaitResponse(response V2SessionWaitRes, w http.ResponseWrite
 	case *UnauthorizedError:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(401)
-		span.SetStatus(codes.Error, http.StatusText(401))
 
 		e := new(jx.Encoder)
 		response.Encode(e)
@@ -991,7 +927,6 @@ func encodeV2SessionWaitResponse(response V2SessionWaitRes, w http.ResponseWrite
 	case *V2SessionWaitNotFoundApplicationJSON:
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(404)
-		span.SetStatus(codes.Error, http.StatusText(404))
 
 		e := new(jx.Encoder)
 		response.Encode(e)

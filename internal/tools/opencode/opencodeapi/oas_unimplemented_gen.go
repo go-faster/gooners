@@ -115,8 +115,8 @@ func (UnimplementedHandler) V2SessionList(ctx context.Context, params V2SessionL
 
 // V2SessionMessages implements v2.session.messages operation.
 //
-// Retrieve projected messages for a session. Items keep the requested order across pages; use cursor.
-// next or cursor.previous to move through the ordered timeline.
+// Retrieve projected messages for a session. Items keep the requested order across pages; use
+// cursor.next or cursor.previous to move through the ordered timeline.
 //
 // GET /api/session/{sessionID}/message
 func (UnimplementedHandler) V2SessionMessages(ctx context.Context, params V2SessionMessagesParams) (r V2SessionMessagesRes, _ error) {

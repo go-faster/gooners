@@ -1613,6 +1613,11 @@ func (o *OptNilAgentV2InfoModel) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilAgentV2InfoModel) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilAgentV2InfoModel) Get() (v AgentV2InfoModel, ok bool) {
 	if o.Null {
@@ -1674,6 +1679,11 @@ func (o *OptNilFloat64) SetToNull() {
 	o.Null = true
 	var v float64
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilFloat64) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -1739,6 +1749,11 @@ func (o *OptNilInt) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilInt) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilInt) Get() (v int, ok bool) {
 	if o.Null {
@@ -1800,6 +1815,11 @@ func (o *OptNilSessionCreateReqModel) SetToNull() {
 	o.Null = true
 	var v SessionCreateReqModel
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilSessionCreateReqModel) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.
@@ -1865,6 +1885,11 @@ func (o *OptNilSessionModel) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilSessionModel) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilSessionModel) Get() (v SessionModel, ok bool) {
 	if o.Null {
@@ -1928,6 +1953,11 @@ func (o *OptNilSessionV2InfoModel) SetToNull() {
 	o.Value = v
 }
 
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilSessionV2InfoModel) IsEmpty() bool {
+	return !o.Set && !o.Null
+}
+
 // Get returns value and boolean that denotes whether value was set.
 func (o OptNilSessionV2InfoModel) Get() (v SessionV2InfoModel, ok bool) {
 	if o.Null {
@@ -1989,6 +2019,11 @@ func (o *OptNilString) SetToNull() {
 	o.Null = true
 	var v string
 	o.Value = v
+}
+
+// IsEmpty returns true if the field was omitted from the payload (not Set and not Null).
+func (o OptNilString) IsEmpty() bool {
+	return !o.Set && !o.Null
 }
 
 // Get returns value and boolean that denotes whether value was set.

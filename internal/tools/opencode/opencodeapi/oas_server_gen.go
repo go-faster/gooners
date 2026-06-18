@@ -77,8 +77,8 @@ type Handler interface {
 	V2SessionList(ctx context.Context, params V2SessionListParams) (V2SessionListRes, error)
 	// V2SessionMessages implements v2.session.messages operation.
 	//
-	// Retrieve projected messages for a session. Items keep the requested order across pages; use cursor.
-	// next or cursor.previous to move through the ordered timeline.
+	// Retrieve projected messages for a session. Items keep the requested order across pages; use
+	// cursor.next or cursor.previous to move through the ordered timeline.
 	//
 	// GET /api/session/{sessionID}/message
 	V2SessionMessages(ctx context.Context, params V2SessionMessagesParams) (V2SessionMessagesRes, error)
