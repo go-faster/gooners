@@ -81,3 +81,8 @@ Use these conventions to produce visually consistent, production-grade dashboard
 **Layout tips:**
 - Use `move_panel` / `move_row` to reorder after bulk creation when the auto-flow does not match the desired narrative.
 - Keep related panels (e.g., request rate + error rate + duration) in the same row or adjacent rows so the eye can scan left-to-right.
+
+**Export Guidance:**
+- Prefer the `grafana-dashboard-mcp` `export_dashboard` tool when exporting dashboards from sessions built with this MCP. It writes compiled dashboard JSON directly to a file or saves v1 dashboards without loading the full dashboard JSON into the model context.
+- If a raw export from an existing Grafana instance is needed, prefer direct Grafana HTTP/API access (for example `curl` against Grafana's dashboard API) over a generic Grafana MCP read that returns the whole dashboard into context.
+- Use `add_dashboard.version="v1"` by default. Only select `version="v2"` at session creation when the caller explicitly needs Grafana dashboard v2 output.

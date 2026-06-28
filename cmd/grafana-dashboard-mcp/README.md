@@ -6,7 +6,9 @@ An MCP server that empowers AI agents to statefully build, verify, and export Gr
 
 MCP tools are invoked as independent JSON-RPC calls, so this server acts as a stateful backend. It keeps track of ongoing dashboard construction sessions in memory and persists them to disk so that restarts or transport drops do not lose state.
 
-Once construction is completed, the agent can call `export_dashboard` to finalise compiling the dashboard with the SDK and output the completed dashboard JSON (and optionally save it directly to the Grafana API).
+Once construction is completed, the agent can call `export_dashboard` to finalise compiling the dashboard with the SDK and output the completed dashboard JSON. Sessions default to Grafana dashboard `v1`; pass `version: "v2"` to `add_dashboard` only when v2 output is explicitly required.
+
+For dashboard exports, prefer this MCP server's `export_dashboard` tool with `output_path` whenever possible. It avoids loading full dashboard JSON into the model context. For raw exports from an existing Grafana instance, direct Grafana HTTP/API access such as `curl` is usually better than a generic Grafana MCP read that returns the whole dashboard payload.
 
 ## Environment Variables
 
@@ -67,7 +69,7 @@ For a complete local sandbox environment containing both a Grafana instance and 
 ## Tools
 
 ### 1. Dashboard Construction Tools
-- `add_dashboard` — initializes a new dashboard building session.
+- `add_dashboard` — initializes a new dashboard building session. Defaults to `version: "v1"`; use `version: "v2"` only when needed.
 - `list_dashboard_sessions` — lists active sessions.
 - `import_dashboard` — fetches existing dashboard by its Grafana UID and loads it into an editable session (supports round-tripping dashboards originally built with this MCP).
 - `add_param` — adds a template variable (query, custom, or datasource) to the dashboard.
@@ -80,7 +82,7 @@ For a complete local sandbox environment containing both a Grafana instance and 
 - `add_query` — attaches a query to an existing panel.
 - `add_threshold` — adds a color threshold to stat/gauge panels.
 - `get_dashboard_state` — returns the current in-progress structure of the dashboard session.
-- `export_dashboard` — finalizes compile, outputs dashboard JSON, and optionally posts directly to Grafana.
+- `export_dashboard` — finalizes compile and outputs v1/v2 dashboard JSON. Direct Grafana save is supported for v1 dashboards.
 
 ### 2. Datasource Discovery & Verification Tools
 - `resolve_datasource` — resolves a datasource name to UID and type.
