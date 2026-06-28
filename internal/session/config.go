@@ -73,9 +73,7 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 	// alias is the original hostname before HostName resolution — used for all
 	// ssh_config lookups, matching OpenSSH semantics.
 	host := alias
-	if cfgHostname := cfg.Get(alias, "HostName"); cfgHostname != "" && cfgHostname != alias {
-		host = cfgHostname
-	}
+	cfgHostname := cfg.Get(alias, "HostName")
 	if usr == "" {
 		if cfgUser := cfg.Get(alias, "User"); cfgUser != "" {
 			usr = cfgUser
@@ -101,6 +99,12 @@ func (c Config) clientConfig(cfg *gosshconfig.UserSettings) (cc *ssh.ClientConfi
 	}
 	if port == 0 {
 		port = 22
+	}
+	if cfgHostname != "" {
+		resolvedHost := expandSSHTokens(cfgHostname, alias, strconv.Itoa(port), usr)
+		if resolvedHost != alias {
+			host = resolvedHost
+		}
 	}
 	portStr := strconv.Itoa(port)
 	tcpAddr = net.JoinHostPort(host, portStr)
@@ -407,10 +411,14 @@ func dialProxyCommand(command, addr, remoteUser string, logger *slog.Logger) (ne
 }
 
 func expandProxyCommandTokens(command, host, port, remoteUser string) string {
+	return expandSSHTokens(command, host, port, remoteUser)
+}
+
+func expandSSHTokens(s, host, port, remoteUser string) string {
 	var b strings.Builder
-	for i := 0; i < len(command); i++ {
-		if command[i] == '%' && i+1 < len(command) {
-			switch command[i+1] {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '%' && i+1 < len(s) {
+			switch s[i+1] {
 			case 'h':
 				b.WriteString(host)
 				i++
@@ -429,7 +437,7 @@ func expandProxyCommandTokens(command, host, port, remoteUser string) string {
 				continue
 			}
 		}
-		b.WriteByte(command[i])
+		b.WriteByte(s[i])
 	}
 	return b.String()
 }

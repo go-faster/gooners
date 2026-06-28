@@ -34,6 +34,7 @@ type Session struct {
 	uploads   map[string]*UploadJob
 	downloads map[string]*DownloadJob
 	spools    map[string]string // spoolID -> localFilePath
+	forwards  []io.Closer
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -244,6 +245,7 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				for _, path := range s.spools {
 					_ = os.Remove(path)
 				}
+				closeAll(s.forwards)
 				sessionDir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", s.ID)
 				_ = os.RemoveAll(sessionDir)
 
@@ -543,7 +545,9 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 	sess.Stdout = stdout
 	sess.Stderr = stderr
 	if r.Sudo && r.SudoPassword != "" {
-		sess.Stdin = strings.NewReader(r.SudoPassword + "\n")
+		sess.Stdin = strings.NewReader(r.SudoPassword + "\n" + r.Stdin)
+	} else if r.Stdin != "" {
+		sess.Stdin = strings.NewReader(r.Stdin)
 	}
 
 	done := make(chan error, 1)

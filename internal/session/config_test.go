@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -214,6 +215,137 @@ func TestConfig_DynamicReload(t *testing.T) {
 	require.Equal(t, "5.6.7.8:4444", tcpAddr2)
 	require.Equal(t, "test-dyn:4444", sshAddr2)
 	require.Equal(t, "bar", cc2.User)
+}
+
+func TestConfig_ClientConfig_ExpandsHostNameTokens(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	confPath := filepath.Join(tmpDir, "ssh_config")
+	require.NoError(t, os.WriteFile(confPath, []byte(
+		"Host *\n"+
+			"  HostName %h\n"+
+			"  Port 2222\n"+
+			"  User alice\n",
+	), 0o600))
+
+	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
+	cfg.ConfigFinder(func() string { return confPath })
+
+	cc, tcpAddr, sshAddr, err := Config{Machine: "10.1.2.3", HomeDir: tmpDir}.clientConfig(cfg)
+	require.NoError(t, err)
+	require.Equal(t, "10.1.2.3:2222", tcpAddr)
+	require.Equal(t, "10.1.2.3:2222", sshAddr)
+	require.Equal(t, "alice", cc.User)
+}
+
+func TestParseLocalForward(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		raw        string
+		listenAddr string
+		targetAddr string
+	}{
+		{
+			name:       "port only listen",
+			raw:        "8080 127.0.0.1:80",
+			listenAddr: "127.0.0.1:8080",
+			targetAddr: "127.0.0.1:80",
+		},
+		{
+			name:       "explicit listen host",
+			raw:        "0.0.0.0:8080 localhost:80",
+			listenAddr: "0.0.0.0:8080",
+			targetAddr: "localhost:80",
+		},
+		{
+			name:       "bracketed ipv6 target",
+			raw:        "127.0.0.1:8080 [::1]:80",
+			listenAddr: "127.0.0.1:8080",
+			targetAddr: "[::1]:80",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseLocalForward(tc.raw)
+			require.NoError(t, err)
+			require.Equal(t, tc.listenAddr, got.listenAddr)
+			require.Equal(t, tc.targetAddr, got.targetAddr)
+		})
+	}
+}
+
+func TestPool_OpenCfg_LocalForward(t *testing.T) {
+	t.Parallel()
+	sshSrv := newTestServer(t)
+	echoAddr := startTCPEchoServer(t)
+	localAddr := reserveTCPAddr(t)
+
+	host, port, err := net.SplitHostPort(sshSrv.addr)
+	require.NoError(t, err)
+
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	require.NoError(t, os.MkdirAll(sshDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(sshDir, "config"), []byte(
+		"Host forwarded\n"+
+			"  HostName "+host+"\n"+
+			"  Port "+port+"\n"+
+			"  LocalForward "+localAddr+" "+echoAddr+"\n",
+	), 0o600))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	p := NewPool(PoolOptions{HomeDir: home})
+	go p.RunLoop(ctx)
+
+	openCtx, openCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer openCancel()
+	res, err := p.OpenCfg(openCtx, Config{Machine: "forwarded", KnownHosts: "insecure"})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, p.Close(context.Background(), res.ID)) })
+
+	conn, err := net.DialTimeout("tcp", localAddr, 5*time.Second)
+	require.NoError(t, err)
+	defer func() { _ = conn.Close() }()
+
+	_, err = conn.Write([]byte("ping"))
+	require.NoError(t, err)
+	buf := make([]byte, len("ping"))
+	_, err = conn.Read(buf)
+	require.NoError(t, err)
+	require.Equal(t, "ping", string(buf))
+}
+
+func startTCPEchoServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				_, _ = io.Copy(conn, conn)
+			}()
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func reserveTCPAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	require.NoError(t, ln.Close())
+	return addr
 }
 
 func TestTruncateBanner(t *testing.T) {

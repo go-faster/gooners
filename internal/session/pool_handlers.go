@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ const minTransferSampleInterval = 500 * time.Millisecond
 type dialResult struct {
 	req       OpenRequest
 	client    *ssh.Client
+	forwards  []io.Closer
 	err       error
 	userAgent string
 	banner    string
@@ -42,6 +44,7 @@ func (p *Pool) handleDialResult(ctx context.Context, sessions map[string]*Sessio
 		spools:    make(map[string]string),
 		ctx:       sCtx,
 		cancel:    sCancel,
+		forwards:  res.forwards,
 		userAgent: res.userAgent,
 		banner:    truncatedBanner,
 		platform:  platform,
@@ -97,6 +100,34 @@ func (p *Pool) handleOpen(ctx context.Context, dialCh chan<- dialResult, r OpenR
 		client, userAgent, banner, err := r.Config.dial()
 		if err != nil {
 			p.logger.Debug("ssh dial failed", "machine", r.Config.Machine, "err", err)
+		} else {
+			var alias string
+			_, alias, _ = parseTarget(r.Config.Machine)
+			if alias == "" {
+				alias = r.Config.Machine
+			}
+			home := r.Config.effectiveHome()
+			var forwards []io.Closer
+			forwards, err = startLocalForwards(client, newSettings(home), alias, home, p.logger)
+			if err != nil {
+				_ = client.Close()
+				p.logger.Debug("ssh local forward setup failed", "machine", r.Config.Machine, "err", err)
+			} else {
+				select {
+				case dialCh <- dialResult{
+					req:       r,
+					client:    client,
+					forwards:  forwards,
+					err:       err,
+					userAgent: userAgent,
+					banner:    banner,
+				}:
+				case <-ctx.Done():
+					closeAll(forwards)
+					_ = client.Close()
+				}
+				return
+			}
 		}
 		select {
 		case dialCh <- dialResult{
@@ -136,6 +167,7 @@ func (p *Pool) handleClose(sessions map[string]*Session, r CloseRequest) {
 		for _, path := range s.spools {
 			_ = os.Remove(path)
 		}
+		closeAll(s.forwards)
 		sessionDir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", r.ID)
 		_ = os.RemoveAll(sessionDir)
 
