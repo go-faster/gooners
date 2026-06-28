@@ -997,7 +997,6 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 	}
 }
 
-
 func buildReduceOptions(p *PanelEntry) *common.ReduceDataOptionsBuilder {
 	if len(p.ReduceCalcs) == 0 {
 		return nil
@@ -1103,4 +1102,3 @@ func writePanelBands(b *strings.Builder, panels []*PanelEntry) {
 		}
 	}
 }
-

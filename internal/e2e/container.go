@@ -5,10 +5,13 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"net"
+	"strings"
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"golang.org/x/crypto/ssh"
 )
 
 // ContainerOpts configures NewSudoTestContainer behavior.
@@ -92,6 +95,55 @@ func NewSudoTestContainer(ctx context.Context, opts ContainerOpts) (addr, user, 
 	addr = fmt.Sprintf("%s:%s", host, port.Port())
 	user = "test"
 	password = "secret"
+	if err := waitForSSHReady(ctx, addr, user, password); err != nil {
+		cleanup()
+		return "", "", "", nil, err
+	}
 
 	return addr, user, password, cleanup, nil
+}
+
+func waitForSSHReady(ctx context.Context, addr, user, password string) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(2 * time.Minute)
+	}
+
+	var lastErr error
+	for time.Now().Before(deadline) {
+		client, err := ssh.Dial("tcp", addr, &ssh.ClientConfig{
+			User: user,
+			Auth: []ssh.AuthMethod{ssh.Password(password)},
+			HostKeyCallback: func(_ string, _ net.Addr, _ ssh.PublicKey) error {
+				return nil
+			},
+			Timeout: 5 * time.Second,
+		})
+		if err == nil {
+			_ = client.Close()
+			return nil
+		}
+		lastErr = err
+
+		// These transient handshake errors happen when the container port is open
+		// before sshd has finished reloading after setup commands.
+		if !isTransientSSHDialError(err) {
+			return fmt.Errorf("waiting for ssh readiness: %w", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for ssh readiness: %w", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("waiting for ssh readiness timed out: %w", lastErr)
+}
+
+func isTransientSSHDialError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "i/o timeout")
 }
