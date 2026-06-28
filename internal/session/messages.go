@@ -11,6 +11,7 @@ type Request interface {
 	isRequest()
 }
 
+// OpenRequest is a request to open a new SSH session.
 type OpenRequest struct {
 	Config Config
 	resp   chan<- OpenResponse
@@ -18,6 +19,7 @@ type OpenRequest struct {
 
 func (OpenRequest) isRequest() {}
 
+// OpenResponse is the response to an [OpenRequest].
 type OpenResponse struct {
 	ID        string
 	UserAgent string
@@ -26,6 +28,7 @@ type OpenResponse struct {
 	Err       error
 }
 
+// GetRequest is a request to get an existing SSH session.
 type GetRequest struct {
 	ID   string
 	resp chan<- GetResponse
@@ -33,11 +36,13 @@ type GetRequest struct {
 
 func (GetRequest) isRequest() {}
 
+// GetResponse is the response to a [GetRequest].
 type GetResponse struct {
 	Client *ssh.Client
 	Err    error
 }
 
+// CloseRequest is a request to close an existing SSH session.
 type CloseRequest struct {
 	ID   string
 	resp chan<- error
@@ -45,12 +50,14 @@ type CloseRequest struct {
 
 func (CloseRequest) isRequest() {}
 
+// ListRequest is a request to list all existing SSH sessions.
 type ListRequest struct {
 	resp chan<- []SessionInfo
 }
 
 func (ListRequest) isRequest() {}
 
+// ExecRequest is a request to execute a command on an existing SSH session.
 type ExecRequest struct {
 	SessionID          string
 	Command            string
@@ -66,6 +73,7 @@ type ExecRequest struct {
 
 func (ExecRequest) isRequest() {}
 
+// ExecResponse is the response to an [ExecRequest].
 type ExecResponse struct {
 	Stdout        string
 	Stderr        string
@@ -77,6 +85,7 @@ type ExecResponse struct {
 	Err           error
 }
 
+// UploadRequest is a request to upload a file to an existing SSH session.
 type UploadRequest struct {
 	SessionID  string
 	LocalPath  string
@@ -86,11 +95,13 @@ type UploadRequest struct {
 
 func (UploadRequest) isRequest() {}
 
+// UploadResponse is the response to an [UploadRequest].
 type UploadResponse struct {
 	UploadID string
 	Err      error
 }
 
+// UploadStatusRequest is a request to get the status of an ongoing upload.
 type UploadStatusRequest struct {
 	SessionID string
 	UploadID  string
@@ -99,6 +110,7 @@ type UploadStatusRequest struct {
 
 func (UploadStatusRequest) isRequest() {}
 
+// UploadStatusResponse is the response to an [UploadStatusRequest].
 type UploadStatusResponse struct {
 	UploadID        string
 	BytesUploaded   int64
@@ -111,6 +123,7 @@ type UploadStatusResponse struct {
 	Err             error
 }
 
+// UploadWaitRequest is a request to wait for an ongoing upload to complete.
 type UploadWaitRequest struct {
 	Ctx       context.Context
 	SessionID string
@@ -120,6 +133,7 @@ type UploadWaitRequest struct {
 
 func (UploadWaitRequest) isRequest() {}
 
+// UploadCancelRequest is a request to cancel an ongoing upload.
 type UploadCancelRequest struct {
 	Ctx       context.Context
 	SessionID string
@@ -129,6 +143,7 @@ type UploadCancelRequest struct {
 
 func (UploadCancelRequest) isRequest() {}
 
+// DownloadRequest is a request to download a file from an existing SSH session.
 type DownloadRequest struct {
 	SessionID  string
 	LocalPath  string
@@ -138,11 +153,13 @@ type DownloadRequest struct {
 
 func (DownloadRequest) isRequest() {}
 
+// DownloadResponse is the response to a [DownloadRequest].
 type DownloadResponse struct {
 	DownloadID string
 	Err        error
 }
 
+// DownloadStatusRequest is a request to get the status of an ongoing download.
 type DownloadStatusRequest struct {
 	SessionID  string
 	DownloadID string
@@ -151,6 +168,7 @@ type DownloadStatusRequest struct {
 
 func (DownloadStatusRequest) isRequest() {}
 
+// DownloadStatusResponse is the response to a [DownloadStatusRequest].
 type DownloadStatusResponse struct {
 	DownloadID      string
 	BytesDownloaded int64
@@ -163,6 +181,7 @@ type DownloadStatusResponse struct {
 	Err             error
 }
 
+// DownloadWaitRequest is a request to wait for an ongoing download to complete.
 type DownloadWaitRequest struct {
 	Ctx        context.Context
 	SessionID  string
@@ -172,6 +191,7 @@ type DownloadWaitRequest struct {
 
 func (DownloadWaitRequest) isRequest() {}
 
+// DownloadCancelRequest is a request to cancel an ongoing download.
 type DownloadCancelRequest struct {
 	Ctx        context.Context
 	SessionID  string
@@ -181,6 +201,7 @@ type DownloadCancelRequest struct {
 
 func (DownloadCancelRequest) isRequest() {}
 
+// RegisterSpoolRequest is a request to register a spool file for an existing SSH session.
 type RegisterSpoolRequest struct {
 	SessionID string
 	SpoolID   string
@@ -190,6 +211,7 @@ type RegisterSpoolRequest struct {
 
 func (RegisterSpoolRequest) isRequest() {}
 
+// GetSpoolRequest is a request to get the path of a spool file for an existing SSH session.
 type GetSpoolRequest struct {
 	SessionID string
 	SpoolID   string
@@ -198,11 +220,13 @@ type GetSpoolRequest struct {
 
 func (GetSpoolRequest) isRequest() {}
 
+// GetSpoolResponse is the response to a [GetSpoolRequest].
 type GetSpoolResponse struct {
 	Path string
 	Err  error
 }
 
+// DeleteSpoolRequest is a request to delete a spool file for an existing SSH session.
 type DeleteSpoolRequest struct {
 	SessionID string
 	SpoolID   string
@@ -211,6 +235,7 @@ type DeleteSpoolRequest struct {
 
 func (DeleteSpoolRequest) isRequest() {}
 
+// MachineRequest is a request to get the machine name of an existing SSH session.
 type MachineRequest struct {
 	ID   string
 	resp chan<- MachineResponse
@@ -218,6 +243,7 @@ type MachineRequest struct {
 
 func (MachineRequest) isRequest() {}
 
+// MachineResponse is the response to a [MachineRequest].
 type MachineResponse struct {
 	Machine string
 	Err     error

@@ -61,14 +61,7 @@ func parseForwardListenAddr(spec string) (string, error) {
 	if _, err := strconv.Atoi(spec); err == nil {
 		return net.JoinHostPort("127.0.0.1", spec), nil
 	}
-	host, port, err := splitForwardAddr(spec)
-	if err != nil {
-		return "", err
-	}
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	return net.JoinHostPort(host, port), nil
+	return parseForwardTargetAddr(spec)
 }
 
 func parseForwardTargetAddr(spec string) (string, error) {
@@ -77,7 +70,7 @@ func parseForwardTargetAddr(spec string) (string, error) {
 		return "", err
 	}
 	if host == "" {
-		return "", fmt.Errorf("missing target host in %q", spec)
+		return "", fmt.Errorf("missing host in %q", spec)
 	}
 	return net.JoinHostPort(host, port), nil
 }

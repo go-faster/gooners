@@ -1,14 +1,11 @@
 package session
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -117,12 +114,14 @@ type Provider interface {
 // methods like Open, Close, and Exec will deadlock waiting for the event loop.
 // The event loop and all managed sessions are terminated when ctx is canceled.
 type Pool struct {
-	reqCh          chan Request
+	reqCh        chan Request
+	onDisconnect func(machine string, err error)
+
 	commandTimeout time.Duration
 	maxOutputBytes int64
-	logger         *slog.Logger
 	homeDir        string
-	onDisconnect   func(machine string, err error)
+
+	logger *slog.Logger
 }
 
 // PoolOptions contains configuration for a new Pool.
@@ -153,12 +152,14 @@ func (opts *PoolOptions) setDefaults() {
 func NewPool(opts PoolOptions) *Pool {
 	opts.setDefaults()
 	return &Pool{
-		reqCh:          make(chan Request),
+		reqCh:        make(chan Request),
+		onDisconnect: opts.OnDisconnect,
+
 		commandTimeout: opts.CommandTimeout,
 		maxOutputBytes: opts.MaxOutputBytes,
-		logger:         opts.Logger,
 		homeDir:        opts.HomeDir,
-		onDisconnect:   opts.OnDisconnect,
+
+		logger: opts.Logger,
 	}
 }
 
@@ -171,15 +172,18 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-
 	start := time.Now()
+	lg := p.logger.With("session_id", id)
 
-	if !strings.Contains(string(client.ServerVersion()), "OpenSSH") {
+	serverVersion := string(client.ServerVersion())
+	if !strings.Contains(serverVersion, "OpenSSH") {
+		lg.DebugContext(ctx, "ssh ping: non-OpenSSH server, skipping keepalive", "server_version", serverVersion)
 		return time.Since(start), nil
 	}
 
 	errCh := make(chan error, 1)
 	go func() {
+		lg.DebugContext(ctx, "ssh ping: sending keepalive request")
 		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 		errCh <- err
 	}()
@@ -188,13 +192,16 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 	case <-ctx.Done():
 		return 0, ctx.Err()
 	case err := <-errCh:
+		lg.DebugContext(ctx, "ssh ping: keepalive response received", "err", err)
 		if err != nil {
 			machine := p.disconnectMachine(ctx, id)
 			_ = p.Close(ctx, id)
 			p.notifyDisconnect(machine, fmt.Errorf("keepalive failed: %w", err))
 			return 0, err
 		}
-		return time.Since(start), nil
+		took := time.Since(start)
+		lg.DebugContext(ctx, "ssh ping: keepalive succeeded", "took", took)
+		return took, nil
 	}
 }
 
@@ -214,24 +221,6 @@ func (p *Pool) notifyDisconnect(machine string, err error) {
 		return
 	}
 	p.onDisconnect(machine, err)
-}
-
-func (p *Pool) Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error) {
-	return p.RunWithOptions(ctx, sessionID, cmd, sshutil.RunOptions{
-		Timeout: p.CommandTimeout(),
-		Logger:  p.logger,
-	})
-}
-
-func (p *Pool) RunWithOptions(ctx context.Context, sessionID, cmd string, opts sshutil.RunOptions) (sshutil.Result, error) {
-	client, err := p.Get(ctx, sessionID)
-	if err != nil {
-		return sshutil.Result{}, err
-	}
-	if opts.Logger == nil {
-		opts.Logger = p.logger
-	}
-	return sshutil.Run(ctx, client, cmd, opts)
 }
 
 func (p *Pool) RunLoop(ctx context.Context) {
@@ -296,151 +285,22 @@ func (p *Pool) RunLoop(ctx context.Context) {
 	}
 }
 
-type SpoolingBuffer struct {
-	mu        sync.Mutex
-	sessionID string
-	spoolID   string
-	threshold int64
-	buf       bytes.Buffer
-	file      *os.File
-	filePath  string
-	size      int64
-	spilled   bool
-	err       error
+func (p *Pool) Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error) {
+	return p.RunWithOptions(ctx, sessionID, cmd, sshutil.RunOptions{
+		Timeout: p.CommandTimeout(),
+		Logger:  p.logger,
+	})
 }
 
-func NewSpoolingBuffer(sessionID string, threshold int64) *SpoolingBuffer {
-	return &SpoolingBuffer{
-		sessionID: sessionID,
-		spoolID:   generateSpoolID(),
-		threshold: threshold,
-	}
-}
-
-func generateSpoolID() string {
-	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return fmt.Sprintf("%x", b)
-}
-
-func (b *SpoolingBuffer) Write(p []byte) (n int, err error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.err != nil {
-		return 0, b.err
-	}
-
-	n = len(p)
-	b.size += int64(n)
-
-	if b.spilled {
-		if b.file == nil {
-			b.err = fmt.Errorf("spooling buffer closed")
-			return 0, b.err
-		}
-		var nw int
-		nw, err = b.file.Write(p)
-		if err != nil {
-			b.err = err
-			return nw, err
-		}
-		return n, nil
-	}
-
-	if b.size > b.threshold {
-		dir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", b.sessionID)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			b.err = fmt.Errorf("creating session spool directory: %w", err)
-			return 0, b.err
-		}
-
-		path := filepath.Join(dir, b.spoolID+".out")
-		//nolint:gosec // path is dynamically generated securely
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-		if err != nil {
-			b.err = fmt.Errorf("creating spool file: %w", err)
-			return 0, b.err
-		}
-		b.file = f
-		b.filePath = path
-		b.spilled = true
-
-		if b.buf.Len() > 0 {
-			if _, err := b.file.Write(b.buf.Bytes()); err != nil {
-				_ = b.file.Close()
-				b.file = nil
-				b.err = fmt.Errorf("writing buffer to spool file: %w", err)
-				return 0, b.err
-			}
-		}
-
-		var nw int
-		nw, err = b.file.Write(p)
-		if err != nil {
-			_ = b.file.Close()
-			b.file = nil
-			b.err = fmt.Errorf("writing to spool file: %w", err)
-			return nw, err
-		}
-		return n, nil
-	}
-
-	_, err = b.buf.Write(p)
+func (p *Pool) RunWithOptions(ctx context.Context, sessionID, cmd string, opts sshutil.RunOptions) (sshutil.Result, error) {
+	client, err := p.Get(ctx, sessionID)
 	if err != nil {
-		b.err = err
-		return 0, err
+		return sshutil.Result{}, err
 	}
-	return n, nil
-}
-
-func (b *SpoolingBuffer) Close() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	if b.file != nil {
-		err := b.file.Close()
-		b.file = nil
-		return err
+	if opts.Logger == nil {
+		opts.Logger = p.logger
 	}
-	return nil
-}
-
-func (b *SpoolingBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
-
-func (b *SpoolingBuffer) Spilled() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.spilled
-}
-
-func (b *SpoolingBuffer) SpoolID() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.spoolID
-}
-
-func (b *SpoolingBuffer) FilePath() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.filePath
-}
-
-func (b *SpoolingBuffer) Size() int64 {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.size
-}
-
-func mapSpoolID(b *SpoolingBuffer) string {
-	if b.Spilled() {
-		return b.SpoolID()
-	}
-	return ""
+	return sshutil.Run(ctx, client, cmd, opts)
 }
 
 func (p *Pool) GetSpool(ctx context.Context, sessionID, spoolID string) (string, error) {
@@ -462,6 +322,8 @@ func (p *Pool) DeleteSpool(ctx context.Context, sessionID, spoolID string) error
 }
 
 func (p *Pool) RegisterSpool(ctx context.Context, sessionID, spoolID, path string) error {
+	p.logger.DebugContext(ctx, "registering spool file", "session_id", sessionID, "spool_id", spoolID, "path", path)
+
 	respCh := make(chan error, 1)
 	err, ok := send(ctx, p.reqCh, RegisterSpoolRequest{SessionID: sessionID, SpoolID: spoolID, Path: path, resp: respCh}, respCh)
 	if !ok {
@@ -614,8 +476,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 		}
 		dur := time.Since(start)
 		if err != nil {
-			var exitErr *ssh.ExitError
-			if errors.As(err, &exitErr) {
+			if exitErr, ok := errors.AsType[*ssh.ExitError](err); ok {
 				res.ExitCode = exitErr.ExitStatus()
 				p.logger.DebugContext(ctx, "ssh run exited",
 					"exit_code", res.ExitCode,
@@ -643,16 +504,24 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 }
 
 func (p *Pool) cleanupExec(spoolCtx context.Context, client *ssh.Client, sess *ssh.Session, r ExecRequest, cmdText string, done <-chan error, stdout, stderr *SpoolingBuffer) {
+	lg := p.logger.With("session_id", r.SessionID, "command", cmdText)
+
 	killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer killCancel()
 
 	type abortRes struct{}
 	abortDone := make(chan abortRes, 1)
 	go func() {
+		lg.DebugContext(spoolCtx, "ssh run: sending abort command to kill remote process")
 		abortSess, err := client.NewSession()
 		if err == nil {
+			lg.DebugContext(spoolCtx, "ssh run: abort session created")
 			abortCmd := "timeout 3s pkill -f " + shellquote.Join(regexp.QuoteMeta(cmdText)) + " 2>/dev/null || true"
-			_ = abortSess.Run(abortCmd)
+			if err := abortSess.Run(abortCmd); err != nil {
+				lg.DebugContext(spoolCtx, "ssh run: abort command failed", "err", err)
+			} else {
+				lg.DebugContext(spoolCtx, "ssh run: abort command succeeded")
+			}
 			_ = abortSess.Close()
 		}
 		abortDone <- abortRes{}
@@ -664,7 +533,11 @@ func (p *Pool) cleanupExec(spoolCtx context.Context, client *ssh.Client, sess *s
 	case <-abortDone:
 	}
 
-	_ = sess.Signal(ssh.SIGKILL)
+	if err := sess.Signal(ssh.SIGKILL); err != nil {
+		lg.DebugContext(spoolCtx, "ssh run: failed to send SIGKILL", "err", err)
+	} else {
+		lg.DebugContext(spoolCtx, "ssh run: SIGKILL sent")
+	}
 	_ = sess.Close()
 
 	select {
@@ -857,242 +730,4 @@ func send[Resp any](ctx context.Context, ch chan<- Request, req Request, respCh 
 		var zero Resp
 		return zero, false
 	}
-}
-
-func generateSessionID(machine string, sessions map[string]*Session) string {
-	slug := machineSlug(machine)
-	for range 100 {
-		id := fmt.Sprintf("%s-%s-%s", slug, randomAdjective(), randomSurname())
-		if _, ok := sessions[id]; !ok {
-			return id
-		}
-	}
-	return fmt.Sprintf("%s-%d", slug, time.Now().UnixNano())
-}
-
-var adjectives = []string{
-	"cool", "silly", "brave", "happy", "clever", "eager", "funny", "gentle",
-	"jolly", "kind", "lively", "nice", "proud", "quiet", "witty", "young",
-	"zany", "fancy", "mighty", "swift", "calm", "bold", "wise", "merry",
-	"plucky", "spry", "zesty", "quirky", "jovial", "vibrant",
-}
-
-var surnames = []string{
-	"einstein", "newton", "darwin", "curie", "tesla", "hopper", "lovelace",
-	"turing", "galileo", "kepler", "pasteur", "nobel", "bohr", "fermi",
-	"feynman", "hawking", "torvalds", "knuth", "dijkstra", "musk", "neumann",
-	"oppenheimer", "shannon", "babbage", "ellis", "carver", "cerf", "kahn", "ritchie",
-	"pike", "postel", "keller",
-}
-
-func machineSlug(m string) string {
-	// strip user@ prefix and :port suffix
-	if at := strings.LastIndex(m, "@"); at != -1 {
-		m = m[at+1:]
-	}
-	if idx := strings.LastIndex(m, ":"); idx != -1 {
-		m = m[:idx]
-	}
-	m = strings.ToLower(strings.TrimSpace(m))
-
-	var b strings.Builder
-	for _, r := range m {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			b.WriteRune(r)
-		} else if b.Len() > 0 {
-			b.WriteByte('-')
-		}
-	}
-	s := strings.Trim(b.String(), "-")
-	if s == "" {
-		s = "host"
-	}
-	return s
-}
-
-func randomAdjective() string {
-	return adjectives[randomIndex(len(adjectives))]
-}
-
-func randomSurname() string {
-	return surnames[randomIndex(len(surnames))]
-}
-
-func randomIndex(n int) int {
-	if n <= 0 {
-		return 0
-	}
-	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
-	if err != nil {
-		return int(time.Now().UnixNano() % int64(n))
-	}
-	return int(v.Int64())
-}
-
-type poolProgressReader struct {
-	r   io.Reader
-	ctx context.Context
-	job *UploadJob
-}
-
-func (pr *poolProgressReader) Read(p []byte) (int, error) {
-	if err := pr.ctx.Err(); err != nil {
-		return 0, err
-	}
-	n, err := pr.r.Read(p)
-	pr.job.mu.Lock()
-	pr.job.BytesUploaded += int64(n)
-	pr.job.mu.Unlock()
-	return n, err
-}
-
-func runUpload(ctx context.Context, client *ssh.Client, job *UploadJob) {
-	defer func() {
-		job.mu.Lock()
-		job.Done = true
-		job.mu.Unlock()
-		close(job.done)
-	}()
-
-	if err := func() error {
-		src, err := os.Open(job.LocalPath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = src.Close()
-		}()
-
-		stat, err := src.Stat()
-		if err != nil {
-			return err
-		}
-
-		job.mu.Lock()
-		job.TotalBytes = stat.Size()
-		job.mu.Unlock()
-
-		sftpClient, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = sftpClient.Close()
-		}()
-
-		dst, err := sftpClient.Create(job.RemotePath)
-		if err != nil {
-			return err
-		}
-
-		pr := &poolProgressReader{r: src, ctx: ctx, job: job}
-		if _, err := io.Copy(dst, pr); err != nil {
-			_ = dst.Close()
-			_ = sftpClient.Remove(job.RemotePath)
-			return err
-		}
-		if err := dst.Close(); err != nil {
-			_ = sftpClient.Remove(job.RemotePath)
-			return err
-		}
-
-		return nil
-	}(); err != nil {
-		job.mu.Lock()
-		job.Err = err
-		job.mu.Unlock()
-		return
-	}
-}
-
-type poolDownloadProgressReader struct {
-	r   io.Reader
-	ctx context.Context
-	job *DownloadJob
-}
-
-func (pr *poolDownloadProgressReader) Read(p []byte) (int, error) {
-	if err := pr.ctx.Err(); err != nil {
-		return 0, err
-	}
-	n, err := pr.r.Read(p)
-	pr.job.mu.Lock()
-	pr.job.BytesDownloaded += int64(n)
-	pr.job.mu.Unlock()
-	return n, err
-}
-
-func runDownload(ctx context.Context, client *ssh.Client, job *DownloadJob) {
-	defer func() {
-		job.mu.Lock()
-		job.Done = true
-		job.mu.Unlock()
-		close(job.done)
-	}()
-
-	if err := func() error {
-		sftpClient, err := sftp.NewClient(client)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = sftpClient.Close()
-		}()
-
-		src, err := sftpClient.Open(job.RemotePath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = src.Close()
-		}()
-
-		stat, err := src.Stat()
-		if err != nil {
-			return err
-		}
-
-		job.mu.Lock()
-		job.TotalBytes = stat.Size()
-		job.mu.Unlock()
-
-		tmpPath := job.LocalPath + ".tmp"
-		//nolint:gosec // LocalPath is validated to be within the allowed directory by withinDir
-		dst, err := os.Create(tmpPath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = dst.Close()
-			_ = os.Remove(tmpPath) // cleans up partial file if not renamed
-		}()
-
-		pr := &poolDownloadProgressReader{r: src, ctx: ctx, job: job}
-		if _, err := io.Copy(dst, pr); err != nil {
-			return err
-		}
-
-		if err := dst.Close(); err != nil {
-			return err
-		}
-
-		if err := os.Rename(tmpPath, job.LocalPath); err != nil {
-			return err
-		}
-
-		return nil
-	}(); err != nil {
-		job.mu.Lock()
-		job.Err = err
-		job.mu.Unlock()
-		return
-	}
-}
-
-func (p *Pool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {
-	client, err := p.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return sftp.NewClient(client)
 }

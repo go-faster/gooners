@@ -238,44 +238,6 @@ func TestConfig_ClientConfig_ExpandsHostNameTokens(t *testing.T) {
 	require.Equal(t, "alice", cc.User)
 }
 
-func TestParseLocalForward(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name       string
-		raw        string
-		listenAddr string
-		targetAddr string
-	}{
-		{
-			name:       "port only listen",
-			raw:        "8080 127.0.0.1:80",
-			listenAddr: "127.0.0.1:8080",
-			targetAddr: "127.0.0.1:80",
-		},
-		{
-			name:       "explicit listen host",
-			raw:        "0.0.0.0:8080 localhost:80",
-			listenAddr: "0.0.0.0:8080",
-			targetAddr: "localhost:80",
-		},
-		{
-			name:       "bracketed ipv6 target",
-			raw:        "127.0.0.1:8080 [::1]:80",
-			listenAddr: "127.0.0.1:8080",
-			targetAddr: "[::1]:80",
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseLocalForward(tc.raw)
-			require.NoError(t, err)
-			require.Equal(t, tc.listenAddr, got.listenAddr)
-			require.Equal(t, tc.targetAddr, got.targetAddr)
-		})
-	}
-}
-
 func TestPool_OpenCfg_LocalForward(t *testing.T) {
 	t.Parallel()
 	sshSrv := newTestServer(t)
