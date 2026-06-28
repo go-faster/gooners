@@ -46,8 +46,12 @@ type SessionProvider interface {
 	SFTP(ctx context.Context, id string) (*sftp.Client, error)
 	Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error)
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
+	UploadWait(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
+	UploadCancel(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
 	Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error)
 	DownloadStatus(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
+	DownloadWait(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
+	DownloadCancel(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
 	Run(ctx context.Context, sessionID string, cmd string) (sshutil.Result, error)
 	RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
 }
@@ -67,8 +71,12 @@ func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
 func RegisterFileTransfer(s *mcp.Server, p SessionProvider, uploadRoot string) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Local path must be within the server's working directory. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_status", Description: "Check the status of an asynchronous file upload.", Flags: mcputil.ReadOnly}, uploadStatusHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "upload_wait", Description: "Wait for an asynchronous file upload to complete and return its final status.", Flags: mcputil.ReadOnly}, uploadWaitHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "upload_cancel", Description: "Cancel an asynchronous file upload and return its final status.", Flags: mcputil.Destructive}, uploadCancelHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_file", Description: "Download a remote file asynchronously to local path via SFTP. Local path must be within the server's working directory. Returns a download_id."}, downloadFileHandler(p, uploadRoot))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_status", Description: "Check the status of an asynchronous file download.", Flags: mcputil.ReadOnly}, downloadStatusHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "download_wait", Description: "Wait for an asynchronous file download to complete and return its final status.", Flags: mcputil.ReadOnly}, downloadWaitHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "download_cancel", Description: "Cancel an asynchronous file download and return its final status.", Flags: mcputil.Destructive}, downloadCancelHandler(p))
 }
 
 type fileInfo struct {
@@ -483,25 +491,62 @@ func uploadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[uploadStatusParam
 		if err != nil {
 			return nil, mcputil.UploadStatusResult{}, err
 		}
-		sr := mcputil.UploadStatusResult{
-			OK:              true,
-			UploadID:        status.UploadID,
-			BytesUploaded:   status.BytesUploaded,
-			TotalBytes:      status.TotalBytes,
-			Percent:         status.Percent,
-			InstantSpeedBPS: status.InstantSpeedBPS,
-			AverageSpeedBPS: status.AverageSpeedBPS,
-			ETASeconds:      status.ETASeconds,
-			Done:            status.Done,
-		}
-		if status.Err != nil {
-			sr.Error = status.Err.Error()
-			sr.OK = false
-		}
+		sr := uploadStatusResult(status)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(sr)}},
 		}, sr, nil
 	}
+}
+
+func uploadWaitHandler(p SessionProvider) mcp.ToolHandlerFor[uploadStatusParams, mcputil.UploadStatusResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadStatusParams) (*mcp.CallToolResult, mcputil.UploadStatusResult, error) {
+		if args.SessionID == "" || args.UploadID == "" {
+			return nil, mcputil.UploadStatusResult{}, fmt.Errorf("session_id and upload_id are required")
+		}
+		status, err := p.UploadWait(ctx, args.SessionID, args.UploadID)
+		if err != nil {
+			return nil, mcputil.UploadStatusResult{}, err
+		}
+		sr := uploadStatusResult(status)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(sr)}},
+		}, sr, nil
+	}
+}
+
+func uploadCancelHandler(p SessionProvider) mcp.ToolHandlerFor[uploadStatusParams, mcputil.UploadStatusResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadStatusParams) (*mcp.CallToolResult, mcputil.UploadStatusResult, error) {
+		if args.SessionID == "" || args.UploadID == "" {
+			return nil, mcputil.UploadStatusResult{}, fmt.Errorf("session_id and upload_id are required")
+		}
+		status, err := p.UploadCancel(ctx, args.SessionID, args.UploadID)
+		if err != nil {
+			return nil, mcputil.UploadStatusResult{}, err
+		}
+		sr := uploadStatusResult(status)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(sr)}},
+		}, sr, nil
+	}
+}
+
+func uploadStatusResult(status session.UploadStatusResponse) mcputil.UploadStatusResult {
+	sr := mcputil.UploadStatusResult{
+		OK:              true,
+		UploadID:        status.UploadID,
+		BytesUploaded:   status.BytesUploaded,
+		TotalBytes:      status.TotalBytes,
+		Percent:         status.Percent,
+		InstantSpeedBPS: status.InstantSpeedBPS,
+		AverageSpeedBPS: status.AverageSpeedBPS,
+		ETASeconds:      status.ETASeconds,
+		Done:            status.Done,
+	}
+	if status.Err != nil {
+		sr.Error = status.Err.Error()
+		sr.OK = false
+	}
+	return sr
 }
 
 func mustJSON(v any) string {
@@ -556,23 +601,60 @@ func downloadStatusHandler(p SessionProvider) mcp.ToolHandlerFor[downloadStatusP
 		if err != nil {
 			return nil, mcputil.DownloadStatusResult{}, err
 		}
-		sr := mcputil.DownloadStatusResult{
-			OK:              true,
-			DownloadID:      status.DownloadID,
-			BytesDownloaded: status.BytesDownloaded,
-			TotalBytes:      status.TotalBytes,
-			Percent:         status.Percent,
-			InstantSpeedBPS: status.InstantSpeedBPS,
-			AverageSpeedBPS: status.AverageSpeedBPS,
-			ETASeconds:      status.ETASeconds,
-			Done:            status.Done,
-		}
-		if status.Err != nil {
-			sr.Error = status.Err.Error()
-			sr.OK = false
-		}
+		sr := downloadStatusResult(status)
 		return &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(sr)}},
 		}, sr, nil
 	}
+}
+
+func downloadWaitHandler(p SessionProvider) mcp.ToolHandlerFor[downloadStatusParams, mcputil.DownloadStatusResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadStatusParams) (*mcp.CallToolResult, mcputil.DownloadStatusResult, error) {
+		if args.SessionID == "" || args.DownloadID == "" {
+			return nil, mcputil.DownloadStatusResult{}, fmt.Errorf("session_id and download_id are required")
+		}
+		status, err := p.DownloadWait(ctx, args.SessionID, args.DownloadID)
+		if err != nil {
+			return nil, mcputil.DownloadStatusResult{}, err
+		}
+		sr := downloadStatusResult(status)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(sr)}},
+		}, sr, nil
+	}
+}
+
+func downloadCancelHandler(p SessionProvider) mcp.ToolHandlerFor[downloadStatusParams, mcputil.DownloadStatusResult] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadStatusParams) (*mcp.CallToolResult, mcputil.DownloadStatusResult, error) {
+		if args.SessionID == "" || args.DownloadID == "" {
+			return nil, mcputil.DownloadStatusResult{}, fmt.Errorf("session_id and download_id are required")
+		}
+		status, err := p.DownloadCancel(ctx, args.SessionID, args.DownloadID)
+		if err != nil {
+			return nil, mcputil.DownloadStatusResult{}, err
+		}
+		sr := downloadStatusResult(status)
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(sr)}},
+		}, sr, nil
+	}
+}
+
+func downloadStatusResult(status session.DownloadStatusResponse) mcputil.DownloadStatusResult {
+	sr := mcputil.DownloadStatusResult{
+		OK:              true,
+		DownloadID:      status.DownloadID,
+		BytesDownloaded: status.BytesDownloaded,
+		TotalBytes:      status.TotalBytes,
+		Percent:         status.Percent,
+		InstantSpeedBPS: status.InstantSpeedBPS,
+		AverageSpeedBPS: status.AverageSpeedBPS,
+		ETASeconds:      status.ETASeconds,
+		Done:            status.Done,
+	}
+	if status.Err != nil {
+		sr.Error = status.Err.Error()
+		sr.OK = false
+	}
+	return sr
 }

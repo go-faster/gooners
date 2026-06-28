@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
+	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
 type dummyPool struct {
@@ -63,6 +64,14 @@ func (p *dummyPool) UploadStatus(ctx context.Context, sessionID, uploadID string
 	}, nil
 }
 
+func (p *dummyPool) UploadWait(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error) {
+	return p.UploadStatus(ctx, sessionID, uploadID)
+}
+
+func (p *dummyPool) UploadCancel(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error) {
+	return p.UploadStatus(ctx, sessionID, uploadID)
+}
+
 func (p *dummyPool) Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error) {
 	data, err := os.ReadFile(remotePath)
 	if err == nil {
@@ -79,6 +88,14 @@ func (p *dummyPool) DownloadStatus(ctx context.Context, sessionID, downloadID st
 		Percent:         100,
 		Done:            true,
 	}, nil
+}
+
+func (p *dummyPool) DownloadWait(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error) {
+	return p.DownloadStatus(ctx, sessionID, downloadID)
+}
+
+func (p *dummyPool) DownloadCancel(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error) {
+	return p.DownloadStatus(ctx, sessionID, downloadID)
 }
 
 func extractText(t *testing.T, res *mcp.CallToolResult) string {
@@ -401,20 +418,31 @@ func TestWithinDir(t *testing.T) {
 }
 
 func TestUploadStatusHandler(t *testing.T) {
-	handler := uploadStatusHandler(&dummyPool{})
+	tests := []struct {
+		name    string
+		handler mcp.ToolHandlerFor[uploadStatusParams, mcputil.UploadStatusResult]
+	}{
+		{name: "status", handler: uploadStatusHandler(&dummyPool{})},
+		{name: "wait", handler: uploadWaitHandler(&dummyPool{})},
+		{name: "cancel", handler: uploadCancelHandler(&dummyPool{})},
+	}
 
-	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, uploadStatusParams{
-		SessionID: "test_id",
-		UploadID:  "upload-123",
-	})
-	require.NoError(t, err)
-	require.False(t, res.IsError, "unexpected error: %v", res)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, _, err := tt.handler(context.Background(), &mcp.CallToolRequest{}, uploadStatusParams{
+				SessionID: "test_id",
+				UploadID:  "upload-123",
+			})
+			require.NoError(t, err)
+			require.False(t, res.IsError, "unexpected error: %v", res)
 
-	data := parseResult(t, res)
-	require.Equal(t, true, data["ok"])
-	require.Equal(t, "upload-123", data["upload_id"])
-	require.Equal(t, float64(100), data["percent"])
-	require.Equal(t, true, data["done"])
+			data := parseResult(t, res)
+			require.Equal(t, true, data["ok"])
+			require.Equal(t, "upload-123", data["upload_id"])
+			require.Equal(t, float64(100), data["percent"])
+			require.Equal(t, true, data["done"])
+		})
+	}
 }
 
 func TestDownloadFileHandler(t *testing.T) {
@@ -476,20 +504,31 @@ func TestDownloadStatusHandler(t *testing.T) {
 	})
 	defer cleanup()
 
-	handler := downloadStatusHandler(&dummyPool{client: client})
+	tests := []struct {
+		name    string
+		handler mcp.ToolHandlerFor[downloadStatusParams, mcputil.DownloadStatusResult]
+	}{
+		{name: "status", handler: downloadStatusHandler(&dummyPool{client: client})},
+		{name: "wait", handler: downloadWaitHandler(&dummyPool{client: client})},
+		{name: "cancel", handler: downloadCancelHandler(&dummyPool{client: client})},
+	}
 
-	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, downloadStatusParams{
-		SessionID:  "test_id",
-		DownloadID: "download-123",
-	})
-	require.NoError(t, err)
-	require.False(t, res.IsError, "unexpected error: %v", res)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, _, err := tt.handler(context.Background(), &mcp.CallToolRequest{}, downloadStatusParams{
+				SessionID:  "test_id",
+				DownloadID: "download-123",
+			})
+			require.NoError(t, err)
+			require.False(t, res.IsError, "unexpected error: %v", res)
 
-	data := parseResult(t, res)
-	require.Equal(t, true, data["ok"])
-	require.Equal(t, "download-123", data["download_id"])
-	require.Equal(t, float64(100), data["bytes_downloaded"])
-	require.Equal(t, float64(100), data["total_bytes"])
-	require.Equal(t, float64(100), data["percent"])
-	require.Equal(t, true, data["done"])
+			data := parseResult(t, res)
+			require.Equal(t, true, data["ok"])
+			require.Equal(t, "download-123", data["download_id"])
+			require.Equal(t, float64(100), data["bytes_downloaded"])
+			require.Equal(t, float64(100), data["total_bytes"])
+			require.Equal(t, float64(100), data["percent"])
+			require.Equal(t, true, data["done"])
+		})
+	}
 }

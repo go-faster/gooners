@@ -31,7 +31,7 @@ func NewSudoTestContainer(ctx context.Context, opts ContainerOpts) (addr, user, 
 	defer cancel()
 
 	req := testcontainers.ContainerRequest{
-		Image: "lscr.io/linuxserver/openssh-server:latest",
+		Image: "lscr.io/linuxserver/openssh-server:version-10.2_p1-r0",
 		Env: map[string]string{
 			"USER_NAME":       "test",
 			"PASSWORD_ACCESS": "true",

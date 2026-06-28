@@ -186,6 +186,7 @@ func (p *Pool) handleUpload(sessions map[string]*Session, r UploadRequest) {
 		RemotePath: r.RemotePath,
 		StartedAt:  time.Now(),
 		cancel:     uCancel,
+		done:       make(chan struct{}),
 	}
 	s.uploads[uploadID] = job
 	go runUpload(uCtx, s.client, job)
@@ -203,8 +204,13 @@ func (p *Pool) handleUploadStatus(sessions map[string]*Session, r UploadStatusRe
 		r.resp <- UploadStatusResponse{Err: fmt.Errorf("upload not found: %s", r.UploadID)}
 		return
 	}
+	r.resp <- uploadStatus(job)
+}
+
+func uploadStatus(job *UploadJob) UploadStatusResponse {
 	now := time.Now()
 	job.mu.Lock()
+	defer job.mu.Unlock()
 	percent := float64(0)
 	if job.TotalBytes > 0 {
 		percent = (float64(job.BytesUploaded) / float64(job.TotalBytes)) * 100
@@ -235,8 +241,56 @@ func (p *Pool) handleUploadStatus(sessions map[string]*Session, r UploadStatusRe
 		Done:            job.Done,
 		Err:             job.Err,
 	}
-	job.mu.Unlock()
-	r.resp <- resp
+	return resp
+}
+
+func (p *Pool) handleUploadWait(sessions map[string]*Session, r UploadWaitRequest) {
+	job, resp, ok := findUploadJob(sessions, r.SessionID, r.UploadID)
+	if !ok {
+		r.resp <- resp
+		return
+	}
+	go func() {
+		select {
+		case <-job.done:
+			r.resp <- uploadStatus(job)
+		case <-r.Ctx.Done():
+			resp := uploadStatus(job)
+			resp.Err = r.Ctx.Err()
+			r.resp <- resp
+		}
+	}()
+}
+
+func (p *Pool) handleUploadCancel(sessions map[string]*Session, r UploadCancelRequest) {
+	job, resp, ok := findUploadJob(sessions, r.SessionID, r.UploadID)
+	if !ok {
+		r.resp <- resp
+		return
+	}
+	job.cancel()
+	go func() {
+		select {
+		case <-job.done:
+			r.resp <- uploadStatus(job)
+		case <-r.Ctx.Done():
+			resp := uploadStatus(job)
+			resp.Err = r.Ctx.Err()
+			r.resp <- resp
+		}
+	}()
+}
+
+func findUploadJob(sessions map[string]*Session, sessionID, uploadID string) (*UploadJob, UploadStatusResponse, bool) {
+	s, ok := sessions[sessionID]
+	if !ok {
+		return nil, UploadStatusResponse{Err: fmt.Errorf("session not found: %s", sessionID)}, false
+	}
+	job, ok := s.uploads[uploadID]
+	if !ok {
+		return nil, UploadStatusResponse{Err: fmt.Errorf("upload not found: %s", uploadID)}, false
+	}
+	return job, UploadStatusResponse{}, true
 }
 
 func transferStats(
@@ -278,6 +332,7 @@ func (p *Pool) handleDownload(sessions map[string]*Session, r DownloadRequest) {
 		RemotePath: r.RemotePath,
 		StartedAt:  time.Now(),
 		cancel:     dCancel,
+		done:       make(chan struct{}),
 	}
 	s.downloads[downloadID] = job
 	go runDownload(dCtx, s.client, job)
@@ -295,8 +350,13 @@ func (p *Pool) handleDownloadStatus(sessions map[string]*Session, r DownloadStat
 		r.resp <- DownloadStatusResponse{Err: fmt.Errorf("download not found: %s", r.DownloadID)}
 		return
 	}
+	r.resp <- downloadStatus(job)
+}
+
+func downloadStatus(job *DownloadJob) DownloadStatusResponse {
 	now := time.Now()
 	job.mu.Lock()
+	defer job.mu.Unlock()
 	percent := float64(0)
 	if job.TotalBytes > 0 {
 		percent = (float64(job.BytesDownloaded) / float64(job.TotalBytes)) * 100
@@ -327,8 +387,56 @@ func (p *Pool) handleDownloadStatus(sessions map[string]*Session, r DownloadStat
 		Done:            job.Done,
 		Err:             job.Err,
 	}
-	job.mu.Unlock()
-	r.resp <- resp
+	return resp
+}
+
+func (p *Pool) handleDownloadWait(sessions map[string]*Session, r DownloadWaitRequest) {
+	job, resp, ok := findDownloadJob(sessions, r.SessionID, r.DownloadID)
+	if !ok {
+		r.resp <- resp
+		return
+	}
+	go func() {
+		select {
+		case <-job.done:
+			r.resp <- downloadStatus(job)
+		case <-r.Ctx.Done():
+			resp := downloadStatus(job)
+			resp.Err = r.Ctx.Err()
+			r.resp <- resp
+		}
+	}()
+}
+
+func (p *Pool) handleDownloadCancel(sessions map[string]*Session, r DownloadCancelRequest) {
+	job, resp, ok := findDownloadJob(sessions, r.SessionID, r.DownloadID)
+	if !ok {
+		r.resp <- resp
+		return
+	}
+	job.cancel()
+	go func() {
+		select {
+		case <-job.done:
+			r.resp <- downloadStatus(job)
+		case <-r.Ctx.Done():
+			resp := downloadStatus(job)
+			resp.Err = r.Ctx.Err()
+			r.resp <- resp
+		}
+	}()
+}
+
+func findDownloadJob(sessions map[string]*Session, sessionID, downloadID string) (*DownloadJob, DownloadStatusResponse, bool) {
+	s, ok := sessions[sessionID]
+	if !ok {
+		return nil, DownloadStatusResponse{Err: fmt.Errorf("session not found: %s", sessionID)}, false
+	}
+	job, ok := s.downloads[downloadID]
+	if !ok {
+		return nil, DownloadStatusResponse{Err: fmt.Errorf("download not found: %s", downloadID)}, false
+	}
+	return job, DownloadStatusResponse{}, true
 }
 
 func (p *Pool) handleRegisterSpool(sessions map[string]*Session, r RegisterSpoolRequest) {

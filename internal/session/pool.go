@@ -56,6 +56,7 @@ type UploadJob struct {
 	Err           error
 	mu            sync.Mutex
 	cancel        context.CancelFunc
+	done          chan struct{}
 }
 
 type DownloadJob struct {
@@ -71,6 +72,7 @@ type DownloadJob struct {
 	Err             error
 	mu              sync.Mutex
 	cancel          context.CancelFunc
+	done            chan struct{}
 }
 
 type OpenResult struct {
@@ -97,8 +99,12 @@ type Provider interface {
 	SFTP(ctx context.Context, id string) (*sftp.Client, error)
 	Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error)
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error)
+	UploadWait(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error)
+	UploadCancel(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error)
 	Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error)
 	DownloadStatus(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error)
+	DownloadWait(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error)
+	DownloadCancel(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error)
 	Run(ctx context.Context, sessionID, cmd string) (sshutil.Result, error)
 	RunWithOptions(ctx context.Context, sessionID, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
 	CommandTimeout() time.Duration
@@ -261,10 +267,18 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				p.handleUpload(sessions, r)
 			case UploadStatusRequest:
 				p.handleUploadStatus(sessions, r)
+			case UploadWaitRequest:
+				p.handleUploadWait(sessions, r)
+			case UploadCancelRequest:
+				p.handleUploadCancel(sessions, r)
 			case DownloadRequest:
 				p.handleDownload(sessions, r)
 			case DownloadStatusRequest:
 				p.handleDownloadStatus(sessions, r)
+			case DownloadWaitRequest:
+				p.handleDownloadWait(sessions, r)
+			case DownloadCancelRequest:
+				p.handleDownloadCancel(sessions, r)
 			case RegisterSpoolRequest:
 				p.handleRegisterSpool(sessions, r)
 			case GetSpoolRequest:
@@ -769,6 +783,24 @@ func (p *Pool) UploadStatus(ctx context.Context, sessionID, uploadID string) (Up
 	return resp, resp.Err
 }
 
+func (p *Pool) UploadWait(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error) {
+	respCh := make(chan UploadStatusResponse, 1)
+	resp, ok := send(ctx, p.reqCh, UploadWaitRequest{Ctx: ctx, SessionID: sessionID, UploadID: uploadID, resp: respCh}, respCh)
+	if !ok {
+		return UploadStatusResponse{}, ctx.Err()
+	}
+	return resp, resp.Err
+}
+
+func (p *Pool) UploadCancel(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error) {
+	respCh := make(chan UploadStatusResponse, 1)
+	resp, ok := send(ctx, p.reqCh, UploadCancelRequest{Ctx: ctx, SessionID: sessionID, UploadID: uploadID, resp: respCh}, respCh)
+	if !ok {
+		return UploadStatusResponse{}, ctx.Err()
+	}
+	return resp, resp.Err
+}
+
 func (p *Pool) Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error) {
 	respCh := make(chan DownloadResponse, 1)
 	resp, ok := send(ctx, p.reqCh, DownloadRequest{SessionID: sessionID, RemotePath: remotePath, LocalPath: localPath, resp: respCh}, respCh)
@@ -781,6 +813,24 @@ func (p *Pool) Download(ctx context.Context, sessionID, remotePath, localPath st
 func (p *Pool) DownloadStatus(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error) {
 	respCh := make(chan DownloadStatusResponse, 1)
 	resp, ok := send(ctx, p.reqCh, DownloadStatusRequest{SessionID: sessionID, DownloadID: downloadID, resp: respCh}, respCh)
+	if !ok {
+		return DownloadStatusResponse{}, ctx.Err()
+	}
+	return resp, resp.Err
+}
+
+func (p *Pool) DownloadWait(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error) {
+	respCh := make(chan DownloadStatusResponse, 1)
+	resp, ok := send(ctx, p.reqCh, DownloadWaitRequest{Ctx: ctx, SessionID: sessionID, DownloadID: downloadID, resp: respCh}, respCh)
+	if !ok {
+		return DownloadStatusResponse{}, ctx.Err()
+	}
+	return resp, resp.Err
+}
+
+func (p *Pool) DownloadCancel(ctx context.Context, sessionID, downloadID string) (DownloadStatusResponse, error) {
+	respCh := make(chan DownloadStatusResponse, 1)
+	resp, ok := send(ctx, p.reqCh, DownloadCancelRequest{Ctx: ctx, SessionID: sessionID, DownloadID: downloadID, resp: respCh}, respCh)
 	if !ok {
 		return DownloadStatusResponse{}, ctx.Err()
 	}
@@ -897,6 +947,7 @@ func runUpload(ctx context.Context, client *ssh.Client, job *UploadJob) {
 		job.mu.Lock()
 		job.Done = true
 		job.mu.Unlock()
+		close(job.done)
 	}()
 
 	if err := func() error {
@@ -969,6 +1020,7 @@ func runDownload(ctx context.Context, client *ssh.Client, job *DownloadJob) {
 		job.mu.Lock()
 		job.Done = true
 		job.mu.Unlock()
+		close(job.done)
 	}()
 
 	if err := func() error {

@@ -1,6 +1,10 @@
 package session
 
-import "golang.org/x/crypto/ssh"
+import (
+	"context"
+
+	"golang.org/x/crypto/ssh"
+)
 
 // Request is the base interface for all session manager messages.
 type Request interface {
@@ -106,6 +110,24 @@ type UploadStatusResponse struct {
 	Err             error
 }
 
+type UploadWaitRequest struct {
+	Ctx       context.Context
+	SessionID string
+	UploadID  string
+	resp      chan<- UploadStatusResponse
+}
+
+func (UploadWaitRequest) isRequest() {}
+
+type UploadCancelRequest struct {
+	Ctx       context.Context
+	SessionID string
+	UploadID  string
+	resp      chan<- UploadStatusResponse
+}
+
+func (UploadCancelRequest) isRequest() {}
+
 type DownloadRequest struct {
 	SessionID  string
 	LocalPath  string
@@ -139,6 +161,24 @@ type DownloadStatusResponse struct {
 	Done            bool
 	Err             error
 }
+
+type DownloadWaitRequest struct {
+	Ctx        context.Context
+	SessionID  string
+	DownloadID string
+	resp       chan<- DownloadStatusResponse
+}
+
+func (DownloadWaitRequest) isRequest() {}
+
+type DownloadCancelRequest struct {
+	Ctx        context.Context
+	SessionID  string
+	DownloadID string
+	resp       chan<- DownloadStatusResponse
+}
+
+func (DownloadCancelRequest) isRequest() {}
 
 type RegisterSpoolRequest struct {
 	SessionID string

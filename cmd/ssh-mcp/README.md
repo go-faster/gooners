@@ -60,7 +60,7 @@ For a complete local sandbox environment containing both a test SSH target serve
 - `-addr <host:port>` — listen address for HTTP transports (`streamable-http`, `sse`). Default `:8080`
 - `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file in append mode.
 - `-disable-sudo` — do not register the `ssh_sudo_exec` tool. Useful when deploying to untrusted contexts to reduce the capability surface.
-- `-disable-specialized-tools` — register only core SSH tools: session management, command execution, and file transfer (`upload_file`/`download_file`).
+- `-disable-specialized-tools` — register only core SSH tools: session management, command execution, and file transfer (`upload_file`/`download_file` plus status, wait, and cancel tools).
 - `-command-timeout <duration>` — default command timeout (default: `10s`).
 
 ### Password sources
@@ -182,6 +182,19 @@ claude mcp add ssh /path/to/ssh-mcp
 > **Note**: The stdio transport is compatible with all modern clients including Claude Code and Claude Desktop.
 
 The server's **working directory at launch** becomes the upload root for `upload_file` and `download_file`.
+
+## File transfer tools
+
+| Tool | Description |
+|------|-------------|
+| `upload_file` | Start an asynchronous local-to-remote SFTP upload and return `upload_id` |
+| `upload_status` | Check upload progress |
+| `upload_wait` | Wait for an upload to complete |
+| `upload_cancel` | Cancel an upload |
+| `download_file` | Start an asynchronous remote-to-local SFTP download and return `download_id` |
+| `download_status` | Check download progress |
+| `download_wait` | Wait for a download to complete |
+| `download_cancel` | Cancel a download |
 
 ## Known hosts setup
 
