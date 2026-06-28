@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	gosshconfig "github.com/kevinburke/ssh_config"
 	"github.com/stretchr/testify/require"
 )
 
@@ -197,6 +198,46 @@ Host from-extra
 	// wildcards must never appear
 	for _, m := range got {
 		require.False(t, strings.ContainsAny(m.Name, "*?[]"), "wildcard machine leaked: %s", m.Name)
+	}
+}
+
+func TestConfig_ClientConfig_RedactedExample(t *testing.T) {
+	t.Parallel()
+
+	data, err := os.ReadFile(filepath.Join("testdata", "ssh_config_redacted.conf"))
+	require.NoError(t, err)
+
+	home := t.TempDir()
+	sshDir := filepath.Join(home, ".ssh")
+	require.NoError(t, os.MkdirAll(sshDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(sshDir, "config"), data, 0o600))
+
+	cfg := &gosshconfig.UserSettings{IgnoreErrors: false}
+	cfg.ConfigFinder(func() string { return filepath.Join(sshDir, "config") })
+
+	tests := []struct {
+		name     string
+		machine  string
+		wantUser string
+		wantTCP  string
+		wantSSH  string
+	}{
+		{name: "primary alias", machine: "device", wantUser: "root", wantTCP: "10.42.0.98:22", wantSSH: "device:22"},
+		{name: "ip alias", machine: "192.168.1.41", wantUser: "root", wantTCP: "10.42.0.98:22", wantSSH: "192.168.1.41:22"},
+		{name: "wildcard default user", machine: "laptop", wantUser: "root", wantTCP: "10.42.0.2:22", wantSSH: "laptop:22"},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cc, tcpAddr, sshAddr, err := Config{Machine: tc.machine, HomeDir: home, Password: "x"}.clientConfig(cfg)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantTCP, tcpAddr)
+			require.Equal(t, tc.wantSSH, sshAddr)
+			require.Equal(t, tc.wantUser, cc.User)
+		})
 	}
 }
 
