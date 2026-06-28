@@ -251,12 +251,22 @@ func tunnelThrough(cfg *gosshconfig.UserSettings, targetTCPAddr, targetSSHAddr s
 		// Single hop: use dial() so the jump host's own ssh_config (including
 		// its own ProxyJump) is respected.
 		// Jump host banner/version not surfaced.
-		jumpClient, _, _, err = Config{Machine: lastJump, KnownHosts: knownHosts}.dial()
+		jumpClient, _, _, err = Config{
+			Machine:    lastJump,
+			KnownHosts: knownHosts,
+			HomeDir:    home,
+			Logger:     logger,
+		}.dial()
 	} else {
 		// Multi-hop: route to lastJump through the remaining inner chain.
 		var jumpCC *ssh.ClientConfig
 		var jumpTCPAddr, jumpSSHAddr string
-		jumpCC, jumpTCPAddr, jumpSSHAddr, err = Config{Machine: lastJump, KnownHosts: knownHosts}.clientConfig(cfg)
+		jumpCC, jumpTCPAddr, jumpSSHAddr, err = Config{
+			Machine:    lastJump,
+			KnownHosts: knownHosts,
+			HomeDir:    home,
+			Logger:     logger,
+		}.clientConfig(cfg)
 		if err != nil {
 			logger.Debug("ssh jump clientConfig failed", "jump", lastJump, "err", err)
 			return nil, fmt.Errorf("jump host %q: %w", lastJump, err)
