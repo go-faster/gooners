@@ -968,7 +968,7 @@ func runUpload(ctx context.Context, client *ssh.Client, job *UploadJob) {
 		job.TotalBytes = stat.Size()
 		job.mu.Unlock()
 
-		sftpClient, err := sftp.NewClient(client)
+		sftpClient, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
 		if err != nil {
 			return err
 		}
@@ -980,12 +980,15 @@ func runUpload(ctx context.Context, client *ssh.Client, job *UploadJob) {
 		if err != nil {
 			return err
 		}
-		defer func() {
-			_ = dst.Close()
-		}()
 
 		pr := &poolProgressReader{r: src, ctx: ctx, job: job}
 		if _, err := io.Copy(dst, pr); err != nil {
+			_ = dst.Close()
+			_ = sftpClient.Remove(job.RemotePath)
+			return err
+		}
+		if err := dst.Close(); err != nil {
+			_ = sftpClient.Remove(job.RemotePath)
 			return err
 		}
 
