@@ -75,6 +75,12 @@ linters:
           - revive
         path: ^(cmd|internal)/
         text: "package-comments: should have a package comment"
+      # grafana-dashboard-mcp intentionally keeps v1 dashboard SDK builders so
+      # agents can export legacy dashboards while v2 adoption is in progress.
+      - linters:
+          - staticcheck
+        path: ^internal/tools/grafana/
+        text: "SA1019: .*dashboard"
 
 formatters:
   enable:

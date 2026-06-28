@@ -15,15 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/grafana/grafana-foundation-sdk/go/cog"
-	"github.com/grafana/grafana-foundation-sdk/go/cog/variants"
 	"github.com/grafana/grafana-foundation-sdk/go/common"
 	"github.com/grafana/grafana-foundation-sdk/go/dashboard"
-	"github.com/grafana/grafana-foundation-sdk/go/gauge"
-	"github.com/grafana/grafana-foundation-sdk/go/prometheus"
-	"github.com/grafana/grafana-foundation-sdk/go/stat"
-	"github.com/grafana/grafana-foundation-sdk/go/table"
-	"github.com/grafana/grafana-foundation-sdk/go/timeseries"
 
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
@@ -33,6 +26,7 @@ import (
 type DashboardSession struct {
 	DashboardID string         `json:"dashboard_id"`
 	Title       string         `json:"title"`
+	Version     string         `json:"version,omitempty"`
 	UID         string         `json:"uid,omitempty"`
 	Model       string         `json:"model,omitempty"`
 	Tags        []string       `json:"tags,omitempty"`
@@ -51,6 +45,22 @@ type DashboardSession struct {
 	NextRowID   int            `json:"next_row_id,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	TouchedAt   time.Time      `json:"touched_at"`
+}
+
+const (
+	dashboardVersionV1 = "v1"
+	dashboardVersionV2 = "v2"
+)
+
+func normalizeDashboardVersion(version string) (string, error) {
+	switch strings.ToLower(version) {
+	case "", dashboardVersionV1:
+		return dashboardVersionV1, nil
+	case dashboardVersionV2:
+		return dashboardVersionV2, nil
+	default:
+		return "", fmt.Errorf("unsupported dashboard version %q", version)
+	}
 }
 
 type VariableSpec struct {
@@ -163,6 +173,7 @@ func parseDashboardToSession(dashJSON []byte, sessionID string) (*DashboardSessi
 	s := &DashboardSession{
 		DashboardID: sessionID,
 		Title:       getString(dash, "title"),
+		Version:     dashboardVersionV1,
 		UID:         getString(dash, "uid"),
 		Tags:        getStringSlice(dash, "tags"),
 		Description: getString(dash, "description"),
@@ -507,7 +518,7 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 	// 3.1 Construction Tools
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "add_dashboard",
-		Description: "Initializes a new dashboard building session. Pass your model name in the 'model' field — it is recorded on the session and added as a tag and description on export. Omit or pass empty string to opt out.",
+		Description: "Initializes a new dashboard building session. Prefer version='v1' unless v2 output is explicitly required. Pass your model name in the 'model' field — it is recorded on the session and added as a tag and description on export. Omit or pass empty string to opt out.",
 	}, addDashboardHandler(sm))
 
 	mcputil.Register(s, mcputil.ToolDef{
@@ -613,7 +624,7 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "export_dashboard",
-		Description: "Finalizes and compiles the dashboard. By default, this only validates the dashboard can be built. Use 'save' to push directly to Grafana, or 'output_path' to write the JSON to a local file.",
+		Description: "Finalizes and compiles the dashboard using the session's schema version. By default, this only validates the dashboard can be built. Use 'save' to push v1 dashboards directly to Grafana, or 'output_path' to write v1/v2 JSON to a local file.",
 	}, exportDashboardHandler(sm, gc))
 
 	// 3.2 Discovery & Verification Tools
@@ -669,14 +680,16 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 // Handler implementations
 
 type AddDashboardReq struct {
-	Name  string   `json:"name" jsonschema:"The title of the dashboard"`
-	UID   string   `json:"uid,omitempty" jsonschema:"Optional unique ID for the dashboard"`
-	Tags  []string `json:"tags,omitempty" jsonschema:"Optional tags for the dashboard"`
-	Model string   `json:"model,omitempty" jsonschema:"Your model name (e.g. 'claude-sonnet-4-6'). Recorded on the session and added as a 'created-by:<model>' tag on export. Pass an empty string to opt out."`
+	Name    string   `json:"name" jsonschema:"The title of the dashboard"`
+	Version string   `json:"version,omitempty" jsonschema:"Dashboard schema version to export: v1 or v2. Defaults to v1, which is preferred unless v2 is explicitly needed."`
+	UID     string   `json:"uid,omitempty" jsonschema:"Optional unique ID for the dashboard"`
+	Tags    []string `json:"tags,omitempty" jsonschema:"Optional tags for the dashboard"`
+	Model   string   `json:"model,omitempty" jsonschema:"Your model name (e.g. 'claude-sonnet-4-6'). Recorded on the session and added as a 'created-by:<model>' tag on export. Pass an empty string to opt out."`
 }
 
 type AddDashboardRes struct {
 	DashboardID string `json:"dashboard_id"`
+	Version     string `json:"version"`
 }
 
 func addDashboardHandler(sm *SessionManager) mcp.ToolHandlerFor[AddDashboardReq, AddDashboardRes] {
@@ -684,10 +697,15 @@ func addDashboardHandler(sm *SessionManager) mcp.ToolHandlerFor[AddDashboardReq,
 		if args.Name == "" {
 			return nil, AddDashboardRes{}, fmt.Errorf("name is required")
 		}
+		version, err := normalizeDashboardVersion(args.Version)
+		if err != nil {
+			return nil, AddDashboardRes{}, err
+		}
 		id := uuid.New().String()
 		s := &DashboardSession{
 			DashboardID: id,
 			Title:       args.Name,
+			Version:     version,
 			UID:         args.UID,
 			Model:       args.Model,
 			Tags:        args.Tags,
@@ -695,7 +713,7 @@ func addDashboardHandler(sm *SessionManager) mcp.ToolHandlerFor[AddDashboardReq,
 			TouchedAt:   time.Now(),
 		}
 		sm.Add(s)
-		return nil, AddDashboardRes{DashboardID: id}, nil
+		return nil, AddDashboardRes{DashboardID: id, Version: version}, nil
 	}
 }
 
@@ -706,6 +724,7 @@ type ListSessionsRes struct {
 type SessionInfo struct {
 	DashboardID string    `json:"dashboard_id"`
 	Title       string    `json:"title"`
+	Version     string    `json:"version"`
 	Model       string    `json:"model,omitempty"`
 	TouchedAt   time.Time `json:"touched_at"`
 }
@@ -720,6 +739,7 @@ func listSessionsHandler(sm *SessionManager) mcp.ToolHandlerFor[struct{}, ListSe
 			res.Sessions[i] = SessionInfo{
 				DashboardID: s.DashboardID,
 				Title:       s.Title,
+				Version:     cmp.Or(s.Version, dashboardVersionV1),
 				Model:       s.Model,
 				TouchedAt:   s.TouchedAt,
 			}
@@ -922,6 +942,7 @@ type ExportDashboardReq struct {
 type ExportDashboardRes struct {
 	Saved      bool   `json:"saved"`
 	UID        string `json:"uid"`
+	Version    string `json:"version"`
 	URL        string `json:"url,omitempty"`
 	OutputPath string `json:"output_path,omitempty"`
 }
@@ -933,142 +954,20 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 			return nil, ExportDashboardRes{}, err
 		}
 
-		dbBuilder := dashboard.NewDashboardBuilder(s.Title)
-		if s.UID != "" {
-			dbBuilder.Uid(s.UID)
-		}
-		tags := s.Tags
-		if s.Model != "" {
-			tags = append(tags, "created-by:"+s.Model)
-		}
-		if len(tags) > 0 {
-			dbBuilder.Tags(tags)
-		}
-		if s.Description != "" {
-			dbBuilder.Description(s.Description)
-		} else if s.Model != "" {
-			dbBuilder.Description("Created by " + s.Model)
-		}
-		if s.TimeFrom != "" || s.TimeTo != "" {
-			from := s.TimeFrom
-			if from == "" {
-				from = "now-6h"
-			}
-			to := s.TimeTo
-			if to == "" {
-				to = "now"
-			}
-			dbBuilder.Time(from, to)
-		}
-		if s.Refresh != "" {
-			dbBuilder.Refresh(s.Refresh)
-		}
-		if s.Tooltip != 0 {
-			dbBuilder.Tooltip(dashboard.DashboardCursorSync(s.Tooltip))
-		}
-
-		// Variables
-		for _, v := range s.Variables {
-			switch v.Type {
-			case "query":
-				vb := dashboard.NewQueryVariableBuilder(v.Name)
-				if v.DatasourceUID != "" {
-					dsType := v.DatasourceType
-					if dsType == "" {
-						dsType = "prometheus"
-					}
-					vb.Datasource(common.DataSourceRef{
-						Uid:  new(v.DatasourceUID),
-						Type: new(dsType),
-					})
-				}
-				if v.Query != "" {
-					vb.Query(dashboard.StringOrMap{String: new(v.Query)})
-				}
-				if v.Label != "" {
-					vb.Label(v.Label)
-				}
-				if v.Multi {
-					vb.Multi(v.Multi)
-				}
-				if v.IncludeAll {
-					vb.IncludeAll(v.IncludeAll)
-				}
-				if v.Regex != "" {
-					vb.Regex(v.Regex)
-				}
-				if v.Sort != 0 {
-					vb.Sort(dashboard.VariableSort(v.Sort))
-				}
-				vb.Refresh(dashboard.VariableRefresh(1))
-				dbBuilder.WithVariable(vb)
-
-			case "custom":
-				vb := dashboard.NewCustomVariableBuilder(v.Name)
-				if v.Query != "" {
-					vb.Values(dashboard.StringOrMap{String: new(v.Query)})
-				}
-				if v.Label != "" {
-					vb.Label(v.Label)
-				}
-				if v.Multi {
-					vb.Multi(v.Multi)
-				}
-				if v.IncludeAll {
-					vb.IncludeAll(v.IncludeAll)
-				}
-				dbBuilder.WithVariable(vb)
-
-			case "datasource":
-				vb := dashboard.NewDatasourceVariableBuilder(v.Name)
-				if v.Query != "" {
-					vb.Type(v.Query)
-				}
-				dbBuilder.WithVariable(vb)
-			}
-		}
-
-		// Add rows. Recompute Y positions before building so that rows created
-		// before their panels are placed correctly (row headers would otherwise
-		// stack at consecutive Y values instead of following panel content).
-		for _, r := range recomputeRowPositions(s.Rows) {
-			rowBuilder := dashboard.NewRowBuilder(r.Title).
-				Collapsed(r.Collapsed).
-				GridPos(dashboard.GridPos{Y: r.Y, W: 24, H: 1})
-			if r.Collapsed {
-				for _, p := range r.Panels {
-					pBuilder := buildPanel(p)
-					rowBuilder.WithPanel(pBuilder)
-				}
-				dbBuilder.WithRow(rowBuilder)
-			} else {
-				dbBuilder.WithRow(rowBuilder)
-				for _, p := range r.Panels {
-					pBuilder := buildPanel(p)
-					dbBuilder.WithPanel(pBuilder)
-				}
-			}
-		}
-
-		// Add top-level panels
-		for _, p := range s.Panels {
-			pBuilder := buildPanel(p)
-			dbBuilder.WithPanel(pBuilder)
-		}
-
-		dashboardObj, err := dbBuilder.Build()
+		version, err := normalizeDashboardVersion(s.Version)
 		if err != nil {
-			return nil, ExportDashboardRes{}, fmt.Errorf("building dashboard: %w", err)
+			return nil, ExportDashboardRes{}, err
 		}
 
-		dashboardJSON, err := json.MarshalIndent(dashboardObj, "", "  ")
+		dashboardJSON, err := buildDashboardJSON(s, version)
 		if err != nil {
-			return nil, ExportDashboardRes{}, fmt.Errorf("marshaling dashboard: %w", err)
+			return nil, ExportDashboardRes{}, err
 		}
-		slog.Debug("exported dashboard", "dashboard_id", s.DashboardID)
+		slog.Debug("exported dashboard", "dashboard_id", s.DashboardID, "version", version)
 
 		res := ExportDashboardRes{
-			UID: s.UID,
+			UID:     s.UID,
+			Version: version,
 		}
 
 		if args.OutputPath != "" {
@@ -1079,6 +978,9 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 		}
 
 		if args.Save {
+			if version != dashboardVersionV1 {
+				return nil, ExportDashboardRes{}, fmt.Errorf("saving %s dashboards is not supported by the legacy Grafana dashboard API", version)
+			}
 			if gc == nil {
 				return nil, ExportDashboardRes{}, fmt.Errorf("grafana client not configured, cannot save dashboard")
 			}
@@ -1095,202 +997,6 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 	}
 }
 
-func buildPanel(p *PanelEntry) cog.Builder[dashboard.Panel] {
-	var targets []cog.Builder[variants.Dataquery]
-	for _, q := range p.Queries {
-		dq := prometheus.NewDataqueryBuilder().
-			Expr(q.Expr).
-			RefId(q.RefID)
-		if q.DatasourceUID != "" {
-			dsType := q.DatasourceType
-			if dsType == "" {
-				dsType = "prometheus"
-			}
-			dq.Datasource(common.DataSourceRef{
-				Uid:  new(q.DatasourceUID),
-				Type: new(dsType),
-			})
-		}
-		if q.LegendFormat != "" {
-			dq.LegendFormat(q.LegendFormat)
-		}
-		if q.Instant {
-			dq.Instant()
-		}
-		if q.Format != "" {
-			dq.Format(prometheus.PromQueryFormat(q.Format))
-		}
-		if q.Hide {
-			dq.Hide(true)
-		}
-		targets = append(targets, dq)
-	}
-
-	var thresholdsConfig cog.Builder[dashboard.ThresholdsConfig]
-	if len(p.Thresholds) > 0 {
-		slices.SortFunc(p.Thresholds, func(a, b dashboard.Threshold) int {
-			if a.Value == nil {
-				if b.Value == nil {
-					return 0
-				}
-				return -1
-			}
-			if b.Value == nil {
-				return 1
-			}
-			return cmp.Compare(*a.Value, *b.Value)
-		})
-		thresholdsConfig = dashboard.NewThresholdsConfigBuilder().
-			Mode(dashboard.ThresholdsModeAbsolute).
-			Steps(p.Thresholds)
-	}
-
-	switch p.Type {
-	case "timeseries":
-		pb := timeseries.NewPanelBuilder().
-			Title(p.Title).
-			Targets(targets)
-		if p.Description != "" {
-			pb.Description(p.Description)
-		}
-		if p.GridPos.H > 0 {
-			pb.GridPos(p.GridPos)
-		}
-		if p.Unit != "" {
-			pb.Unit(p.Unit)
-		}
-		if thresholdsConfig != nil {
-			pb.Thresholds(thresholdsConfig)
-		}
-		if p.Decimals != nil {
-			pb.Decimals(*p.Decimals)
-		}
-		if p.FillOpacity != nil {
-			pb.FillOpacity(*p.FillOpacity)
-		}
-		if p.LineWidth != nil {
-			pb.LineWidth(*p.LineWidth)
-		}
-		if p.Stacking != "" {
-			pb.Stacking(common.NewStackingConfigBuilder().Mode(common.StackingMode(p.Stacking)))
-		}
-		if p.AxisSoftMin != nil {
-			pb.AxisSoftMin(*p.AxisSoftMin)
-		}
-		if p.AxisSoftMax != nil {
-			pb.AxisSoftMax(*p.AxisSoftMax)
-		}
-		legend := buildLegend(p)
-		if legend != nil {
-			pb.Legend(legend)
-		}
-		return pb
-
-	case "stat":
-		pb := stat.NewPanelBuilder().
-			Title(p.Title).
-			Targets(targets)
-		if p.Description != "" {
-			pb.Description(p.Description)
-		}
-		if p.GridPos.H > 0 {
-			pb.GridPos(p.GridPos)
-		}
-		if p.Unit != "" {
-			pb.Unit(p.Unit)
-		}
-		if thresholdsConfig != nil {
-			pb.Thresholds(thresholdsConfig)
-		}
-		if p.Decimals != nil {
-			pb.Decimals(*p.Decimals)
-		}
-		ro := buildReduceOptions(p)
-		if ro != nil {
-			pb.ReduceOptions(ro)
-		}
-		return pb
-
-	case "gauge":
-		pb := gauge.NewPanelBuilder().
-			Title(p.Title).
-			Targets(targets)
-		if p.Description != "" {
-			pb.Description(p.Description)
-		}
-		if p.GridPos.H > 0 {
-			pb.GridPos(p.GridPos)
-		}
-		if p.Unit != "" {
-			pb.Unit(p.Unit)
-		}
-		if thresholdsConfig != nil {
-			pb.Thresholds(thresholdsConfig)
-		}
-		if p.Decimals != nil {
-			pb.Decimals(*p.Decimals)
-		}
-		if p.GaugeMin != nil {
-			pb.Min(*p.GaugeMin)
-		}
-		if p.GaugeMax != nil {
-			pb.Max(*p.GaugeMax)
-		}
-		ro := buildReduceOptions(p)
-		if ro != nil {
-			pb.ReduceOptions(ro)
-		}
-		return pb
-
-	case "table":
-		pb := table.NewPanelBuilder().
-			Title(p.Title).
-			Targets(targets)
-		if p.Description != "" {
-			pb.Description(p.Description)
-		}
-		if p.GridPos.H > 0 {
-			pb.GridPos(p.GridPos)
-		}
-		if thresholdsConfig != nil {
-			pb.Thresholds(thresholdsConfig)
-		}
-		if p.Unit != "" {
-			pb.Unit(p.Unit)
-		}
-		if p.Decimals != nil {
-			pb.Decimals(*p.Decimals)
-		}
-		if len(p.ReduceCalcs) > 0 {
-			pb.Footer(common.NewTableFooterOptionsBuilder().
-				Show(true).
-				Reducer(p.ReduceCalcs))
-		}
-		return pb
-
-	default:
-		pb := dashboard.NewPanelBuilder().
-			Type(p.Type).
-			Title(p.Title).
-			Targets(targets)
-		if p.Description != "" {
-			pb.Description(p.Description)
-		}
-		if p.GridPos.H > 0 {
-			pb.GridPos(p.GridPos)
-		}
-		if p.Unit != "" {
-			pb.Unit(p.Unit)
-		}
-		if thresholdsConfig != nil {
-			pb.Thresholds(thresholdsConfig)
-		}
-		if p.Decimals != nil {
-			pb.Decimals(*p.Decimals)
-		}
-		return pb
-	}
-}
 
 func buildReduceOptions(p *PanelEntry) *common.ReduceDataOptionsBuilder {
 	if len(p.ReduceCalcs) == 0 {
@@ -1398,19 +1104,3 @@ func writePanelBands(b *strings.Builder, panels []*PanelEntry) {
 	}
 }
 
-func buildLegend(p *PanelEntry) *common.VizLegendOptionsBuilder {
-	if p.LegendDisplayMode == "" && p.LegendPlacement == "" && len(p.ReduceCalcs) == 0 {
-		return nil
-	}
-	lb := common.NewVizLegendOptionsBuilder()
-	if p.LegendDisplayMode != "" {
-		lb.DisplayMode(common.LegendDisplayMode(p.LegendDisplayMode))
-	}
-	if p.LegendPlacement != "" {
-		lb.Placement(common.LegendPlacement(p.LegendPlacement))
-	}
-	if len(p.ReduceCalcs) > 0 {
-		lb.Calcs(p.ReduceCalcs)
-	}
-	return lb
-}
