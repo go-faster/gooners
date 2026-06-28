@@ -131,6 +131,51 @@ func TestExecHandler_SudoPasswordProvider(t *testing.T) {
 	require.Equal(t, "ok", out.Stdout)
 }
 
+func TestExecHandler_StdinFile(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	stdinPath := filepath.Join(root, "stdin.txt")
+	require.NoError(t, os.WriteFile(stdinPath, []byte("hello from file"), 0o600))
+
+	p := mockCorePool{
+		exec: func(_ context.Context, r session.ExecRequest) session.ExecResponse {
+			require.Equal(t, "session-1", r.SessionID)
+			require.Equal(t, "cat", r.Command)
+			require.Equal(t, "hello from file", r.Stdin)
+			return session.ExecResponse{Stdout: r.Stdin}
+		},
+	}
+
+	_, out, err := execHandler(p, false, nil, slog.Default())(
+		context.Background(), &mcp.CallToolRequest{}, execParams{SessionID: "session-1", Command: "cat", StdinFile: stdinPath},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "hello from file", out.Stdout)
+}
+
+func TestExecHandler_StdinFileOutsideWorkingDirectory(t *testing.T) {
+	t.Chdir(t.TempDir())
+	stdinPath := filepath.Join(t.TempDir(), "stdin.txt")
+	require.NoError(t, os.WriteFile(stdinPath, []byte("secret"), 0o600))
+
+	_, _, err := execHandler(mockCorePool{}, false, nil, slog.Default())(
+		context.Background(), &mcp.CallToolRequest{}, execParams{SessionID: "session-1", Command: "cat", StdinFile: stdinPath},
+	)
+	require.ErrorContains(t, err, "within working directory")
+}
+
+func TestExecHandler_StdinMutuallyExclusive(t *testing.T) {
+	_, _, err := execHandler(mockCorePool{}, false, nil, slog.Default())(
+		context.Background(), &mcp.CallToolRequest{}, execParams{
+			SessionID: "session-1",
+			Command:   "cat",
+			Stdin:     "inline",
+			StdinFile: filepath.Join(t.TempDir(), "stdin.txt"),
+		},
+	)
+	require.ErrorContains(t, err, "mutually exclusive")
+}
+
 func TestOnceHandler_ClosesSession(t *testing.T) {
 	closed := false
 	p := mockCorePool{

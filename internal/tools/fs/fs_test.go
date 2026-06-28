@@ -406,7 +406,7 @@ func TestWithinDir(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := withinDir(root, tt.path)
+			got, err := WithinDir(root, tt.path)
 			if tt.wantErr {
 				require.Error(t, err)
 				return

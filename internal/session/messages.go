@@ -57,6 +57,7 @@ type ExecRequest struct {
 	Description        string
 	DescriptionComment bool
 	Cwd                string
+	Stdin              string
 	Sudo               bool
 	SudoPassword       string
 	resp               chan<- ExecResponse

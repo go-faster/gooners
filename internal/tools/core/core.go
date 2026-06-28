@@ -17,6 +17,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/session"
+	toolfs "github.com/go-faster/gooners/internal/tools/fs"
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
@@ -243,6 +244,8 @@ func listMachinesHandler() mcp.ToolHandlerFor[struct{}, mcputil.MachinesResult] 
 type execParams struct {
 	SessionID    string `json:"session_id" jsonschema:"The ID of the SSH session"`
 	Command      string `json:"command" jsonschema:"Command to execute"`
+	Stdin        string `json:"stdin,omitempty" jsonschema:"Optional data to pass to the command's standard input"`
+	StdinFile    string `json:"stdin_file,omitempty" jsonschema:"Optional local file path to read and pass to the command's standard input"`
 	Description  string `json:"description,omitempty" jsonschema:"Optional description of what this command will do (appended as a comment)"`
 	Cwd          string `json:"cwd,omitempty" jsonschema:"Working directory for the command"`
 	TimeoutSec   int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
@@ -256,6 +259,10 @@ func execHandler(p corePool, sudo bool, passwords PasswordProvider, logger *slog
 		}
 		if len(args.Command) > 50000 {
 			return nil, mcputil.ExecResult{}, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
+		}
+		stdin, err := loadStdin(args.Stdin, args.StdinFile)
+		if err != nil {
+			return nil, mcputil.ExecResult{}, err
 		}
 		sudoPwd := args.SudoPassword
 		if sudoPwd == "" && sudo && passwords != nil {
@@ -286,6 +293,7 @@ func execHandler(p corePool, sudo bool, passwords PasswordProvider, logger *slog
 		res := p.Exec(execCtx, session.ExecRequest{
 			SessionID:          args.SessionID,
 			Command:            args.Command,
+			Stdin:              stdin,
 			Description:        args.Description,
 			DescriptionComment: true,
 			Cwd:                args.Cwd,
@@ -304,6 +312,8 @@ func execHandler(p corePool, sudo bool, passwords PasswordProvider, logger *slog
 type onceParams struct {
 	Machine     string `json:"machine" jsonschema:"Host to connect to"`
 	Command     string `json:"command" jsonschema:"Command to execute"`
+	Stdin       string `json:"stdin,omitempty" jsonschema:"Optional data to pass to the command's standard input"`
+	StdinFile   string `json:"stdin_file,omitempty" jsonschema:"Optional local file path to read and pass to the command's standard input"`
 	Description string `json:"description,omitempty" jsonschema:"Optional description of what this command will do (appended as a comment)"`
 	Cwd         string `json:"cwd,omitempty" jsonschema:"Working directory for the command"`
 	TimeoutSec  int    `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds"`
@@ -316,6 +326,10 @@ func onceHandler(p corePool) mcp.ToolHandlerFor[onceParams, mcputil.ExecResult] 
 		}
 		if len(args.Command) > 50000 {
 			return nil, mcputil.ExecResult{}, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
+		}
+		stdin, err := loadStdin(args.Stdin, args.StdinFile)
+		if err != nil {
+			return nil, mcputil.ExecResult{}, err
 		}
 		timeout := p.CommandTimeout()
 		if args.TimeoutSec > 0 {
@@ -333,12 +347,50 @@ func onceHandler(p corePool) mcp.ToolHandlerFor[onceParams, mcputil.ExecResult] 
 		res := p.Exec(onceCtx, session.ExecRequest{
 			SessionID:          openRes.ID,
 			Command:            args.Command,
+			Stdin:              stdin,
 			Description:        args.Description,
 			DescriptionComment: true,
 			Cwd:                args.Cwd,
 		})
 		return execResult(res)
 	}
+}
+
+const maxStdinBytes = 10 * 1024 * 1024
+
+func loadStdin(stdin, stdinFile string) (string, error) {
+	if stdin != "" && stdinFile != "" {
+		return "", fmt.Errorf("stdin and stdin_file are mutually exclusive")
+	}
+	if len(stdin) > maxStdinBytes {
+		return "", fmt.Errorf("stdin exceeds maximum allowed length of %d bytes", maxStdinBytes)
+	}
+	if stdinFile == "" {
+		return stdin, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory: %w", err)
+	}
+	stdinFile, err = toolfs.WithinDir(cwd, stdinFile)
+	if err != nil {
+		return "", fmt.Errorf("stdin_file must be within working directory: %w", err)
+	}
+	info, err := os.Stat(stdinFile)
+	if err != nil {
+		return "", fmt.Errorf("stat stdin_file: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("stdin_file is a directory: %s", stdinFile)
+	}
+	if info.Size() > maxStdinBytes {
+		return "", fmt.Errorf("stdin_file exceeds maximum allowed size of %d bytes", maxStdinBytes)
+	}
+	data, err := os.ReadFile(stdinFile) //nolint:gosec // operator-provided local input file for SSH command stdin
+	if err != nil {
+		return "", fmt.Errorf("read stdin_file: %w", err)
+	}
+	return string(data), nil
 }
 
 //nolint:unparam // satisfies mcp.ToolHandlerFor signature pattern even if unused

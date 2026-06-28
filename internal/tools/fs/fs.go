@@ -25,8 +25,12 @@ const (
 	maxGrepLines = 10_000
 )
 
-// withinDir resolves p to an absolute path and verifies it is inside root.
-func withinDir(root, p string) (string, error) {
+// WithinDir resolves p to an absolute path and verifies it is inside root.
+func WithinDir(root, p string) (string, error) {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolving root: %w", err)
+	}
 	abs, err := filepath.Abs(p)
 	if err != nil {
 		return "", fmt.Errorf("resolving path: %w", err)
@@ -35,7 +39,7 @@ func withinDir(root, p string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving relative path: %w", err)
 	}
-	if strings.HasPrefix(rel, "..") {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("path %q is outside allowed upload directory %q", p, root)
 	}
 	return abs, nil
@@ -462,7 +466,7 @@ func uploadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[upl
 		}
 		uploadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		safePath, err := withinDir(workDir, args.LocalPath)
+		safePath, err := WithinDir(workDir, args.LocalPath)
 		if err != nil {
 			return nil, mcputil.UploadResult{}, err
 		}
@@ -572,7 +576,7 @@ func downloadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[d
 		}
 		downloadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		safePath, err := withinDir(workDir, args.LocalPath)
+		safePath, err := WithinDir(workDir, args.LocalPath)
 		if err != nil {
 			return nil, mcputil.DownloadResult{}, err
 		}
