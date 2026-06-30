@@ -3,8 +3,10 @@ package gateway
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"regexp"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 	"github.com/go-faster/errors"
@@ -34,6 +36,8 @@ type UpstreamConfig struct {
 	Headers map[string]string `toml:"headers"`
 	Env     map[string]string `toml:"env"`
 	Tools   ToolsConfig       `toml:"tools"`
+	// Redact overrides the global redact config when present; nil inherits the global [redact] section.
+	Redact *RedactConfig `toml:"redact"`
 }
 
 // ToolsConfig controls tool filtering, namespacing and description trimming for an upstream.
@@ -148,6 +152,11 @@ func (c *Config) Validate() error {
 				}
 			}
 		}
+		if u.Redact != nil && u.Redact.Enabled && len(u.Redact.Patterns) > 0 {
+			if _, err := NewRedactor(u.Redact.Patterns, u.Redact.MinEntropy); err != nil {
+				joinErrs = append(joinErrs, errors.Wrapf(err, "upstream %q: compile redact patterns", u.Name))
+			}
+		}
 	}
 	if len(joinErrs) > 0 {
 		return errors.Join(joinErrs...)
@@ -155,6 +164,25 @@ func (c *Config) Validate() error {
 	if c.Redact.Enabled && len(c.Redact.Patterns) > 0 {
 		if _, err := NewRedactor(c.Redact.Patterns, c.Redact.MinEntropy); err != nil {
 			return errors.Wrap(err, "compile redact patterns")
+		}
+	}
+	if c.Telemetry.Enabled {
+		if c.Telemetry.OTLPEndpoint == "" && c.Telemetry.MetricsAddr == "" {
+			return fmt.Errorf("telemetry: enabled but no otlp_endpoint or metrics_addr configured")
+		}
+		if c.Telemetry.OTLPEndpoint != "" {
+			u, err := url.Parse(c.Telemetry.OTLPEndpoint)
+			if err != nil {
+				return fmt.Errorf("telemetry: invalid otlp_endpoint %q: %w", c.Telemetry.OTLPEndpoint, err)
+			}
+			if u.Scheme == "" || u.Host == "" {
+				return fmt.Errorf("telemetry: otlp_endpoint %q must be a full URL with scheme and host", c.Telemetry.OTLPEndpoint)
+			}
+		}
+		if c.Telemetry.MetricsAddr != "" {
+			if !strings.Contains(c.Telemetry.MetricsAddr, ":") || strings.HasSuffix(c.Telemetry.MetricsAddr, ":") {
+				return fmt.Errorf("telemetry: invalid metrics_addr %q", c.Telemetry.MetricsAddr)
+			}
 		}
 	}
 	return nil
