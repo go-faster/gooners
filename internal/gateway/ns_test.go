@@ -29,3 +29,15 @@ func TestDetectCollisions_DistinctPrefix(t *testing.T) {
 	err := DetectCollisions(map[string]string{"a": "a.", "b": "b."}, map[string][]string{"a": {"x"}, "b": {"x"}})
 	require.NoError(t, err)
 }
+
+func TestDetectCollisions_Prompts(t *testing.T) {
+	// Prompts use DetectCollisions with empty prefix map (namespaced via NamespaceName before calling).
+	err := DetectCollisions(map[string]string{}, map[string][]string{"a": {"p1"}, "b": {"p2"}})
+	require.NoError(t, err)
+
+	err = DetectCollisions(map[string]string{}, map[string][]string{"a": {"p"}, "b": {"p"}})
+	require.Error(t, err)
+	var ce *CollisionsError
+	require.ErrorAs(t, err, &ce)
+	require.Len(t, ce.Conflicts, 2)
+}
