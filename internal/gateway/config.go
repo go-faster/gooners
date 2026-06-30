@@ -16,6 +16,7 @@ type Config struct {
 	Upstreams []UpstreamConfig `toml:"upstream"`
 	Secrets   []SecretConfig   `toml:"secret"`
 	Telemetry TelemetryConfig  `toml:"telemetry"`
+	Redact    RedactConfig     `toml:"redact"`
 }
 
 // ServerConfig configures the gateway's own MCP server identity.
@@ -57,6 +58,13 @@ type TelemetryConfig struct {
 	Enabled      bool   `toml:"enabled"`
 	OTLPEndpoint string `toml:"otlp_endpoint"`
 	MetricsAddr  string `toml:"metrics_addr"`
+}
+
+// RedactConfig configures output secret redaction applied to all tool text content.
+type RedactConfig struct {
+	Enabled    bool     `toml:"enabled"`
+	Patterns   []string `toml:"patterns"`
+	MinEntropy float64  `toml:"min_entropy"`
 }
 
 // Load reads a TOML file, decodes it, applies defaults and validates.
@@ -143,6 +151,11 @@ func (c *Config) Validate() error {
 	}
 	if len(joinErrs) > 0 {
 		return errors.Join(joinErrs...)
+	}
+	if c.Redact.Enabled && len(c.Redact.Patterns) > 0 {
+		if _, err := NewRedactor(c.Redact.Patterns, c.Redact.MinEntropy); err != nil {
+			return errors.Wrap(err, "compile redact patterns")
+		}
 	}
 	return nil
 }

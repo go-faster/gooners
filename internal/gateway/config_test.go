@@ -122,3 +122,57 @@ func TestConfigValidateSecretRefEmptyEnvHeaders(t *testing.T) {
 	}
 	require.NoError(t, cfg.Validate())
 }
+
+func TestConfig_Redact_InvalidPattern(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[redact]
+enabled = true
+patterns = ["(invalid"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "compile")
+}
+
+func TestConfig_Redact_Disabled_ByDefault(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.False(t, c.Redact.Enabled)
+	require.Nil(t, c.Redact.Patterns)
+}
+
+func TestConfig_Redact_ValidPattern(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[redact]
+enabled = true
+patterns = ["(?i)secret"]
+min_entropy = 3.0
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.True(t, c.Redact.Enabled)
+	require.Equal(t, []string{"(?i)secret"}, c.Redact.Patterns)
+	require.Equal(t, 3.0, c.Redact.MinEntropy)
+}
