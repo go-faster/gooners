@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/gateway"
@@ -29,7 +31,7 @@ func main() {
 	}
 	defer cleanup()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
 	cfg, err := gateway.Load(*cfgPath)
@@ -43,7 +45,7 @@ func main() {
 		slog.Error("new gateway", "err", err)
 		os.Exit(1)
 	}
-	_ = gw.Close(ctx)
+	defer func() { _ = gw.Close(ctx) }()
 
 	if err := gw.Build(ctx); err != nil {
 		slog.Error("build gateway", "err", err)

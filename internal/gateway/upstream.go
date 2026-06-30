@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"path"
+	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,26 +15,30 @@ import (
 
 // Upstream represents one configured upstream MCP server (not yet connected).
 type Upstream struct {
-	cfg       UpstreamConfig
-	client    *mcp.Client
-	session   *mcp.ClientSession
-	resolver  SecretResolver
-	redactor  *Redactor
-	logger    *slog.Logger
-	transport mcp.Transport
-	cleanup   func() error
+	cfg            UpstreamConfig
+	client         *mcp.Client
+	session        *mcp.ClientSession
+	resolver       SecretResolver
+	logger         *slog.Logger
+	transport      mcp.Transport
+	cleanup        func() error
+	connectTimeout time.Duration
 }
 
 // UpstreamOptions configures optional dependencies for an Upstream.
 type UpstreamOptions struct {
-	Logger   *slog.Logger
-	Resolver SecretResolver
-	Redactor *Redactor
+	Logger            *slog.Logger
+	Resolver          SecretResolver
+	OnToolListChanged func(ctx context.Context, upstreamName string) error
+	ConnectTimeout    time.Duration
 }
 
 func (o *UpstreamOptions) setDefaults() {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
+	}
+	if o.ConnectTimeout == 0 {
+		o.ConnectTimeout = 10 * time.Second
 	}
 }
 
@@ -41,13 +46,20 @@ func (o *UpstreamOptions) setDefaults() {
 func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 	opts.setDefaults()
 	u := &Upstream{
-		cfg:      cfg,
-		resolver: opts.Resolver,
-		redactor: opts.Redactor,
-		logger:   opts.Logger,
+		cfg:            cfg,
+		resolver:       opts.Resolver,
+		logger:         opts.Logger,
+		connectTimeout: opts.ConnectTimeout,
 	}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
-	u.client = mcp.NewClient(impl, &mcp.ClientOptions{Logger: opts.Logger})
+	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
+		Logger: opts.Logger,
+		ToolListChangedHandler: func(_ context.Context, _ *mcp.ToolListChangedRequest) {
+			if opts.OnToolListChanged != nil {
+				_ = opts.OnToolListChanged(context.Background(), cfg.Name)
+			}
+		},
+	})
 	return u, nil
 }
 
@@ -59,8 +71,17 @@ func (u *Upstream) Connect(ctx context.Context) error {
 	}
 	u.transport = tr
 	u.cleanup = cl
-	sess, err := u.client.Connect(ctx, tr, nil)
+	timeout := u.connectTimeout
+	if timeout == 0 {
+		timeout = 10 * time.Second
+	}
+	cctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	sess, err := u.client.Connect(cctx, tr, nil)
 	if err != nil {
+		u.transport = nil
+		u.cleanup = nil
+		u.session = nil
 		return errors.Wrap(err, "connect")
 	}
 	u.session = sess
@@ -70,13 +91,10 @@ func (u *Upstream) Connect(ctx context.Context) error {
 // init wires the default BuildTransport using the transport package.
 func init() {
 	BuildTransport = func(ctx context.Context, cfg UpstreamConfig, r SecretResolver) (mcp.Transport, func() error, error) {
-		resolve := func(name string) (string, error) {
-			if r == nil {
-				return "", ErrSecretNotFound
-			}
-			return r.Resolve(ctx, name)
+		interp := func(s string) (string, error) {
+			return Interpolate(s, r)
 		}
-		return gwtransport.Build(ctx, cfg.Kind, cfg.Command, cfg.URL, cfg.Env, cfg.Headers, resolve)
+		return gwtransport.Build(ctx, cfg.Kind, cfg.Command, cfg.URL, cfg.Env, cfg.Headers, interp)
 	}
 }
 
@@ -113,23 +131,12 @@ func (u *Upstream) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 	return res.Tools, nil
 }
 
-// CallTool forwards and redacts text content in the result.
+// CallTool forwards the call to the upstream session.
 func (u *Upstream) CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
 	if u.session == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := u.session.CallTool(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-	if u.redactor != nil && res != nil {
-		for _, c := range res.Content {
-			if tc, ok := c.(*mcp.TextContent); ok {
-				tc.Text = u.redactor.Redact(tc.Text)
-			}
-		}
-	}
-	return res, nil
+	return u.session.CallTool(ctx, params)
 }
 
 // BuildTools applies prefix, allow/deny globs (via path.Match), and desc trim.
