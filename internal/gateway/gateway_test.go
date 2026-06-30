@@ -610,3 +610,47 @@ func TestGateway_Upstream_ListMethods(t *testing.T) {
 
 	_ = u.Close(t.Context())
 }
+
+func TestGateway_RedactsToolOutput(t *testing.T) {
+	upServerTr, upClientTr := mcp.NewInMemoryTransports()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "up", Version: "0"}, nil)
+	srv.AddTool(&mcp.Tool{Name: "echo", Description: "echo", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "password=hunter2 token=abc"}}}, nil
+	})
+	go func() { _ = srv.Run(t.Context(), upServerTr) }()
+
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{
+			{Name: "u1", Kind: "stdio", Command: []string{"ignored"}},
+		},
+		Redact: RedactConfig{Enabled: true},
+	}
+
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+
+	u := newUpstreamWithInMemoryClient(cfg.Upstreams[0], upClientTr, g.onToolListChanged)
+	g.upstreams = []*Upstream{u}
+
+	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	require.NoError(t, err)
+	u.session = sess
+
+	require.NoError(t, g.Build(t.Context()))
+	t.Cleanup(func() { _ = g.Close(t.Context()) })
+
+	gwServerTr, gwClientTr := mcp.NewInMemoryTransports()
+	go func() { _ = g.Server().Run(t.Context(), gwServerTr) }()
+
+	downClient := mcp.NewClient(&mcp.Implementation{Name: "down", Version: "0"}, nil)
+	downSess, err := downClient.Connect(t.Context(), gwClientTr, nil)
+	require.NoError(t, err)
+	defer downSess.Close()
+
+	res, err := downSess.CallTool(t.Context(), &mcp.CallToolParams{Name: "echo"})
+	require.NoError(t, err)
+	require.Len(t, res.Content, 1)
+	tc := res.Content[0].(*mcp.TextContent)
+	require.Equal(t, "password=[REDACTED] token=[REDACTED]", tc.Text)
+}

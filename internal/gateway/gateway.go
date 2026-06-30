@@ -37,10 +37,11 @@ type Gateway struct {
 	resourceRegistry         featureRegistry[*mcp.Resource]
 	resourceTemplateRegistry featureRegistry[*mcp.ResourceTemplate]
 
-	logger  *zap.Logger
-	slogger *slog.Logger
-	mp      metric.MeterProvider
-	tp      trace.TracerProvider
+	logger   *zap.Logger
+	slogger  *slog.Logger
+	mp       metric.MeterProvider
+	tp       trace.TracerProvider
+	redactor *Redactor
 }
 
 type upstreamRegistry struct {
@@ -219,6 +220,15 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		return nil, err
 	}
 
+	var redactor *Redactor
+	if cfg.Redact.Enabled {
+		var err error
+		redactor, err = NewRedactor(cfg.Redact.Patterns, cfg.Redact.MinEntropy)
+		if err != nil {
+			return nil, errors.Wrap(err, "create redactor")
+		}
+	}
+
 	g := &Gateway{
 		cfg:      cfg,
 		resolver: res,
@@ -237,6 +247,7 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		tp:                       opts.TracerProvider,
 		logger:                   opts.Logger,
 		slogger:                  opts.Slogger,
+		redactor:                 redactor,
 	}
 	for _, uc := range cfg.Upstreams {
 		if g.registry.upstreamRegistered[uc.Name] == nil {
@@ -536,6 +547,9 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 				g.slogger.Error("failed to create telemetry middleware", "error", err)
 			} else {
 				h = mw
+			}
+			if g.redactor != nil {
+				h = middleware.Redact(g.redactor.Redact)(h)
 			}
 			g.server.AddTool(final, h)
 			g.registry.finalToUpstream[name] = u.cfg.Name
