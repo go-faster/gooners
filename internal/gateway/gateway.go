@@ -8,7 +8,6 @@ package gateway
 import (
 	"context"
 	"log/slog"
-	"slices"
 	"sync"
 
 	"github.com/go-faster/errors"
@@ -17,35 +16,19 @@ import (
 	"github.com/go-faster/gooners/internal/mcputil"
 )
 
-// ToolMiddleware is the type for call-time tool middlewares (defined here to avoid subpackage import in this file).
-type ToolMiddleware = func(mcp.ToolHandler) mcp.ToolHandler
-
-func chain(mws ...ToolMiddleware) ToolMiddleware {
-	return func(next mcp.ToolHandler) mcp.ToolHandler {
-		for _, mw := range slices.Backward(mws) {
-			next = mw(next)
-		}
-		return next
-	}
-}
-
 // Gateway aggregates upstreams and re-exports their tools on a local server.
 type Gateway struct {
-	cfg         *Config
-	server      *mcp.Server
-	upstreams   []*Upstream
-	resolver    SecretResolver
-	redactor    *Redactor
-	logger      *slog.Logger
-	middlewares []ToolMiddleware
-	mu          sync.RWMutex
+	cfg       *Config
+	server    *mcp.Server
+	upstreams []*Upstream
+	resolver  SecretResolver
+	logger    *slog.Logger
+	mu        sync.RWMutex
 }
 
 // Options for New.
 type Options struct {
-	Logger      *slog.Logger
-	Middlewares []ToolMiddleware
-	Redactor    *Redactor
+	Logger *slog.Logger
 }
 
 func (o *Options) setDefaults() {
@@ -54,29 +37,24 @@ func (o *Options) setDefaults() {
 	}
 }
 
-// New builds the resolver, redactor, upstream objects (not connected) and local server.
+// New builds the resolver, upstream objects (not connected) and local server.
 func New(cfg *Config, opts Options) (*Gateway, error) {
 	opts.setDefaults()
 	res, err := NewSecretResolver(cfg.Secrets)
 	if err != nil {
 		return nil, err
 	}
-	red, err := NewRedactor(nil, 0) // TODO: from config if needed
-	if err != nil {
-		return nil, err
-	}
-	if opts.Redactor != nil {
-		red = opts.Redactor
-	}
 	g := &Gateway{
-		cfg:         cfg,
-		resolver:    res,
-		redactor:    red,
-		logger:      opts.Logger,
-		middlewares: opts.Middlewares,
+		cfg:      cfg,
+		resolver: res,
+		logger:   opts.Logger,
 	}
 	for _, uc := range cfg.Upstreams {
-		u, err := NewUpstream(uc, UpstreamOptions{Logger: opts.Logger, Resolver: res, Redactor: red})
+		u, err := NewUpstream(uc, UpstreamOptions{
+			Logger:            opts.Logger,
+			Resolver:          res,
+			OnToolListChanged: g.onToolListChanged,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -90,13 +68,18 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 	return g, nil
 }
 
+func (g *Gateway) onToolListChanged(_ context.Context, upstreamName string) error {
+	g.logger.Warn("tools changed, re-sync not implemented", "upstream", upstreamName)
+	return nil
+}
+
 // Build connects upstreams, lists tools, checks collisions, registers handlers.
 func (g *Gateway) Build(ctx context.Context) error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-
-	prefixes := map[string]string{}
-	toolSets := map[string][]string{}
+	type listed struct {
+		u     *Upstream
+		tools []*mcp.Tool
+	}
+	var listedTools []listed
 
 	for _, u := range g.upstreams {
 		if err := u.Connect(ctx); err != nil {
@@ -108,24 +91,17 @@ func (g *Gateway) Build(ctx context.Context) error {
 			_ = g.Close(ctx)
 			return errors.Wrapf(err, "list tools %s", u.cfg.Name)
 		}
-		for _, t := range tools {
+		listedTools = append(listedTools, listed{u: u, tools: tools})
+	}
+
+	prefixes := map[string]string{}
+	toolSets := map[string][]string{}
+	for _, lt := range listedTools {
+		u := lt.u
+		for _, t := range lt.tools {
 			toolSets[u.cfg.Name] = append(toolSets[u.cfg.Name], t.Name)
 		}
 		prefixes[u.cfg.Name] = u.cfg.Tools.Prefix
-
-		// subscribe to listChanged (scaffold: just log)
-		// We use client-side handler registration via middleware or opts; simplest is to wrap.
-		// For scaffold we log on the client logger when we receive it.
-		if u.client != nil {
-			u.client.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
-				return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
-					if method == "notifications/tools/list_changed" {
-						g.logger.Warn("tools changed, re-sync not implemented")
-					}
-					return next(ctx, method, req)
-				}
-			})
-		}
 	}
 
 	if err := DetectCollisions(prefixes, toolSets); err != nil {
@@ -133,9 +109,10 @@ func (g *Gateway) Build(ctx context.Context) error {
 		return err
 	}
 
-	for _, u := range g.upstreams {
-		rawTools, _ := u.ListTools(ctx)
-		for _, rt := range rawTools {
+	g.mu.Lock()
+	for _, lt := range listedTools {
+		u := lt.u
+		for _, rt := range lt.tools {
 			if !u.allowed(rt.Name) {
 				continue
 			}
@@ -151,10 +128,10 @@ func (g *Gateway) Build(ctx context.Context) error {
 			h := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return u.CallTool(ctx, &mcp.CallToolParams{Name: orig, Arguments: req.Params.Arguments})
 			}
-			h = chain(g.middlewares...)(h)
 			g.server.AddTool(final, h)
 		}
 	}
+	g.mu.Unlock()
 	return nil
 }
 

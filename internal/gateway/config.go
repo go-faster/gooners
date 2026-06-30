@@ -4,6 +4,7 @@ package gateway
 import (
 	"fmt"
 	"os"
+	"regexp"
 
 	"github.com/BurntSushi/toml"
 	"github.com/go-faster/errors"
@@ -82,6 +83,8 @@ func (c *Config) setDefaults() {
 	}
 }
 
+var secretRefRe = regexp.MustCompile(`\{\s*secret\s*:\s*([A-Za-z0-9_.-]+)\s*\}`)
+
 // Validate checks required fields and uniqueness constraints.
 func (c *Config) Validate() error {
 	if len(c.Upstreams) == 0 {
@@ -117,6 +120,29 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("secret name %q duplicated", s.Name)
 		}
 		seenSec[s.Name] = true
+	}
+
+	var joinErrs []error
+	for _, u := range c.Upstreams {
+		for _, v := range u.Env {
+			for _, m := range secretRefRe.FindAllStringSubmatch(v, -1) {
+				name := m[1]
+				if !seenSec[name] {
+					joinErrs = append(joinErrs, fmt.Errorf("upstream %q: secret %q referenced in env/headers is not defined", u.Name, name))
+				}
+			}
+		}
+		for _, v := range u.Headers {
+			for _, m := range secretRefRe.FindAllStringSubmatch(v, -1) {
+				name := m[1]
+				if !seenSec[name] {
+					joinErrs = append(joinErrs, fmt.Errorf("upstream %q: secret %q referenced in env/headers is not defined", u.Name, name))
+				}
+			}
+		}
+	}
+	if len(joinErrs) > 0 {
+		return errors.Join(joinErrs...)
 	}
 	return nil
 }

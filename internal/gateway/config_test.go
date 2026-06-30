@@ -82,3 +82,43 @@ command = ["echo", "hi"]
 	require.Len(t, c.Upstreams, 1)
 	require.Equal(t, "u1", c.Upstreams[0].Name)
 }
+
+func TestConfigValidateSecretRef(t *testing.T) {
+	cfg := Config{
+		Upstreams: []UpstreamConfig{{
+			Name:    "u1",
+			Kind:    "stdio",
+			Command: []string{"x"},
+			Env:     map[string]string{"A": "{secret:good}"},
+		}},
+		Secrets: []SecretConfig{{Name: "good"}},
+	}
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfigValidateSecretRefUnknown(t *testing.T) {
+	cfg := Config{
+		Upstreams: []UpstreamConfig{{
+			Name:    "u1",
+			Kind:    "stdio",
+			Command: []string{"x"},
+			Env:     map[string]string{"A": "{secret:missing}"},
+		}},
+		Secrets: []SecretConfig{{Name: "other"}},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "upstream \"u1\"")
+	require.Contains(t, err.Error(), "secret \"missing\"")
+}
+
+func TestConfigValidateSecretRefEmptyEnvHeaders(t *testing.T) {
+	cfg := Config{
+		Upstreams: []UpstreamConfig{{
+			Name:    "u1",
+			Kind:    "stdio",
+			Command: []string{"x"},
+		}},
+	}
+	require.NoError(t, cfg.Validate())
+}

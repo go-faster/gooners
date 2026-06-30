@@ -4,42 +4,62 @@ package gatewaytransport
 import (
 	"context"
 	"net/http"
+	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Build constructs a transport. resolve is called for {secret:NAME} in env/headers.
-func Build(_ context.Context, kind string, command []string, url string, env, headers map[string]string, resolve func(string) (string, error)) (mcp.Transport, func() error, error) {
+// Build constructs a transport. interpolate is called for env/headers values (supports {secret:NAME}).
+func Build(_ context.Context, kind string, command []string, url string, env, headers map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
 	switch kind {
 	case "stdio":
-		return buildStdio(command, env, resolve)
+		return buildStdio(command, env, interpolate)
 	case "http":
-		return buildHTTP(url, headers, resolve)
+		return buildHTTP(url, headers, interpolate)
 	case "sse":
-		return buildSSE(url, headers, resolve)
+		return buildSSE(url, headers, interpolate)
 	default:
 		return nil, nil, errors.Errorf("unknown upstream kind %q", kind)
 	}
 }
 
-func buildStdio(command []string, env map[string]string, resolve func(string) (string, error)) (mcp.Transport, func() error, error) {
+func buildStdio(command []string, env map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
 	if len(command) == 0 {
 		return nil, nil, errors.New("empty command")
 	}
 	cmd := exec.Command(command[0], command[1:]...) //nolint:gosec // G204: command comes from operator TOML config (stdio upstream)
 	if len(env) > 0 {
-		out := make([]string, 0, len(env))
+		overrides := map[string]string{}
 		for k, v := range env {
-			iv := v
-			if resolve != nil {
-				iv = mustResolve(v, resolve)
+			if interpolate != nil {
+				iv, err := interpolate(v)
+				if err != nil {
+					return nil, nil, errors.Wrapf(err, "interpolate env %q", v)
+				}
+				overrides[k] = iv
+			} else {
+				overrides[k] = v
 			}
-			out = append(out, k+"="+iv)
 		}
-		cmd.Env = out
+		base := os.Environ()
+		keep := make([]string, 0, len(base))
+		for _, kv := range base {
+			if idx := strings.IndexByte(kv, '='); idx > 0 {
+				k := kv[:idx]
+				if _, ok := overrides[k]; ok {
+					continue
+				}
+			}
+			keep = append(keep, kv)
+		}
+		for k, v := range overrides {
+			keep = append(keep, k+"="+v)
+		}
+		cmd.Env = keep
 	}
 	cleanup := func() error {
 		if cmd.Process != nil {
@@ -50,34 +70,38 @@ func buildStdio(command []string, env map[string]string, resolve func(string) (s
 	return &mcp.CommandTransport{Command: cmd}, cleanup, nil
 }
 
-func buildHTTP(url string, headers map[string]string, resolve func(string) (string, error)) (mcp.Transport, func() error, error) {
+func buildHTTP(url string, headers map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
 	cl := &http.Client{Timeout: 60 * time.Second}
 	if len(headers) > 0 {
-		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, resolve: resolve}
+		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, interpolate: interpolate}
 	}
 	return &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: cl}, func() error { return nil }, nil
 }
 
-func buildSSE(url string, headers map[string]string, resolve func(string) (string, error)) (mcp.Transport, func() error, error) {
+func buildSSE(url string, headers map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
 	cl := &http.Client{Timeout: 60 * time.Second}
 	if len(headers) > 0 {
-		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, resolve: resolve}
+		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, interpolate: interpolate}
 	}
 	return &mcp.SSEClientTransport{Endpoint: url, HTTPClient: cl}, func() error { return nil }, nil
 }
 
 type headerRT struct {
-	base    http.RoundTripper
-	headers map[string]string
-	resolve func(string) (string, error)
+	base        http.RoundTripper
+	headers     map[string]string
+	interpolate func(string) (string, error)
 }
 
 func (h *headerRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
 	for k, v := range h.headers {
 		iv := v
-		if h.resolve != nil {
-			iv = mustResolve(v, h.resolve)
+		if h.interpolate != nil {
+			var err error
+			iv, err = h.interpolate(v)
+			if err != nil {
+				return nil, errors.Wrapf(err, "interpolate header %q", v)
+			}
 		}
 		req.Header.Set(k, iv)
 	}
@@ -86,20 +110,4 @@ func (h *headerRT) RoundTrip(req *http.Request) (*http.Response, error) {
 		base = http.DefaultTransport
 	}
 	return base.RoundTrip(req)
-}
-
-func mustResolve(v string, r func(string) (string, error)) string {
-	// simplistic: only support top level {secret:NAME} for headers/env in this scaffold
-	// full regex lives in secret.go; here we delegate via the passed func when the whole value is a secret ref
-	if r == nil {
-		return v
-	}
-	// try a very small parser for the common case {secret:NAME}
-	if len(v) > 9 && v[:9] == "{secret:" && v[len(v)-1] == '}' {
-		name := v[9 : len(v)-1]
-		if out, err := r(name); err == nil {
-			return out
-		}
-	}
-	return v
 }
