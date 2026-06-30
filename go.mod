@@ -8,6 +8,7 @@ tool (
 )
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/VictoriaMetrics/metricsql v0.87.2
 	github.com/go-faster/errors v0.7.1
 	github.com/go-faster/jx v1.2.0
@@ -33,7 +34,6 @@ require (
 require (
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
-	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/VictoriaMetrics/metrics v1.35.3 // indirect
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
