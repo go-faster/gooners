@@ -1,13 +1,14 @@
 // Package gateway implements an MCP gateway that proxies multiple upstream MCP servers.
 //
-// The gateway subscribes to tools/listChanged notifications from upstreams via
-// client AddReceivingMiddleware (or ToolListChangedHandler); for the scaffold
-// it only logs a warning and does not implement re-list/diffing/re-registration.
+// The gateway subscribes to tools/listChanged notifications from upstreams and
+// re-syncs by re-listing, diffing final names, and using AddTool/RemoveTools.
 package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"maps"
 	"sync"
 
 	"github.com/go-faster/errors"
@@ -24,6 +25,57 @@ type Gateway struct {
 	resolver  SecretResolver
 	logger    *slog.Logger
 	mu        sync.RWMutex
+
+	registry upstreamRegistry
+}
+
+type upstreamRegistry struct {
+	finalToUpstream    map[string]string
+	upstreamRegistered map[string]map[string]struct{}
+	registeredTools    map[string]*mcp.Tool
+}
+
+func (g *Gateway) upstreamByName(name string) *Upstream {
+	for _, u := range g.upstreams {
+		if u.cfg.Name == name {
+			return u
+		}
+	}
+	return nil
+}
+
+func toolEqual(a, b *mcp.Tool) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Name != b.Name || a.Title != b.Title || a.Description != b.Description {
+		return false
+	}
+	aj, _ := json.Marshal(a.InputSchema)
+	bj, _ := json.Marshal(b.InputSchema)
+	if !bytesEqual(aj, bj) {
+		return false
+	}
+	aj, _ = json.Marshal(a.OutputSchema)
+	bj, _ = json.Marshal(b.OutputSchema)
+	if !bytesEqual(aj, bj) {
+		return false
+	}
+	aj, _ = json.Marshal(a.Annotations)
+	bj, _ = json.Marshal(b.Annotations)
+	return bytesEqual(aj, bj)
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // Options for New.
@@ -48,6 +100,16 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		cfg:      cfg,
 		resolver: res,
 		logger:   opts.Logger,
+		registry: upstreamRegistry{
+			finalToUpstream:    make(map[string]string),
+			upstreamRegistered: make(map[string]map[string]struct{}),
+			registeredTools:    make(map[string]*mcp.Tool),
+		},
+	}
+	for _, uc := range cfg.Upstreams {
+		if g.registry.upstreamRegistered[uc.Name] == nil {
+			g.registry.upstreamRegistered[uc.Name] = make(map[string]struct{})
+		}
 	}
 	for _, uc := range cfg.Upstreams {
 		u, err := NewUpstream(uc, UpstreamOptions{
@@ -68,8 +130,27 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 	return g, nil
 }
 
-func (g *Gateway) onToolListChanged(_ context.Context, upstreamName string) error {
-	g.logger.Warn("tools changed, re-sync not implemented", "upstream", upstreamName)
+func (g *Gateway) onToolListChanged(ctx context.Context, upstreamName string) error {
+	u := g.upstreamByName(upstreamName)
+	if u == nil {
+		g.logger.Warn("tools changed for unknown upstream", "upstream", upstreamName)
+		return nil
+	}
+	tools, err := u.ListTools(ctx)
+	if err != nil {
+		g.logger.Warn("re-list tools failed", "upstream", upstreamName, "err", err)
+		return err
+	}
+	added, removed, collisions := g.registerUpstreamTools(u, tools)
+	if len(collisions) > 0 {
+		g.logger.Warn("re-sync collisions", "upstream", upstreamName, "collisions", len(collisions))
+	}
+	g.logger.Info("tools re-synced",
+		"upstream", upstreamName,
+		"added", len(added),
+		"removed", len(removed),
+		"collisions", len(collisions),
+	)
 	return nil
 }
 
@@ -109,30 +190,107 @@ func (g *Gateway) Build(ctx context.Context) error {
 		return err
 	}
 
-	g.mu.Lock()
 	for _, lt := range listedTools {
 		u := lt.u
-		for _, rt := range lt.tools {
-			if !u.allowed(rt.Name) {
-				continue
-			}
-			final := &mcp.Tool{
-				Name:         NamespaceName(u.cfg.Tools.Prefix, rt.Name),
-				Description:  TrimDescription(rt.Description, u.cfg.Tools.DescMax),
-				InputSchema:  rt.InputSchema,
-				OutputSchema: rt.OutputSchema,
-				Annotations:  rt.Annotations,
-				Title:        rt.Title,
-			}
-			orig := rt.Name
+		added, removed, collisions := g.registerUpstreamTools(u, lt.tools)
+		if len(collisions) > 0 {
+			g.logger.Warn("build collisions", "upstream", u.cfg.Name, "collisions", len(collisions))
+		}
+		g.logger.Info("tools registered",
+			"upstream", u.cfg.Name,
+			"added", len(added),
+			"removed", len(removed),
+			"collisions", len(collisions),
+		)
+	}
+	return nil
+}
+
+// Server returns the local MCP server for transport.Run.
+func (g *Gateway) Server() *mcp.Server { return g.server }
+
+func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (added, removed []string, collisions []Collision) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	if g.registry.upstreamRegistered[u.cfg.Name] == nil {
+		g.registry.upstreamRegistered[u.cfg.Name] = make(map[string]struct{})
+	}
+
+	prev := g.registry.upstreamRegistered[u.cfg.Name]
+	newSet := map[string]struct{}{}
+	toolByFinal := map[string]*mcp.Tool{}
+	rawNameByFinal := map[string]string{}
+
+	for _, rt := range rawTools {
+		if !u.allowed(rt.Name) {
+			continue
+		}
+		finalName := NamespaceName(u.cfg.Tools.Prefix, rt.Name)
+		newSet[finalName] = struct{}{}
+		toolByFinal[finalName] = &mcp.Tool{
+			Name:         finalName,
+			Description:  TrimDescription(rt.Description, u.cfg.Tools.DescMax),
+			InputSchema:  rt.InputSchema,
+			OutputSchema: rt.OutputSchema,
+			Annotations:  rt.Annotations,
+			Title:        rt.Title,
+		}
+		rawNameByFinal[finalName] = rt.Name
+	}
+
+	for name := range prev {
+		if _, still := newSet[name]; still {
+			continue
+		}
+		g.server.RemoveTools(name)
+		delete(g.registry.finalToUpstream, name)
+		delete(g.registry.registeredTools, name)
+		delete(g.registry.upstreamRegistered[u.cfg.Name], name)
+		removed = append(removed, name)
+	}
+
+	for name, final := range toolByFinal {
+		owner, owned := g.registry.finalToUpstream[name]
+		prevTool := g.registry.registeredTools[name]
+		changed := !toolEqual(prevTool, final)
+		if owned && owner != u.cfg.Name {
+			collisions = append(collisions, Collision{Upstream: owner, Tool: "", ResultName: name})
+			continue
+		}
+		if !owned || changed {
+			orig := rawNameByFinal[name]
 			h := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return u.CallTool(ctx, &mcp.CallToolParams{Name: orig, Arguments: req.Params.Arguments})
 			}
 			g.server.AddTool(final, h)
+			g.registry.finalToUpstream[name] = u.cfg.Name
+			g.registry.registeredTools[name] = final
+			if !owned {
+				added = append(added, name)
+			}
+		}
+		g.registry.upstreamRegistered[u.cfg.Name][name] = struct{}{}
+	}
+
+	// Ensure the per-upstream set is exactly the names we ended up owning.
+	g.registry.upstreamRegistered[u.cfg.Name] = map[string]struct{}{}
+	for n := range newSet {
+		if _, ok := g.registry.finalToUpstream[n]; ok && g.registry.finalToUpstream[n] == u.cfg.Name {
+			g.registry.upstreamRegistered[u.cfg.Name][n] = struct{}{}
 		}
 	}
-	g.mu.Unlock()
-	return nil
+
+	return added, removed, collisions
+}
+
+// RegisteredTools returns a snapshot of finalName -> upstreamName for tests.
+func (g *Gateway) RegisteredTools() map[string]string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	out := make(map[string]string, len(g.registry.finalToUpstream))
+	maps.Copy(out, g.registry.finalToUpstream)
+	return out
 }
 
 // Close closes all upstreams.
@@ -140,8 +298,10 @@ func (g *Gateway) Close(ctx context.Context) error {
 	for _, u := range g.upstreams {
 		_ = u.Close(ctx)
 	}
+	g.mu.Lock()
+	clear(g.registry.finalToUpstream)
+	clear(g.registry.upstreamRegistered)
+	clear(g.registry.registeredTools)
+	g.mu.Unlock()
 	return nil
 }
-
-// Server returns the local MCP server for transport.Run.
-func (g *Gateway) Server() *mcp.Server { return g.server }

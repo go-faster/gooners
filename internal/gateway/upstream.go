@@ -64,7 +64,11 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 }
 
 // Connect establishes the session using the injected BuildTransport.
+// If the session is already set (e.g. by test helper), this is a no-op.
 func (u *Upstream) Connect(ctx context.Context) error {
+	if u.session != nil {
+		return nil
+	}
 	tr, cl, err := BuildTransport(ctx, u.cfg, u.resolver)
 	if err != nil {
 		return errors.Wrap(err, "build transport")
@@ -107,6 +111,26 @@ var BuildTransport = func(_ context.Context, _ UpstreamConfig, _ SecretResolver)
 func newUpstreamWithTransport(cfg UpstreamConfig, tr mcp.Transport, cl func() error) *Upstream {
 	return &Upstream{cfg: cfg, transport: tr, cleanup: cl}
 }
+
+// newUpstreamWithInMemoryClient constructs Upstream with mcp.Client wired to call handlerOnListChanged on tool list changed.
+// Does not call Connect; caller must.
+func newUpstreamWithInMemoryClient(cfg UpstreamConfig, clientTr mcp.Transport, handlerOnListChanged func(context.Context, string) error) *Upstream {
+	u := &Upstream{cfg: cfg}
+	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
+	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
+		Logger: slog.Default(),
+		ToolListChangedHandler: func(_ context.Context, _ *mcp.ToolListChangedRequest) {
+			if handlerOnListChanged != nil {
+				_ = handlerOnListChanged(context.Background(), cfg.Name)
+			}
+		},
+	})
+	u.transport = clientTr
+	return u
+}
+
+// Name returns the upstream name from config.
+func (u *Upstream) Name() string { return u.cfg.Name }
 
 // Close shuts the session and runs cleanup.
 func (u *Upstream) Close(_ context.Context) error {
