@@ -11,7 +11,7 @@ require (
 	github.com/VictoriaMetrics/metricsql v0.87.2
 	github.com/go-faster/errors v0.7.1
 	github.com/go-faster/jx v1.2.0
-	github.com/go-faster/sdk v0.35.0
+	github.com/go-faster/sdk v0.37.0
 	github.com/google/uuid v1.6.0
 	github.com/grafana/grafana-foundation-sdk/go v0.0.18
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
