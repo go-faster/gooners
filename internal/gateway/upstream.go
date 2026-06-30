@@ -27,10 +27,13 @@ type Upstream struct {
 
 // UpstreamOptions configures optional dependencies for an Upstream.
 type UpstreamOptions struct {
-	Logger            *slog.Logger
-	Resolver          SecretResolver
-	OnToolListChanged func(ctx context.Context, upstreamName string) error
-	ConnectTimeout    time.Duration
+	Logger                *slog.Logger
+	Resolver              SecretResolver
+	OnToolListChanged     func(ctx context.Context, upstreamName string) error
+	OnPromptListChanged   func(ctx context.Context, upstreamName string) error
+	OnResourceListChanged func(ctx context.Context, upstreamName string) error
+	OnResourceUpdated     func(ctx context.Context, upstreamName, uri string) error
+	ConnectTimeout        time.Duration
 }
 
 func (o *UpstreamOptions) setDefaults() {
@@ -57,6 +60,21 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 		ToolListChangedHandler: func(_ context.Context, _ *mcp.ToolListChangedRequest) {
 			if opts.OnToolListChanged != nil {
 				_ = opts.OnToolListChanged(context.Background(), cfg.Name)
+			}
+		},
+		PromptListChangedHandler: func(_ context.Context, _ *mcp.PromptListChangedRequest) {
+			if opts.OnPromptListChanged != nil {
+				_ = opts.OnPromptListChanged(context.Background(), cfg.Name)
+			}
+		},
+		ResourceListChangedHandler: func(_ context.Context, _ *mcp.ResourceListChangedRequest) {
+			if opts.OnResourceListChanged != nil {
+				_ = opts.OnResourceListChanged(context.Background(), cfg.Name)
+			}
+		},
+		ResourceUpdatedHandler: func(_ context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
+			if opts.OnResourceUpdated != nil && req != nil && req.Params != nil {
+				_ = opts.OnResourceUpdated(context.Background(), cfg.Name, req.Params.URI)
 			}
 		},
 	})
@@ -115,13 +133,40 @@ func newUpstreamWithTransport(cfg UpstreamConfig, tr mcp.Transport, cl func() er
 // newUpstreamWithInMemoryClient constructs Upstream with mcp.Client wired to call handlerOnListChanged on tool list changed.
 // Does not call Connect; caller must.
 func newUpstreamWithInMemoryClient(cfg UpstreamConfig, clientTr mcp.Transport, handlerOnListChanged func(context.Context, string) error) *Upstream {
+	return newUpstreamWithInMemoryClientWithCallbacks(cfg, clientTr, upstreamCallbacks{OnToolListChanged: handlerOnListChanged})
+}
+
+type upstreamCallbacks struct {
+	OnToolListChanged     func(context.Context, string) error
+	OnPromptListChanged   func(context.Context, string) error
+	OnResourceListChanged func(context.Context, string) error
+	OnResourceUpdated     func(context.Context, string, string) error
+}
+
+// newUpstreamWithInMemoryClientWithCallbacks constructs Upstream with mcp.Client wired to call the provided callbacks.
+func newUpstreamWithInMemoryClientWithCallbacks(cfg UpstreamConfig, clientTr mcp.Transport, cb upstreamCallbacks) *Upstream {
 	u := &Upstream{cfg: cfg}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
 		Logger: slog.Default(),
 		ToolListChangedHandler: func(_ context.Context, _ *mcp.ToolListChangedRequest) {
-			if handlerOnListChanged != nil {
-				_ = handlerOnListChanged(context.Background(), cfg.Name)
+			if cb.OnToolListChanged != nil {
+				_ = cb.OnToolListChanged(context.Background(), cfg.Name)
+			}
+		},
+		PromptListChangedHandler: func(_ context.Context, _ *mcp.PromptListChangedRequest) {
+			if cb.OnPromptListChanged != nil {
+				_ = cb.OnPromptListChanged(context.Background(), cfg.Name)
+			}
+		},
+		ResourceListChangedHandler: func(_ context.Context, _ *mcp.ResourceListChangedRequest) {
+			if cb.OnResourceListChanged != nil {
+				_ = cb.OnResourceListChanged(context.Background(), cfg.Name)
+			}
+		},
+		ResourceUpdatedHandler: func(_ context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
+			if cb.OnResourceUpdated != nil && req != nil && req.Params != nil {
+				_ = cb.OnResourceUpdated(context.Background(), cfg.Name, req.Params.URI)
 			}
 		},
 	})
@@ -161,6 +206,58 @@ func (u *Upstream) CallTool(ctx context.Context, params *mcp.CallToolParams) (*m
 		return nil, errors.New("not connected")
 	}
 	return u.session.CallTool(ctx, params)
+}
+
+// ListPrompts calls the upstream.
+func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
+	if u.session == nil {
+		return nil, errors.New("not connected")
+	}
+	res, err := u.session.ListPrompts(ctx, &mcp.ListPromptsParams{})
+	if err != nil {
+		return nil, err
+	}
+	return res.Prompts, nil
+}
+
+// GetPrompt forwards the call to the upstream session.
+func (u *Upstream) GetPrompt(ctx context.Context, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
+	if u.session == nil {
+		return nil, errors.New("not connected")
+	}
+	return u.session.GetPrompt(ctx, params)
+}
+
+// ListResources calls the upstream.
+func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
+	if u.session == nil {
+		return nil, errors.New("not connected")
+	}
+	res, err := u.session.ListResources(ctx, &mcp.ListResourcesParams{})
+	if err != nil {
+		return nil, err
+	}
+	return res.Resources, nil
+}
+
+// ListResourceTemplates calls the upstream.
+func (u *Upstream) ListResourceTemplates(ctx context.Context) ([]*mcp.ResourceTemplate, error) {
+	if u.session == nil {
+		return nil, errors.New("not connected")
+	}
+	res, err := u.session.ListResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{})
+	if err != nil {
+		return nil, err
+	}
+	return res.ResourceTemplates, nil
+}
+
+// ReadResource forwards the call to the upstream session.
+func (u *Upstream) ReadResource(ctx context.Context, params *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error) {
+	if u.session == nil {
+		return nil, errors.New("not connected")
+	}
+	return u.session.ReadResource(ctx, params)
 }
 
 // BuildTools applies prefix, allow/deny globs (via path.Match), and desc trim.
