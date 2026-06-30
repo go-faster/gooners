@@ -5,6 +5,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -13,20 +14,29 @@ import (
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap"
 
+	"github.com/go-faster/gooners/internal/gateway/middleware"
 	"github.com/go-faster/gooners/internal/mcputil"
 )
 
 // Gateway aggregates upstreams and re-exports their tools on a local server.
 type Gateway struct {
 	cfg       *Config
-	server    *mcp.Server
 	upstreams []*Upstream
+	server    *mcp.Server
 	resolver  SecretResolver
-	logger    *slog.Logger
-	mu        sync.RWMutex
 
-	registry upstreamRegistry
+	registry   upstreamRegistry
+	registryMu sync.RWMutex
+
+	logger  *zap.Logger
+	slogger *slog.Logger
+	mp      metric.MeterProvider
+	tp      trace.TracerProvider
 }
 
 type upstreamRegistry struct {
@@ -53,58 +63,66 @@ func toolEqual(a, b *mcp.Tool) bool {
 	}
 	aj, _ := json.Marshal(a.InputSchema)
 	bj, _ := json.Marshal(b.InputSchema)
-	if !bytesEqual(aj, bj) {
+	if !bytes.Equal(aj, bj) {
 		return false
 	}
 	aj, _ = json.Marshal(a.OutputSchema)
 	bj, _ = json.Marshal(b.OutputSchema)
-	if !bytesEqual(aj, bj) {
+	if !bytes.Equal(aj, bj) {
 		return false
 	}
 	aj, _ = json.Marshal(a.Annotations)
 	bj, _ = json.Marshal(b.Annotations)
-	return bytesEqual(aj, bj)
-}
-
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
+	return bytes.Equal(aj, bj)
 }
 
 // Options for New.
 type Options struct {
-	Logger *slog.Logger
+	MeterProvider  metric.MeterProvider
+	TracerProvider trace.TracerProvider
+	Logger         *zap.Logger
+	Slogger        *slog.Logger
 }
 
 func (o *Options) setDefaults() {
+	if o.MeterProvider == nil {
+		o.MeterProvider = otel.GetMeterProvider()
+	}
+	if o.TracerProvider == nil {
+		o.TracerProvider = otel.GetTracerProvider()
+	}
 	if o.Logger == nil {
-		o.Logger = slog.Default()
+		o.Logger = zap.L()
+	}
+	if o.Slogger == nil {
+		o.Slogger = slog.Default()
 	}
 }
 
 // New builds the resolver, upstream objects (not connected) and local server.
 func New(cfg *Config, opts Options) (*Gateway, error) {
 	opts.setDefaults()
+
 	res, err := NewSecretResolver(cfg.Secrets)
 	if err != nil {
 		return nil, err
 	}
+
 	g := &Gateway{
 		cfg:      cfg,
 		resolver: res,
-		logger:   opts.Logger,
 		registry: upstreamRegistry{
 			finalToUpstream:    make(map[string]string),
 			upstreamRegistered: make(map[string]map[string]struct{}),
 			registeredTools:    make(map[string]*mcp.Tool),
 		},
+		server:     &mcp.Server{},
+		upstreams:  []*Upstream{},
+		registryMu: sync.RWMutex{},
+		mp:         opts.MeterProvider,
+		tp:         opts.TracerProvider,
+		logger:     opts.Logger,
+		slogger:    opts.Slogger,
 	}
 	for _, uc := range cfg.Upstreams {
 		if g.registry.upstreamRegistered[uc.Name] == nil {
@@ -113,7 +131,7 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 	}
 	for _, uc := range cfg.Upstreams {
 		u, err := NewUpstream(uc, UpstreamOptions{
-			Logger:            opts.Logger,
+			Logger:            opts.Slogger.With("upstream", uc.Name),
 			Resolver:          res,
 			OnToolListChanged: g.onToolListChanged,
 		})
@@ -125,7 +143,7 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 	g.server = mcputil.NewServer(mcputil.ServerConfig{
 		Name:         cfg.Server.Name,
 		Instructions: cfg.Server.Instructions,
-		Logger:       opts.Logger,
+		Logger:       opts.Slogger.With("component", "server"),
 	})
 	return g, nil
 }
@@ -133,23 +151,23 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 func (g *Gateway) onToolListChanged(ctx context.Context, upstreamName string) error {
 	u := g.upstreamByName(upstreamName)
 	if u == nil {
-		g.logger.Warn("tools changed for unknown upstream", "upstream", upstreamName)
+		g.logger.Warn("tools changed for unknown upstream", zap.String("upstream", upstreamName))
 		return nil
 	}
 	tools, err := u.ListTools(ctx)
 	if err != nil {
-		g.logger.Warn("re-list tools failed", "upstream", upstreamName, "err", err)
+		g.logger.Warn("re-list tools failed", zap.String("upstream", upstreamName), zap.Error(err))
 		return err
 	}
 	added, removed, collisions := g.registerUpstreamTools(u, tools)
 	if len(collisions) > 0 {
-		g.logger.Warn("re-sync collisions", "upstream", upstreamName, "collisions", len(collisions))
+		g.logger.Warn("re-sync collisions", zap.String("upstream", upstreamName), zap.Int("collisions", len(collisions)))
 	}
 	g.logger.Info("tools re-synced",
-		"upstream", upstreamName,
-		"added", len(added),
-		"removed", len(removed),
-		"collisions", len(collisions),
+		zap.String("upstream", upstreamName),
+		zap.Int("added", len(added)),
+		zap.Int("removed", len(removed)),
+		zap.Int("collisions", len(collisions)),
 	)
 	return nil
 }
@@ -194,13 +212,13 @@ func (g *Gateway) Build(ctx context.Context) error {
 		u := lt.u
 		added, removed, collisions := g.registerUpstreamTools(u, lt.tools)
 		if len(collisions) > 0 {
-			g.logger.Warn("build collisions", "upstream", u.cfg.Name, "collisions", len(collisions))
+			g.logger.Warn("build collisions", zap.String("upstream", u.cfg.Name), zap.Int("collisions", len(collisions)))
 		}
 		g.logger.Info("tools registered",
-			"upstream", u.cfg.Name,
-			"added", len(added),
-			"removed", len(removed),
-			"collisions", len(collisions),
+			zap.String("upstream", u.cfg.Name),
+			zap.Int("added", len(added)),
+			zap.Int("removed", len(removed)),
+			zap.Int("collisions", len(collisions)),
 		)
 	}
 	return nil
@@ -210,8 +228,8 @@ func (g *Gateway) Build(ctx context.Context) error {
 func (g *Gateway) Server() *mcp.Server { return g.server }
 
 func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (added, removed []string, collisions []Collision) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	g.registryMu.Lock()
+	defer g.registryMu.Unlock()
 
 	if g.registry.upstreamRegistered[u.cfg.Name] == nil {
 		g.registry.upstreamRegistered[u.cfg.Name] = make(map[string]struct{})
@@ -263,6 +281,17 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 			h := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return u.CallTool(ctx, &mcp.CallToolParams{Name: orig, Arguments: req.Params.Arguments})
 			}
+			mw, err := middleware.NewTelemetry(h, middleware.TelemetryOptions{
+				Upstream:       u.cfg.Name,
+				MeterProvider:  g.mp,
+				TracerProvider: g.tp,
+				Logger:         g.logger,
+			})
+			if err != nil {
+				g.slogger.Error("failed to create telemetry middleware", "error", err)
+			} else {
+				h = mw
+			}
 			g.server.AddTool(final, h)
 			g.registry.finalToUpstream[name] = u.cfg.Name
 			g.registry.registeredTools[name] = final
@@ -286,8 +315,8 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 
 // RegisteredTools returns a snapshot of finalName -> upstreamName for tests.
 func (g *Gateway) RegisteredTools() map[string]string {
-	g.mu.RLock()
-	defer g.mu.RUnlock()
+	g.registryMu.RLock()
+	defer g.registryMu.RUnlock()
 	out := make(map[string]string, len(g.registry.finalToUpstream))
 	maps.Copy(out, g.registry.finalToUpstream)
 	return out
@@ -298,10 +327,10 @@ func (g *Gateway) Close(ctx context.Context) error {
 	for _, u := range g.upstreams {
 		_ = u.Close(ctx)
 	}
-	g.mu.Lock()
+	g.registryMu.Lock()
 	clear(g.registry.finalToUpstream)
 	clear(g.registry.upstreamRegistered)
 	clear(g.registry.registeredTools)
-	g.mu.Unlock()
+	g.registryMu.Unlock()
 	return nil
 }
