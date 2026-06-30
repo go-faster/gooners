@@ -176,3 +176,179 @@ min_entropy = 3.0
 	require.Equal(t, []string{"(?i)secret"}, c.Redact.Patterns)
 	require.Equal(t, 3.0, c.Redact.MinEntropy)
 }
+
+func TestConfig_UpstreamRedact_Override(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[upstream.redact]
+enabled = true
+patterns = ["(?i)local"]
+
+[redact]
+enabled = true
+patterns = ["(?i)global"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.Equal(t, []string{"(?i)global"}, c.Redact.Patterns)
+	require.NotNil(t, c.Upstreams[0].Redact)
+	require.Equal(t, []string{"(?i)local"}, c.Upstreams[0].Redact.Patterns)
+}
+
+func TestConfig_UpstreamRedact_NilWhenAbsent(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.Nil(t, c.Upstreams[0].Redact)
+}
+
+func TestConfig_UpstreamRedact_InvalidPattern(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[upstream.redact]
+enabled = true
+patterns = ["(invalid"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "u1")
+	require.ErrorContains(t, err, "redact")
+}
+
+func TestConfig_Telemetry_DisabledByDefault(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.False(t, c.Telemetry.Enabled)
+}
+
+func TestConfig_Telemetry_Enabled_NoEndpoints(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[telemetry]
+enabled = true
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "no otlp_endpoint or metrics_addr")
+}
+
+func TestConfig_Telemetry_Enabled_InvalidOTLP(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[telemetry]
+enabled = true
+otlp_endpoint = "not-a-url"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "otlp_endpoint")
+}
+
+func TestConfig_Telemetry_Enabled_ValidOTLP(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[telemetry]
+enabled = true
+otlp_endpoint = "http://localhost:4318"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.NoError(t, err)
+}
+
+func TestConfig_Telemetry_Enabled_ValidMetrics(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[telemetry]
+enabled = true
+metrics_addr = ":9090"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.NoError(t, err)
+}
+
+func TestConfig_Telemetry_Enabled_InvalidMetrics(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[telemetry]
+enabled = true
+metrics_addr = "nope"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "metrics_addr")
+}
+
+func TestConfig_Telemetry_Enabled_Both(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[telemetry]
+enabled = true
+otlp_endpoint = "http://localhost:4318"
+metrics_addr = ":9090"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.NoError(t, err)
+}

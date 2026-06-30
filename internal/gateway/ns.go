@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/go-faster/errors"
 )
@@ -33,19 +34,38 @@ func NamespaceName(prefix, toolName string) string {
 
 // DetectCollisions returns an error if any resulting names collide across upstreams.
 func DetectCollisions(prefixes map[string]string, toolSets map[string][]string) error {
-	seen := map[string]string{} // resultName -> upstream
-	var conflicts []Collision
-	for up, tools := range toolSets {
+	names := make([]string, 0, len(toolSets))
+	for up := range toolSets {
+		names = append(names, up)
+	}
+	slices.Sort(names)
+
+	type owner struct {
+		upstream string
+		tool     string
+	}
+	owners := map[string][]owner{}
+
+	for _, up := range names {
 		pfx := prefixes[up]
-		for _, t := range tools {
+		for _, t := range toolSets[up] {
 			res := NamespaceName(pfx, t)
-			if prev, ok := seen[res]; ok {
-				conflicts = append(conflicts,
-					Collision{Upstream: prev, Tool: "", ResultName: res},
-					Collision{Upstream: up, Tool: t, ResultName: res},
-				)
-			}
-			seen[res] = up
+			owners[res] = append(owners[res], owner{upstream: up, tool: t})
+		}
+	}
+
+	var colliding []string
+	for res, os := range owners {
+		if len(os) > 1 {
+			colliding = append(colliding, res)
+		}
+	}
+	slices.Sort(colliding)
+
+	var conflicts []Collision
+	for _, res := range colliding {
+		for _, o := range owners[res] {
+			conflicts = append(conflicts, Collision{Upstream: o.upstream, Tool: o.tool, ResultName: res})
 		}
 	}
 	if len(conflicts) > 0 {
