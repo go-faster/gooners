@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"context"
+	"iter"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -104,6 +105,67 @@ func (r *secretResolver) Resolve(_ context.Context, name string) (string, error)
 	return "", err
 }
 
+// isValidSecretName reports whether every byte of s is a valid secret-name character ([A-Za-z0-9_.-]).
+func isValidSecretName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := range len(s) {
+		b := s[i]
+		if !((b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') ||
+			b == '_' || b == '.' || b == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// parseSecretRef attempts to parse a "{secret:NAME}" token (with optional
+// surrounding whitespace) starting at position i in s. It returns the secret
+// name and the index just past the closing '}', or ("", 0) if no valid token
+// starts at i.
+func parseSecretRef(s string, i int) (name string, end int) {
+	if i >= len(s) || s[i] != '{' {
+		return "", 0
+	}
+	// Find the matching closing brace.
+	closeBraceIdx := strings.IndexByte(s[i+1:], '}')
+	if closeBraceIdx < 0 {
+		return "", 0
+	}
+	inner := strings.TrimSpace(s[i+1 : i+1+closeBraceIdx])
+	// Split on the first ':' to separate keyword from name.
+	keyword, rest, ok := strings.Cut(inner, ":")
+	if !ok || strings.TrimSpace(keyword) != "secret" {
+		return "", 0
+	}
+	n := strings.TrimSpace(rest)
+	if !isValidSecretName(n) {
+		return "", 0
+	}
+	return n, i + 1 + closeBraceIdx + 1
+}
+
+// extractSecretRefs yields each secret name referenced in s via the {secret:NAME}
+// syntax. Duplicates are preserved in order.
+func extractSecretRefs(s string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		for i := 0; i < len(s); i++ {
+			if s[i] != '{' {
+				continue
+			}
+			name, end := parseSecretRef(s, i)
+			if end == 0 {
+				continue
+			}
+			if !yield(name) {
+				return
+			}
+			i = end - 1 // -1 because the loop will i++
+		}
+	}
+}
+
 // Interpolate replaces {secret:NAME} (with optional whitespace) using the resolver.
 func Interpolate(s string, r SecretResolver) (string, error) {
 	if r == nil {
@@ -112,21 +174,37 @@ func Interpolate(s string, r SecretResolver) (string, error) {
 		}
 		return s, nil
 	}
-	var merr error
-	out := secretRefRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := secretRefRe.FindStringSubmatch(m)
-		if len(sub) != 2 {
-			return m
+
+	var (
+		b    strings.Builder
+		merr error
+		i    int
+	)
+	for i < len(s) {
+		if s[i] != '{' {
+			b.WriteByte(s[i])
+			i++
+			continue
 		}
-		v, err := r.Resolve(context.Background(), sub[1])
+		name, end := parseSecretRef(s, i)
+		if end == 0 {
+			// not a valid secret ref — copy the '{' literally
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		v, err := r.Resolve(context.Background(), name)
 		if err != nil {
 			merr = err
-			return m
+			// copy the original token verbatim on error
+			b.WriteString(s[i:end])
+		} else {
+			b.WriteString(v)
 		}
-		return v
-	})
+		i = end
+	}
 	if merr != nil {
 		return "", merr
 	}
-	return out, nil
+	return b.String(), nil
 }
