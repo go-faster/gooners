@@ -31,18 +31,21 @@ func defaultTransportBuilder(ctx context.Context, cfg UpstreamConfig, r SecretRe
 // Upstream represents one configured upstream MCP server (not yet connected).
 type Upstream struct {
 	cfg              UpstreamConfig
-	client           *mcp.Client
-	session          *mcp.ClientSession
-	resolver         SecretResolver
-	logger           *slog.Logger
-	transport        mcp.Transport
-	cleanup          func() error
 	connectTimeout   time.Duration
 	keepAlive        time.Duration
 	reconnectInitial time.Duration
 	reconnectMax     time.Duration
-	onReconnect      func(context.Context, string) error
-	buildTransport   TransportBuilder
+
+	client         *mcp.Client
+	session        *mcp.ClientSession
+	transport      mcp.Transport
+	cleanup        func() error
+	onReconnect    func(context.Context, string) error
+	buildTransport TransportBuilder
+	resolver       SecretResolver
+	redactor       *Redactor
+
+	logger *slog.Logger
 
 	mu               sync.RWMutex
 	supervisorCancel context.CancelFunc
@@ -67,6 +70,8 @@ type UpstreamOptions struct {
 	KeepAlive        time.Duration
 	ReconnectInitial time.Duration
 	ReconnectMax     time.Duration
+	// Redactor is the per-upstream redactor. If nil, no redaction is applied.
+	Redactor *Redactor
 }
 
 func (o *UpstreamOptions) setDefaults() {
@@ -104,6 +109,7 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 		reconnectMax:     opts.ReconnectMax,
 		onReconnect:      opts.OnReconnect,
 		buildTransport:   opts.TransportBuilder,
+		redactor:         opts.Redactor,
 	}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
