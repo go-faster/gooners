@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/go-faster/errors"
+	"github.com/go-faster/sdk/singleflightx"
 	"github.com/kballard/go-shellquote"
 )
 
@@ -33,11 +34,14 @@ type SecretResolver interface {
 type secretResolver struct {
 	sources  map[string]SecretSource
 	lastGood map[string]string
+	sg       singleflightx.Group[string, string]
 	mu       sync.Mutex
+
+	logger *slog.Logger
 }
 
 // NewSecretResolver builds a resolver from config. Duplicate names are an error.
-func NewSecretResolver(cfgs []SecretConfig) (SecretResolver, error) {
+func NewSecretResolver(cfgs []SecretConfig, logger *slog.Logger) (SecretResolver, error) {
 	m := map[string]SecretSource{}
 	for _, c := range cfgs {
 		if _, ok := m[c.Name]; ok {
@@ -45,7 +49,11 @@ func NewSecretResolver(cfgs []SecretConfig) (SecretResolver, error) {
 		}
 		m[c.Name] = SecretSource{Value: c.Value, Env: c.Env, File: c.File, Command: c.Command}
 	}
-	return &secretResolver{sources: m, lastGood: map[string]string{}}, nil
+	return &secretResolver{
+		sources:  m,
+		lastGood: map[string]string{},
+		logger:   logger,
+	}, nil
 }
 
 func (r *secretResolver) Resolve(ctx context.Context, name string) (string, error) {
@@ -56,7 +64,20 @@ func (r *secretResolver) Resolve(ctx context.Context, name string) (string, erro
 		return "", errors.Wrapf(ErrSecretNotFound, "secret %q", name)
 	}
 
-	val, err := r.resolveSource(ctx, name, src)
+	ch := r.sg.DoChanContext(ctx, name, func(ctx context.Context) (string, error) {
+		return r.resolveSource(ctx, name, src)
+	})
+	var (
+		val string
+		err error
+	)
+	select {
+	case <-ctx.Done():
+		err = ctx.Err()
+	case res := <-ch:
+		val = res.Val
+		err = res.Err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -65,7 +86,7 @@ func (r *secretResolver) Resolve(ctx context.Context, name string) (string, erro
 		return val, nil
 	}
 	if v, ok := r.lastGood[name]; ok {
-		slog.Default().Warn("secret read failed, using last good value", "name", name, "error", err)
+		r.logger.Warn("secret read failed, using last good value", "name", name, "error", err)
 		return v, nil
 	}
 	return "", err

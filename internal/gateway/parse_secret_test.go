@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"log/slog"
 	"slices"
 	"testing"
 
@@ -112,7 +113,7 @@ func TestInterpolate_Table(t *testing.T) {
 		for k, v := range secrets {
 			cfgs = append(cfgs, SecretConfig{Name: k, Value: v})
 		}
-		r, err := NewSecretResolver(cfgs)
+		r, err := NewSecretResolver(cfgs, slog.Default())
 		if err != nil {
 			t.Helper()
 			t.Fatalf("NewSecretResolver: %v", err)
