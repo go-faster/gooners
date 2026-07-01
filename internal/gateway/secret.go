@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 
@@ -113,10 +112,9 @@ func Interpolate(s string, r SecretResolver) (string, error) {
 		}
 		return s, nil
 	}
-	re := regexp.MustCompile(`\{\s*secret\s*:\s*([A-Za-z0-9_.-]+)\s*\}`)
 	var merr error
-	out := re.ReplaceAllStringFunc(s, func(m string) string {
-		sub := re.FindStringSubmatch(m)
+	out := secretRefRe.ReplaceAllStringFunc(s, func(m string) string {
+		sub := secretRefRe.FindStringSubmatch(m)
 		if len(sub) != 2 {
 			return m
 		}
