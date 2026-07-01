@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -83,7 +84,7 @@ func FuzzParseSecretRef(f *testing.F) {
 		}
 
 		// Interpolate with an always-empty resolver must not panic.
-		r, _ := NewSecretResolver(nil)
+		r, _ := NewSecretResolver(nil, slog.New(slog.DiscardHandler))
 		out2, _ := Interpolate(context.Background(), s, r)
 		// The output must not be longer than the input (secrets may fail and be
 		// copied verbatim, but no content is invented).

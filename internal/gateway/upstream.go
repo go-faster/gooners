@@ -164,21 +164,29 @@ func (u *Upstream) Connect(ctx context.Context) error {
 	return nil
 }
 
-func (u *Upstream) connectOnce(ctx context.Context) error {
+func (u *Upstream) connectOnce(ctx context.Context) (rerr error) {
 	u.mu.RLock()
 	closed := u.closed
 	connected := u.session != nil
 	u.mu.RUnlock()
+
 	if closed {
 		return errors.New("upstream closed")
 	}
 	if connected {
 		return nil
 	}
-	tr, cl, err := u.buildTransport(ctx, u.cfg, u.resolver)
+
+	tr, closeTransport, err := u.buildTransport(ctx, u.cfg, u.resolver)
 	if err != nil {
 		return errors.Wrap(err, "build transport")
 	}
+	defer func() {
+		if rerr != nil && closeTransport != nil {
+			_ = closeTransport()
+		}
+	}()
+
 	timeout := u.connectTimeout
 	if timeout == 0 {
 		timeout = 10 * time.Second
@@ -187,24 +195,20 @@ func (u *Upstream) connectOnce(ctx context.Context) error {
 	defer cancel()
 	sess, err := u.client.Connect(cctx, tr, nil)
 	if err != nil {
-		if cl != nil {
-			_ = cl()
-		}
 		return errors.Wrap(err, "connect")
 	}
+
 	u.mu.Lock()
 	if u.closed {
 		u.mu.Unlock()
 		_ = sess.Close()
-		if cl != nil {
-			_ = cl()
-		}
 		return errors.New("upstream closed")
 	}
 	u.transport = tr
-	u.cleanup = cl
+	u.cleanup = closeTransport
 	u.session = sess
 	u.mu.Unlock()
+
 	return nil
 }
 
@@ -232,10 +236,12 @@ func (u *Upstream) supervise(ctx context.Context, done chan struct{}, onReconnec
 		if sess == nil {
 			return
 		}
+
 		waitErr := make(chan error, 1)
 		go func() {
 			waitErr <- sess.Wait()
 		}()
+
 		var err error
 		select {
 		case <-ctx.Done():
@@ -244,6 +250,7 @@ func (u *Upstream) supervise(ctx context.Context, done chan struct{}, onReconnec
 			return
 		case err = <-waitErr:
 		}
+
 		u.logger.Info("upstream session dropped", "error", err)
 		u.closeSessionResources()
 
@@ -302,6 +309,7 @@ func nextBackoff(current, initial, maxBackoff time.Duration) time.Duration {
 func (u *Upstream) currentSession() *mcp.ClientSession {
 	u.mu.RLock()
 	defer u.mu.RUnlock()
+
 	return u.session
 }
 
@@ -313,6 +321,7 @@ func (u *Upstream) closeSessionResources() {
 	u.transport = nil
 	u.cleanup = nil
 	u.mu.Unlock()
+
 	if sess != nil {
 		_ = sess.Close()
 	}

@@ -21,6 +21,13 @@ type Config struct {
 	Redact    RedactConfig     `toml:"redact"`
 }
 
+// setDefaults applies server name and telemetry defaults.
+func (c *Config) setDefaults() {
+	if c.Server.Name == "" {
+		c.Server.Name = "mcpgateway"
+	}
+}
+
 // ServerConfig configures the gateway's own MCP server identity.
 type ServerConfig struct {
 	Name         string `toml:"name"`
@@ -94,13 +101,6 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &c, nil
-}
-
-// setDefaults applies server name and telemetry defaults.
-func (c *Config) setDefaults() {
-	if c.Server.Name == "" {
-		c.Server.Name = "mcpgateway"
-	}
 }
 
 // Validate checks required fields and uniqueness constraints.
