@@ -3,10 +3,10 @@ package gateway
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -194,8 +194,8 @@ func (c *Config) Validate() error {
 			}
 		}
 		if c.Telemetry.MetricsAddr != "" {
-			if !strings.Contains(c.Telemetry.MetricsAddr, ":") || strings.HasSuffix(c.Telemetry.MetricsAddr, ":") {
-				return fmt.Errorf("telemetry: invalid metrics_addr %q", c.Telemetry.MetricsAddr)
+			if _, _, err := net.SplitHostPort(c.Telemetry.MetricsAddr); err != nil {
+				return fmt.Errorf("telemetry: invalid metrics_addr %q: %w", c.Telemetry.MetricsAddr, err)
 			}
 		}
 	}

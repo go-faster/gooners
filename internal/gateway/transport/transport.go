@@ -61,9 +61,16 @@ func buildStdio(command []string, env map[string]string, interpolate func(string
 		}
 		cmd.Env = keep
 	}
+	// cleanup is called after the session closes. By that point CommandTransport
+	// has already sent SIGTERM and waited; this is a belt-and-suspenders SIGKILL
+	// in case the graceful shutdown stalled.
 	cleanup := func() error {
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
+		if p := cmd.Process; p != nil {
+			if err := p.Kill(); err != nil {
+				return err
+			}
+			// Reap the process to avoid a zombie.
+			_ = cmd.Wait()
 		}
 		return nil
 	}
