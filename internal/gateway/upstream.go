@@ -7,12 +7,26 @@ import (
 	"path"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	gwtransport "github.com/go-faster/gooners/internal/gateway/transport"
 )
+
+// TransportBuilder constructs an mcp.Transport for an upstream and returns an
+// optional cleanup function to call after the session closes.
+type TransportBuilder func(ctx context.Context, cfg UpstreamConfig, r SecretResolver) (mcp.Transport, func() error, error)
+
+// defaultTransportBuilder is the production transport builder used when none is
+// provided via UpstreamOptions.
+func defaultTransportBuilder(ctx context.Context, cfg UpstreamConfig, r SecretResolver) (mcp.Transport, func() error, error) {
+	interp := func(s string) (string, error) {
+		return Interpolate(ctx, s, r)
+	}
+	return gwtransport.Build(ctx, cfg.Kind, cfg.Command, cfg.URL, cfg.Env, cfg.Headers, interp)
+}
 
 // Upstream represents one configured upstream MCP server (not yet connected).
 type Upstream struct {
@@ -28,6 +42,7 @@ type Upstream struct {
 	reconnectInitial time.Duration
 	reconnectMax     time.Duration
 	onReconnect      func(context.Context, string) error
+	buildTransport   TransportBuilder
 
 	mu               sync.RWMutex
 	supervisorCancel context.CancelFunc
@@ -37,8 +52,11 @@ type Upstream struct {
 
 // UpstreamOptions configures optional dependencies for an Upstream.
 type UpstreamOptions struct {
-	Logger                *slog.Logger
-	Resolver              SecretResolver
+	Logger   *slog.Logger
+	Resolver SecretResolver
+	// TransportBuilder builds the mcp.Transport for this upstream.
+	// If nil, the default production builder (stdio/http/sse via config) is used.
+	TransportBuilder      TransportBuilder
 	OnToolListChanged     func(ctx context.Context, upstreamName string) error
 	OnPromptListChanged   func(ctx context.Context, upstreamName string) error
 	OnResourceListChanged func(ctx context.Context, upstreamName string) error
@@ -54,6 +72,9 @@ type UpstreamOptions struct {
 func (o *UpstreamOptions) setDefaults() {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
+	}
+	if o.TransportBuilder == nil {
+		o.TransportBuilder = defaultTransportBuilder
 	}
 	if o.ConnectTimeout == 0 {
 		o.ConnectTimeout = 10 * time.Second
@@ -82,6 +103,7 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 		reconnectInitial: opts.ReconnectInitial,
 		reconnectMax:     opts.ReconnectMax,
 		onReconnect:      opts.OnReconnect,
+		buildTransport:   opts.TransportBuilder,
 	}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
@@ -147,7 +169,7 @@ func (u *Upstream) connectOnce(ctx context.Context) error {
 	if connected {
 		return nil
 	}
-	tr, cl, err := BuildTransport(ctx, u.cfg, u.resolver)
+	tr, cl, err := u.buildTransport(ctx, u.cfg, u.resolver)
 	if err != nil {
 		return errors.Wrap(err, "build transport")
 	}
@@ -293,24 +315,9 @@ func (u *Upstream) closeSessionResources() {
 	}
 }
 
-// init wires the default BuildTransport using the transport package.
-func init() {
-	BuildTransport = func(ctx context.Context, cfg UpstreamConfig, r SecretResolver) (mcp.Transport, func() error, error) {
-		interp := func(s string) (string, error) {
-			return Interpolate(s, r)
-		}
-		return gwtransport.Build(ctx, cfg.Kind, cfg.Command, cfg.URL, cfg.Env, cfg.Headers, interp)
-	}
-}
-
-// BuildTransport is overridable for tests (set by test hooks or main).
-var BuildTransport = func(_ context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
-	return nil, nil, errors.New("transport builder not wired (wire in main or test)")
-}
-
 // newUpstreamWithTransport is a test helper that injects a ready transport.
 func newUpstreamWithTransport(cfg UpstreamConfig, tr mcp.Transport, cl func() error) *Upstream {
-	return &Upstream{cfg: cfg, transport: tr, cleanup: cl, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second}
+	return &Upstream{cfg: cfg, transport: tr, cleanup: cl, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second, buildTransport: defaultTransportBuilder}
 }
 
 // newUpstreamWithInMemoryClient constructs Upstream with mcp.Client wired to call handlerOnListChanged on tool list changed.
@@ -329,7 +336,7 @@ type upstreamCallbacks struct {
 
 // newUpstreamWithInMemoryClientWithCallbacks constructs Upstream with mcp.Client wired to call the provided callbacks.
 func newUpstreamWithInMemoryClientWithCallbacks(cfg UpstreamConfig, clientTr mcp.Transport, cb upstreamCallbacks) *Upstream {
-	u := &Upstream{cfg: cfg, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second, onReconnect: cb.OnReconnect}
+	u := &Upstream{cfg: cfg, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second, onReconnect: cb.OnReconnect, buildTransport: defaultTransportBuilder}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
 		Logger: slog.Default(),
@@ -522,9 +529,20 @@ func (u *Upstream) allowed(name string) bool {
 }
 
 // TrimDescription is the pure helper used by BuildTools.
+// It truncates s to at most maxLen bytes, cutting only at rune boundaries,
+// and appends "…" when truncation occurs.
 func TrimDescription(s string, maxLen int) string {
-	if maxLen > 0 && len(s) > maxLen {
-		return s[:maxLen] + "…"
+	if maxLen <= 0 || len(s) <= maxLen {
+		return s
 	}
-	return s
+	// Walk rune-by-rune and stop before exceeding maxLen bytes.
+	i := 0
+	for i < maxLen {
+		_, size := utf8.DecodeRuneInString(s[i:])
+		if i+size > maxLen {
+			break
+		}
+		i += size
+	}
+	return s[:i] + "…"
 }

@@ -26,7 +26,12 @@ func TestUpstream_Filter(t *testing.T) {
 }
 
 func TestUpstream_Trim(t *testing.T) {
+	// ASCII: exact truncation
 	require.Equal(t, "abc…", TrimDescription("abcdef", 3))
+	// Multi-byte: must not cut in the middle of é (2 bytes)
+	require.Equal(t, "h…", TrimDescription("héllo", 2))
+	// No truncation needed
+	require.Equal(t, "abc", TrimDescription("abc", 10))
 }
 
 func TestUpstream_InMemory(t *testing.T) {
@@ -60,12 +65,13 @@ func TestUpstream_Reconnect_AfterSessionDrops(t *testing.T) {
 	clientTr1, cancel1 := newToolServer(t, "up1")
 	clientTr2, cancel2 := newToolServer(t, "up2")
 	defer cancel2()
+	// cancel1 is called mid-test to simulate a session drop; still clean up on exit.
+	t.Cleanup(cancel1)
 
 	transports := make(chan mcp.Transport, 2)
 	transports <- clientTr1
 	transports <- clientTr2
-	oldBuildTransport := BuildTransport
-	BuildTransport = func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
+	buildFn := func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
 		select {
 		case tr := <-transports:
 			return tr, func() error { return nil }, nil
@@ -73,10 +79,10 @@ func TestUpstream_Reconnect_AfterSessionDrops(t *testing.T) {
 			return nil, nil, ctx.Err()
 		}
 	}
-	t.Cleanup(func() { BuildTransport = oldBuildTransport })
 
 	reconnected := make(chan string, 1)
 	u, err := NewUpstream(UpstreamConfig{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}, UpstreamOptions{
+		TransportBuilder: buildFn,
 		KeepAlive:        -1,
 		ReconnectInitial: 10 * time.Millisecond,
 		ReconnectMax:     10 * time.Millisecond,
@@ -108,15 +114,14 @@ func TestUpstream_Supervisor_ExitsOnContextCancel(t *testing.T) {
 	defer cancelServer()
 
 	var builds atomic.Int32
-	oldBuildTransport := BuildTransport
-	BuildTransport = func(context.Context, UpstreamConfig, SecretResolver) (mcp.Transport, func() error, error) {
+	buildFn := func(context.Context, UpstreamConfig, SecretResolver) (mcp.Transport, func() error, error) {
 		builds.Add(1)
 		return clientTr, func() error { return nil }, nil
 	}
-	t.Cleanup(func() { BuildTransport = oldBuildTransport })
 
 	ctx, cancel := context.WithCancel(t.Context())
 	u, err := NewUpstream(UpstreamConfig{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}, UpstreamOptions{
+		TransportBuilder: buildFn,
 		KeepAlive:        -1,
 		ReconnectInitial: 10 * time.Millisecond,
 		ReconnectMax:     10 * time.Millisecond,
@@ -146,13 +151,14 @@ func TestUpstream_Close_Idempotent(t *testing.T) {
 	clientTr, cancelServer := newToolServer(t, "up")
 	defer cancelServer()
 
-	oldBuildTransport := BuildTransport
-	BuildTransport = func(context.Context, UpstreamConfig, SecretResolver) (mcp.Transport, func() error, error) {
+	buildFn := func(context.Context, UpstreamConfig, SecretResolver) (mcp.Transport, func() error, error) {
 		return clientTr, func() error { return nil }, nil
 	}
-	t.Cleanup(func() { BuildTransport = oldBuildTransport })
 
-	u, err := NewUpstream(UpstreamConfig{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}, UpstreamOptions{KeepAlive: -1})
+	u, err := NewUpstream(UpstreamConfig{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}, UpstreamOptions{
+		TransportBuilder: buildFn,
+		KeepAlive:        -1,
+	})
 	require.NoError(t, err)
 	require.NoError(t, u.Connect(t.Context()))
 	require.NoError(t, u.Close(t.Context()))
