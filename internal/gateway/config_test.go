@@ -352,3 +352,62 @@ metrics_addr = ":9090"
 	_, err := Load(p)
 	require.NoError(t, err)
 }
+
+func TestConfig_Reconnect_Valid(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[upstream.reconnect]
+keepalive = "10s"
+initial_backoff = "500ms"
+max_backoff = "30s"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.NotNil(t, c.Upstreams[0].Reconnect)
+	require.Equal(t, "10s", c.Upstreams[0].Reconnect.KeepAlive)
+	require.Equal(t, "500ms", c.Upstreams[0].Reconnect.InitialBackoff)
+	require.Equal(t, "30s", c.Upstreams[0].Reconnect.MaxBackoff)
+}
+
+func TestConfig_Reconnect_InvalidDuration(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[upstream.reconnect]
+keepalive = "nope"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "u1")
+	require.ErrorContains(t, err, "reconnect")
+	require.ErrorContains(t, err, "keepalive")
+}
+
+func TestConfig_Reconnect_InitialGreaterThanMax(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[upstream.reconnect]
+initial_backoff = "30s"
+max_backoff = "1s"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "initial_backoff")
+}

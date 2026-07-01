@@ -4,6 +4,7 @@ package gateway
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -653,4 +654,146 @@ func TestGateway_RedactsToolOutput(t *testing.T) {
 	require.Len(t, res.Content, 1)
 	tc := res.Content[0].(*mcp.TextContent)
 	require.Equal(t, "password=[REDACTED] token=[REDACTED]", tc.Text)
+}
+
+func TestGateway_OnReconnect_ReRegistersAll(t *testing.T) {
+	clientTr1, cancel1 := newFeatureServer(t, "up1")
+	clientTr2, cancel2 := newFeatureServer(t, "up2")
+	defer cancel2()
+
+	transports := make(chan mcp.Transport, 2)
+	transports <- clientTr1
+	transports <- clientTr2
+	oldBuildTransport := BuildTransport
+	BuildTransport = func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
+		select {
+		case tr := <-transports:
+			return tr, func() error { return nil }, nil
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+	}
+	t.Cleanup(func() { BuildTransport = oldBuildTransport })
+
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{{
+			Name:    "u1",
+			Kind:    "stdio",
+			Command: []string{"ignored"},
+			Reconnect: &ReconnectConfig{
+				KeepAlive:      "-1s",
+				InitialBackoff: "10ms",
+				MaxBackoff:     "10ms",
+			},
+		}},
+	}
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+	reconnected := make(chan struct{}, 1)
+	g.upstreams[0].onReconnect = func(ctx context.Context, upstreamName string) error {
+		err := g.onUpstreamReconnect(ctx, upstreamName)
+		reconnected <- struct{}{}
+		return err
+	}
+	require.NoError(t, g.Build(t.Context()))
+	t.Cleanup(func() { _ = g.Close(t.Context()) })
+
+	gwServerTr, gwClientTr := mcp.NewInMemoryTransports()
+	go func() { _ = g.Server().Run(t.Context(), gwServerTr) }()
+	downClient := mcp.NewClient(&mcp.Implementation{Name: "down", Version: "0"}, nil)
+	downSess, err := downClient.Connect(t.Context(), gwClientTr, nil)
+	require.NoError(t, err)
+	defer downSess.Close()
+
+	cancel1()
+	require.Eventually(t, func() bool {
+		select {
+		case <-reconnected:
+			return true
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+
+	tools, err := downSess.ListTools(t.Context(), &mcp.ListToolsParams{})
+	require.NoError(t, err)
+	require.Len(t, tools.Tools, 1)
+	prompts, err := downSess.ListPrompts(t.Context(), &mcp.ListPromptsParams{})
+	require.NoError(t, err)
+	require.Len(t, prompts.Prompts, 1)
+	resources, err := downSess.ListResources(t.Context(), &mcp.ListResourcesParams{})
+	require.NoError(t, err)
+	require.Len(t, resources.Resources, 1)
+	templates, err := downSess.ListResourceTemplates(t.Context(), &mcp.ListResourceTemplatesParams{})
+	require.NoError(t, err)
+	require.Len(t, templates.ResourceTemplates, 1)
+}
+
+func TestGateway_Close_StopsAllSupervisors(t *testing.T) {
+	clientTr1, cancel1 := newFeatureServerWithFeature(t, "up1", "one")
+	defer cancel1()
+	clientTr2, cancel2 := newFeatureServerWithFeature(t, "up2", "two")
+	defer cancel2()
+
+	transports := make(chan mcp.Transport, 2)
+	transports <- clientTr1
+	transports <- clientTr2
+	oldBuildTransport := BuildTransport
+	BuildTransport = func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
+		select {
+		case tr := <-transports:
+			return tr, func() error { return nil }, nil
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+	}
+	t.Cleanup(func() { BuildTransport = oldBuildTransport })
+
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{
+			{Name: "u1", Kind: "stdio", Command: []string{"ignored"}, Reconnect: &ReconnectConfig{KeepAlive: "-1s", InitialBackoff: "10ms", MaxBackoff: "10ms"}},
+			{Name: "u2", Kind: "stdio", Command: []string{"ignored"}, Reconnect: &ReconnectConfig{KeepAlive: "-1s", InitialBackoff: "10ms", MaxBackoff: "10ms"}},
+		},
+	}
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+	require.NoError(t, g.Build(t.Context()))
+
+	done := make(chan error, 1)
+	go func() { done <- g.Close(t.Context()) }()
+	timer := time.NewTimer(500 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-timer.C:
+		t.Fatal("gateway close timed out")
+	}
+}
+
+func newFeatureServer(t *testing.T, name string) (mcp.Transport, context.CancelFunc) {
+	return newFeatureServerWithFeature(t, name, "feature")
+}
+
+func newFeatureServerWithFeature(t *testing.T, name, feature string) (mcp.Transport, context.CancelFunc) {
+	t.Helper()
+	serverTr, clientTr := mcp.NewInMemoryTransports()
+	srv := mcp.NewServer(&mcp.Implementation{Name: name, Version: "0"}, nil)
+	srv.AddTool(&mcp.Tool{Name: "echo-" + feature, Description: "echo", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+	})
+	srv.AddPrompt(&mcp.Prompt{Name: "prompt-" + feature, Description: "prompt"}, func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return &mcp.GetPromptResult{Messages: []*mcp.PromptMessage{}}, nil
+	})
+	srv.AddResource(&mcp.Resource{URI: "file:///" + feature + "/resource.txt", Name: "resource"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	srv.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "file:///" + feature + "/{name}", Name: "template"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	go func() { _ = srv.Run(ctx, serverTr) }()
+	return clientTr, cancel
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/go-faster/errors"
@@ -29,15 +30,23 @@ type ServerConfig struct {
 
 // UpstreamConfig describes one upstream MCP server to proxy.
 type UpstreamConfig struct {
-	Name    string            `toml:"name"`
-	Kind    string            `toml:"kind"`
-	Command []string          `toml:"command"`
-	URL     string            `toml:"url"`
-	Headers map[string]string `toml:"headers"`
-	Env     map[string]string `toml:"env"`
-	Tools   ToolsConfig       `toml:"tools"`
+	Name      string            `toml:"name"`
+	Kind      string            `toml:"kind"`
+	Command   []string          `toml:"command"`
+	URL       string            `toml:"url"`
+	Headers   map[string]string `toml:"headers"`
+	Env       map[string]string `toml:"env"`
+	Tools     ToolsConfig       `toml:"tools"`
+	Reconnect *ReconnectConfig  `toml:"reconnect"`
 	// Redact overrides the global redact config when present; nil inherits the global [redact] section.
 	Redact *RedactConfig `toml:"redact"`
+}
+
+// ReconnectConfig configures per-upstream reconnect supervision.
+type ReconnectConfig struct {
+	KeepAlive      string `toml:"keepalive"`
+	InitialBackoff string `toml:"initial_backoff"`
+	MaxBackoff     string `toml:"max_backoff"`
 }
 
 // ToolsConfig controls tool filtering, namespacing and description trimming for an upstream.
@@ -122,6 +131,11 @@ func (c *Config) Validate() error {
 		if (u.Kind == "http" || u.Kind == "sse") && u.URL == "" {
 			return fmt.Errorf("upstream %q: %s requires url", u.Name, u.Kind)
 		}
+		if u.Reconnect != nil {
+			if err := validateReconnectConfig(u.Name, u.Reconnect); err != nil {
+				return err
+			}
+		}
 	}
 	seenSec := map[string]bool{}
 	for i, s := range c.Secrets {
@@ -186,4 +200,31 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+func validateReconnectConfig(upstream string, cfg *ReconnectConfig) error {
+	keepAlive, err := parseOptionalDuration(cfg.KeepAlive)
+	if err != nil {
+		return fmt.Errorf("upstream %q: reconnect: keepalive: %w", upstream, err)
+	}
+	initialBackoff, err := parseOptionalDuration(cfg.InitialBackoff)
+	if err != nil {
+		return fmt.Errorf("upstream %q: reconnect: initial_backoff: %w", upstream, err)
+	}
+	maxBackoff, err := parseOptionalDuration(cfg.MaxBackoff)
+	if err != nil {
+		return fmt.Errorf("upstream %q: reconnect: max_backoff: %w", upstream, err)
+	}
+	if cfg.InitialBackoff != "" && cfg.MaxBackoff != "" && initialBackoff > maxBackoff {
+		return fmt.Errorf("upstream %q: reconnect: initial_backoff must be <= max_backoff", upstream)
+	}
+	_ = keepAlive
+	return nil
+}
+
+func parseOptionalDuration(s string) (time.Duration, error) {
+	if s == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(s)
 }
