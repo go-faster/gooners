@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"regexp"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -104,8 +103,6 @@ func (c *Config) setDefaults() {
 	}
 }
 
-var secretRefRe = regexp.MustCompile(`\{\s*secret\s*:\s*([A-Za-z0-9_.-]+)\s*\}`)
-
 // Validate checks required fields and uniqueness constraints.
 func (c *Config) Validate() error {
 	if len(c.Upstreams) == 0 {
@@ -151,16 +148,14 @@ func (c *Config) Validate() error {
 	var joinErrs []error
 	for _, u := range c.Upstreams {
 		for _, v := range u.Env {
-			for _, m := range secretRefRe.FindAllStringSubmatch(v, -1) {
-				name := m[1]
+			for name := range extractSecretRefs(v) {
 				if !seenSec[name] {
 					joinErrs = append(joinErrs, fmt.Errorf("upstream %q: secret %q referenced in env/headers is not defined", u.Name, name))
 				}
 			}
 		}
 		for _, v := range u.Headers {
-			for _, m := range secretRefRe.FindAllStringSubmatch(v, -1) {
-				name := m[1]
+			for name := range extractSecretRefs(v) {
 				if !seenSec[name] {
 					joinErrs = append(joinErrs, fmt.Errorf("upstream %q: secret %q referenced in env/headers is not defined", u.Name, name))
 				}
