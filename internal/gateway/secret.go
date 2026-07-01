@@ -48,52 +48,18 @@ func NewSecretResolver(cfgs []SecretConfig) (SecretResolver, error) {
 	return &secretResolver{sources: m, lastGood: map[string]string{}}, nil
 }
 
-func (r *secretResolver) Resolve(_ context.Context, name string) (string, error) {
+func (r *secretResolver) Resolve(ctx context.Context, name string) (string, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	src, ok := r.sources[name]
+	r.mu.Unlock()
 	if !ok {
 		return "", errors.Wrapf(ErrSecretNotFound, "secret %q", name)
 	}
 
-	var val string
-	var err error
-	switch {
-	case src.Value != "":
-		val = src.Value
-	case src.Env != "":
-		val = os.Getenv(src.Env)
-		if val == "" {
-			err = errors.Wrapf(ErrSecretNotFound, "env %s empty for secret %q", src.Env, name)
-		}
-	case src.File != "":
-		b, readErr := os.ReadFile(src.File)
-		if readErr != nil {
-			err = errors.Wrapf(readErr, "read secret file for %q", name)
-		} else {
-			val = strings.TrimRight(string(b), "\n")
-		}
-	case src.Command != "":
-		argv, parseErr := shellquote.Split(src.Command)
-		switch {
-		case parseErr != nil:
-			err = errors.Wrapf(parseErr, "parse command for secret %q", name)
-		case len(argv) == 0:
-			err = errors.New("empty command for secret")
-		default:
-			argv = append(argv, name)
-			out, cmdErr := exec.Command(argv[0], argv[1:]...).Output() //nolint:gosec // G204: argv comes from operator TOML config, not user input
-			if cmdErr != nil {
-				err = errors.Wrapf(cmdErr, "run command for secret %q", name)
-			} else {
-				val = strings.TrimRight(string(out), "\n")
-			}
-		}
-	default:
-		err = errors.Wrapf(ErrSecretNotFound, "secret %q has no source", name)
-	}
+	val, err := r.resolveSource(ctx, name, src)
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err == nil {
 		r.lastGood[name] = val
 		return val, nil
@@ -103,6 +69,42 @@ func (r *secretResolver) Resolve(_ context.Context, name string) (string, error)
 		return v, nil
 	}
 	return "", err
+}
+
+// resolveSource reads the secret value from its source without holding any lock.
+func (r *secretResolver) resolveSource(_ context.Context, name string, src SecretSource) (string, error) {
+	switch {
+	case src.Value != "":
+		return src.Value, nil
+	case src.Env != "":
+		v := os.Getenv(src.Env)
+		if v == "" {
+			return "", errors.Wrapf(ErrSecretNotFound, "env %s empty for secret %q", src.Env, name)
+		}
+		return v, nil
+	case src.File != "":
+		b, readErr := os.ReadFile(src.File)
+		if readErr != nil {
+			return "", errors.Wrapf(readErr, "read secret file for %q", name)
+		}
+		return strings.TrimRight(string(b), "\n"), nil
+	case src.Command != "":
+		argv, parseErr := shellquote.Split(src.Command)
+		switch {
+		case parseErr != nil:
+			return "", errors.Wrapf(parseErr, "parse command for secret %q", name)
+		case len(argv) == 0:
+			return "", errors.New("empty command for secret")
+		}
+		argv = append(argv, name)
+		out, cmdErr := exec.Command(argv[0], argv[1:]...).Output() //nolint:gosec // G204: argv comes from operator TOML config, not user input
+		if cmdErr != nil {
+			return "", errors.Wrapf(cmdErr, "run command for secret %q", name)
+		}
+		return strings.TrimRight(string(out), "\n"), nil
+	default:
+		return "", errors.Wrapf(ErrSecretNotFound, "secret %q has no source", name)
+	}
 }
 
 // isValidSecretName reports whether every byte of s is a valid secret-name character ([A-Za-z0-9_.-]).
@@ -167,7 +169,7 @@ func extractSecretRefs(s string) iter.Seq[string] {
 }
 
 // Interpolate replaces {secret:NAME} (with optional whitespace) using the resolver.
-func Interpolate(s string, r SecretResolver) (string, error) {
+func Interpolate(ctx context.Context, s string, r SecretResolver) (string, error) {
 	if r == nil {
 		if strings.Contains(s, "{secret:") {
 			return "", errors.New("secrets present but no resolver")
@@ -193,7 +195,7 @@ func Interpolate(s string, r SecretResolver) (string, error) {
 			i++
 			continue
 		}
-		v, err := r.Resolve(context.Background(), name)
+		v, err := r.Resolve(ctx, name)
 		if err != nil {
 			merr = err
 			// copy the original token verbatim on error

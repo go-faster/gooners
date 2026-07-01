@@ -47,11 +47,11 @@ func TestSecretResolver_Missing(t *testing.T) {
 
 func TestSecretResolver_Interpolate(t *testing.T) {
 	r, _ := NewSecretResolver([]SecretConfig{{Name: "k", Value: "vv"}})
-	out, err := Interpolate("a{secret:k}b", r)
+	out, err := Interpolate(t.Context(), "a{secret:k}b", r)
 	require.NoError(t, err)
 	require.Equal(t, "avvb", out)
 
-	_, err = Interpolate("a{secret:missing}b", r)
+	_, err = Interpolate(t.Context(), "a{secret:missing}b", r)
 	require.Error(t, err)
 }
 

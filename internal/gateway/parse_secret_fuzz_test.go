@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -73,7 +74,7 @@ func FuzzParseSecretRef(f *testing.F) {
 
 		// Interpolate with a nil resolver must not panic.
 		// It may return an error if the string looks like it contains a secret ref.
-		out, err := Interpolate(s, nil)
+		out, err := Interpolate(context.Background(), s, nil)
 		if err == nil && strings.Contains(s, "{secret:") {
 			// This is allowed: the heuristic check is a fast pre-filter; the real
 			// parser may still reject the ref (e.g. bad name chars), so no
@@ -83,7 +84,7 @@ func FuzzParseSecretRef(f *testing.F) {
 
 		// Interpolate with an always-empty resolver must not panic.
 		r, _ := NewSecretResolver(nil)
-		out2, _ := Interpolate(s, r)
+		out2, _ := Interpolate(context.Background(), s, r)
 		// The output must not be longer than the input (secrets may fail and be
 		// copied verbatim, but no content is invented).
 		if len(out2) > len(s) {
