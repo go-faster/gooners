@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1
+FROM alpine:3.21
+
+ARG BINARY_NAME
+ARG TARGETPLATFORM
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S mcp \
+    && adduser -S mcp -G mcp -h /home/mcp
+
+WORKDIR /home/mcp
+
+# Goreleaser dockers_v2 automatically places the artifacts for the target platform within $TARGETPLATFORM/
+COPY ${TARGETPLATFORM}/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
+
+# Create a symlink so we can have a static ENTRYPOINT without needing shell expansion,
+# which allows signals to be handled gracefully by the Go binary.
+RUN ln -s /usr/local/bin/${BINARY_NAME} /usr/local/bin/mcp-server
+
+USER mcp
+
+ENTRYPOINT ["mcp-server"]
