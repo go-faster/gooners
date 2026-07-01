@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"maps"
 	"sync"
+	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -255,14 +256,21 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		}
 	}
 	for _, uc := range cfg.Upstreams {
-		u, err := NewUpstream(uc, UpstreamOptions{
+		uopts := UpstreamOptions{
 			Logger:                opts.Slogger.With("upstream", uc.Name),
 			Resolver:              res,
 			OnToolListChanged:     g.onToolListChanged,
 			OnPromptListChanged:   g.onPromptListChanged,
 			OnResourceListChanged: g.onResourceListChanged,
 			OnResourceUpdated:     g.onResourceUpdated,
-		})
+			OnReconnect:           g.onUpstreamReconnect,
+		}
+		if uc.Reconnect != nil {
+			if err := applyReconnectConfig(uc.Reconnect, &uopts); err != nil {
+				return nil, errors.Wrapf(err, "parse reconnect config for upstream %s", uc.Name)
+			}
+		}
+		u, err := NewUpstream(uc, uopts)
 		if err != nil {
 			return nil, err
 		}
@@ -360,6 +368,91 @@ func (g *Gateway) onResourceListChanged(ctx context.Context, upstreamName string
 func (g *Gateway) onResourceUpdated(ctx context.Context, upstreamName, uri string) error {
 	g.logger.Info("resource updated", zap.String("upstream", upstreamName), zap.String("uri", uri))
 	return g.server.ResourceUpdated(ctx, &mcp.ResourceUpdatedNotificationParams{URI: uri})
+}
+
+func applyReconnectConfig(cfg *ReconnectConfig, opts *UpstreamOptions) error {
+	if cfg.KeepAlive != "" {
+		d, err := time.ParseDuration(cfg.KeepAlive)
+		if err != nil {
+			return errors.Wrap(err, "keepalive")
+		}
+		opts.KeepAlive = d
+	}
+	if cfg.InitialBackoff != "" {
+		d, err := time.ParseDuration(cfg.InitialBackoff)
+		if err != nil {
+			return errors.Wrap(err, "initial_backoff")
+		}
+		opts.ReconnectInitial = d
+	}
+	if cfg.MaxBackoff != "" {
+		d, err := time.ParseDuration(cfg.MaxBackoff)
+		if err != nil {
+			return errors.Wrap(err, "max_backoff")
+		}
+		opts.ReconnectMax = d
+	}
+	return nil
+}
+
+func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) error {
+	u := g.upstreamByName(upstreamName)
+	if u == nil {
+		g.logger.Warn("reconnect for unknown upstream", zap.String("upstream", upstreamName))
+		return nil
+	}
+
+	if tools, err := u.ListTools(ctx); err != nil {
+		g.logger.Warn("reconnect list tools failed", zap.String("upstream", upstreamName), zap.Error(err))
+	} else {
+		added, removed, collisions := g.registerUpstreamTools(u, tools)
+		g.logger.Info("tools re-registered after reconnect",
+			zap.String("upstream", upstreamName),
+			zap.Int("added", len(added)),
+			zap.Int("removed", len(removed)),
+			zap.Int("collisions", len(collisions)),
+		)
+	}
+
+	if prompts, err := u.ListPrompts(ctx); err != nil {
+		g.logger.Warn("reconnect list prompts failed", zap.String("upstream", upstreamName), zap.Error(err))
+	} else {
+		added, removed, collisions := g.registerUpstreamPrompts(u, prompts)
+		g.logger.Info("prompts re-registered after reconnect",
+			zap.String("upstream", upstreamName),
+			zap.Int("added", len(added)),
+			zap.Int("removed", len(removed)),
+			zap.Int("collisions", len(collisions)),
+		)
+	}
+
+	resources, err := u.ListResources(ctx)
+	if err != nil {
+		g.logger.Warn("reconnect list resources failed", zap.String("upstream", upstreamName), zap.Error(err))
+	}
+	templates, templateErr := u.ListResourceTemplates(ctx)
+	if templateErr != nil {
+		g.logger.Warn("reconnect list resource templates failed", zap.String("upstream", upstreamName), zap.Error(templateErr))
+	}
+	if err == nil {
+		added, removed, collisions := g.registerUpstreamResources(u, resources)
+		g.logger.Info("resources re-registered after reconnect",
+			zap.String("upstream", upstreamName),
+			zap.Int("added", len(added)),
+			zap.Int("removed", len(removed)),
+			zap.Int("collisions", len(collisions)),
+		)
+	}
+	if templateErr == nil {
+		added, removed, collisions := g.registerUpstreamResourceTemplates(u, templates)
+		g.logger.Info("resource templates re-registered after reconnect",
+			zap.String("upstream", upstreamName),
+			zap.Int("added", len(added)),
+			zap.Int("removed", len(removed)),
+			zap.Int("collisions", len(collisions)),
+		)
+	}
+	return nil
 }
 
 // Build connects upstreams, lists tools, checks collisions, registers handlers.

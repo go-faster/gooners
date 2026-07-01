@@ -5,6 +5,7 @@ import (
 	"context"
 	"log/slog"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/go-faster/errors"
@@ -15,14 +16,23 @@ import (
 
 // Upstream represents one configured upstream MCP server (not yet connected).
 type Upstream struct {
-	cfg            UpstreamConfig
-	client         *mcp.Client
-	session        *mcp.ClientSession
-	resolver       SecretResolver
-	logger         *slog.Logger
-	transport      mcp.Transport
-	cleanup        func() error
-	connectTimeout time.Duration
+	cfg              UpstreamConfig
+	client           *mcp.Client
+	session          *mcp.ClientSession
+	resolver         SecretResolver
+	logger           *slog.Logger
+	transport        mcp.Transport
+	cleanup          func() error
+	connectTimeout   time.Duration
+	keepAlive        time.Duration
+	reconnectInitial time.Duration
+	reconnectMax     time.Duration
+	onReconnect      func(context.Context, string) error
+
+	mu               sync.RWMutex
+	supervisorCancel context.CancelFunc
+	supervisorDone   chan struct{}
+	closed           bool
 }
 
 // UpstreamOptions configures optional dependencies for an Upstream.
@@ -33,7 +43,12 @@ type UpstreamOptions struct {
 	OnPromptListChanged   func(ctx context.Context, upstreamName string) error
 	OnResourceListChanged func(ctx context.Context, upstreamName string) error
 	OnResourceUpdated     func(ctx context.Context, upstreamName, uri string) error
+	OnReconnect           func(ctx context.Context, upstreamName string) error
 	ConnectTimeout        time.Duration
+	// KeepAlive configures SDK ping interval. Negative disables keepalive.
+	KeepAlive        time.Duration
+	ReconnectInitial time.Duration
+	ReconnectMax     time.Duration
 }
 
 func (o *UpstreamOptions) setDefaults() {
@@ -43,20 +58,35 @@ func (o *UpstreamOptions) setDefaults() {
 	if o.ConnectTimeout == 0 {
 		o.ConnectTimeout = 10 * time.Second
 	}
+	if o.KeepAlive == 0 {
+		o.KeepAlive = 30 * time.Second
+	}
+	if o.ReconnectInitial == 0 {
+		o.ReconnectInitial = time.Second
+	}
+	if o.ReconnectMax == 0 {
+		o.ReconnectMax = 30 * time.Second
+	}
 }
 
 // NewUpstream creates an Upstream from config. It does not connect.
 func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 	opts.setDefaults()
+	keepAlive := max(opts.KeepAlive, 0)
 	u := &Upstream{
-		cfg:            cfg,
-		resolver:       opts.Resolver,
-		logger:         opts.Logger,
-		connectTimeout: opts.ConnectTimeout,
+		cfg:              cfg,
+		resolver:         opts.Resolver,
+		logger:           opts.Logger,
+		connectTimeout:   opts.ConnectTimeout,
+		keepAlive:        keepAlive,
+		reconnectInitial: opts.ReconnectInitial,
+		reconnectMax:     opts.ReconnectMax,
+		onReconnect:      opts.OnReconnect,
 	}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
-		Logger: opts.Logger,
+		Logger:    opts.Logger,
+		KeepAlive: keepAlive,
 		ToolListChangedHandler: func(_ context.Context, _ *mcp.ToolListChangedRequest) {
 			if opts.OnToolListChanged != nil {
 				_ = opts.OnToolListChanged(context.Background(), cfg.Name)
@@ -84,15 +114,35 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 // Connect establishes the session using the injected BuildTransport.
 // If the session is already set (e.g. by test helper), this is a no-op.
 func (u *Upstream) Connect(ctx context.Context) error {
-	if u.session != nil {
+	u.mu.RLock()
+	connected := u.session != nil
+	u.mu.RUnlock()
+	if connected {
+		u.startSupervisor(ctx, u.onReconnect)
+		return nil
+	}
+	if err := u.connectOnce(ctx); err != nil {
+		return err
+	}
+	u.startSupervisor(ctx, u.onReconnect)
+	return nil
+}
+
+func (u *Upstream) connectOnce(ctx context.Context) error {
+	u.mu.RLock()
+	closed := u.closed
+	connected := u.session != nil
+	u.mu.RUnlock()
+	if closed {
+		return errors.New("upstream closed")
+	}
+	if connected {
 		return nil
 	}
 	tr, cl, err := BuildTransport(ctx, u.cfg, u.resolver)
 	if err != nil {
 		return errors.Wrap(err, "build transport")
 	}
-	u.transport = tr
-	u.cleanup = cl
 	timeout := u.connectTimeout
 	if timeout == 0 {
 		timeout = 10 * time.Second
@@ -101,13 +151,138 @@ func (u *Upstream) Connect(ctx context.Context) error {
 	defer cancel()
 	sess, err := u.client.Connect(cctx, tr, nil)
 	if err != nil {
-		u.transport = nil
-		u.cleanup = nil
-		u.session = nil
+		if cl != nil {
+			_ = cl()
+		}
 		return errors.Wrap(err, "connect")
 	}
+	u.mu.Lock()
+	if u.closed {
+		u.mu.Unlock()
+		_ = sess.Close()
+		if cl != nil {
+			_ = cl()
+		}
+		return errors.New("upstream closed")
+	}
+	u.transport = tr
+	u.cleanup = cl
 	u.session = sess
+	u.mu.Unlock()
 	return nil
+}
+
+func (u *Upstream) startSupervisor(ctx context.Context, onReconnect func(context.Context, string) error) {
+	u.mu.Lock()
+	if u.closed || u.supervisorDone != nil || u.reconnectInitial <= 0 {
+		u.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	u.supervisorCancel = cancel
+	u.supervisorDone = done
+	u.mu.Unlock()
+
+	go u.supervise(ctx, done, onReconnect)
+}
+
+func (u *Upstream) supervise(ctx context.Context, done chan struct{}, onReconnect func(context.Context, string) error) {
+	defer close(done)
+	backoff := u.reconnectInitial
+	attempt := 0
+	for {
+		sess := u.currentSession()
+		if sess == nil {
+			return
+		}
+		waitErr := make(chan error, 1)
+		go func() {
+			waitErr <- sess.Wait()
+		}()
+		var err error
+		select {
+		case <-ctx.Done():
+			_ = sess.Close()
+			<-waitErr
+			return
+		case err = <-waitErr:
+		}
+		u.logger.Info("upstream session dropped", "error", err)
+		u.closeSessionResources()
+
+		for {
+			if !waitBackoff(ctx, backoff) {
+				return
+			}
+			attempt++
+			if err := u.connectOnce(ctx); err != nil {
+				u.logger.Warn("upstream reconnect failed", "attempt", attempt, "backoff", backoff, "error", err)
+				backoff = nextBackoff(backoff, u.reconnectInitial, u.reconnectMax)
+				continue
+			}
+			u.logger.Info("upstream reconnected", "attempt", attempt)
+			backoff = u.reconnectInitial
+			attempt = 0
+			if onReconnect != nil {
+				if err := onReconnect(ctx, u.cfg.Name); err != nil {
+					u.logger.Warn("upstream reconnect re-sync failed", "error", err)
+				}
+			}
+			break
+		}
+	}
+}
+
+func waitBackoff(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func nextBackoff(current, initial, maxBackoff time.Duration) time.Duration {
+	if current <= 0 {
+		current = initial
+	}
+	next := current * 2
+	if next < current || next > maxBackoff {
+		return maxBackoff
+	}
+	return next
+}
+
+func (u *Upstream) currentSession() *mcp.ClientSession {
+	u.mu.RLock()
+	defer u.mu.RUnlock()
+	return u.session
+}
+
+func (u *Upstream) closeSessionResources() {
+	u.mu.Lock()
+	sess := u.session
+	cleanup := u.cleanup
+	u.session = nil
+	u.transport = nil
+	u.cleanup = nil
+	u.mu.Unlock()
+	if sess != nil {
+		_ = sess.Close()
+	}
+	if cleanup != nil {
+		_ = cleanup()
+	}
 }
 
 // init wires the default BuildTransport using the transport package.
@@ -127,7 +302,7 @@ var BuildTransport = func(_ context.Context, _ UpstreamConfig, _ SecretResolver)
 
 // newUpstreamWithTransport is a test helper that injects a ready transport.
 func newUpstreamWithTransport(cfg UpstreamConfig, tr mcp.Transport, cl func() error) *Upstream {
-	return &Upstream{cfg: cfg, transport: tr, cleanup: cl}
+	return &Upstream{cfg: cfg, transport: tr, cleanup: cl, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second}
 }
 
 // newUpstreamWithInMemoryClient constructs Upstream with mcp.Client wired to call handlerOnListChanged on tool list changed.
@@ -141,11 +316,12 @@ type upstreamCallbacks struct {
 	OnPromptListChanged   func(context.Context, string) error
 	OnResourceListChanged func(context.Context, string) error
 	OnResourceUpdated     func(context.Context, string, string) error
+	OnReconnect           func(context.Context, string) error
 }
 
 // newUpstreamWithInMemoryClientWithCallbacks constructs Upstream with mcp.Client wired to call the provided callbacks.
 func newUpstreamWithInMemoryClientWithCallbacks(cfg UpstreamConfig, clientTr mcp.Transport, cb upstreamCallbacks) *Upstream {
-	u := &Upstream{cfg: cfg}
+	u := &Upstream{cfg: cfg, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second, onReconnect: cb.OnReconnect}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
 		Logger: slog.Default(),
@@ -179,21 +355,48 @@ func (u *Upstream) Name() string { return u.cfg.Name }
 
 // Close shuts the session and runs cleanup.
 func (u *Upstream) Close(_ context.Context) error {
-	if u.session != nil {
-		_ = u.session.Close()
+	u.mu.Lock()
+	if u.closed {
+		done := u.supervisorDone
+		u.mu.Unlock()
+		if done != nil {
+			timer := time.NewTimer(5 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-done:
+			case <-timer.C:
+				u.logger.Warn("timed out waiting for upstream supervisor")
+			}
+		}
+		return nil
 	}
-	if u.cleanup != nil {
-		_ = u.cleanup()
+	u.closed = true
+	cancel := u.supervisorCancel
+	done := u.supervisorDone
+	u.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	u.closeSessionResources()
+	if done != nil {
+		timer := time.NewTimer(5 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+			u.logger.Warn("timed out waiting for upstream supervisor")
+		}
 	}
 	return nil
 }
 
 // ListTools calls the upstream.
 func (u *Upstream) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
-	if u.session == nil {
+	sess := u.currentSession()
+	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := u.session.ListTools(ctx, &mcp.ListToolsParams{})
+	res, err := sess.ListTools(ctx, &mcp.ListToolsParams{})
 	if err != nil {
 		return nil, err
 	}
@@ -202,18 +405,20 @@ func (u *Upstream) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 
 // CallTool forwards the call to the upstream session.
 func (u *Upstream) CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
-	if u.session == nil {
+	sess := u.currentSession()
+	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	return u.session.CallTool(ctx, params)
+	return sess.CallTool(ctx, params)
 }
 
 // ListPrompts calls the upstream.
 func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
-	if u.session == nil {
+	sess := u.currentSession()
+	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := u.session.ListPrompts(ctx, &mcp.ListPromptsParams{})
+	res, err := sess.ListPrompts(ctx, &mcp.ListPromptsParams{})
 	if err != nil {
 		return nil, err
 	}
@@ -222,18 +427,20 @@ func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
 
 // GetPrompt forwards the call to the upstream session.
 func (u *Upstream) GetPrompt(ctx context.Context, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
-	if u.session == nil {
+	sess := u.currentSession()
+	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	return u.session.GetPrompt(ctx, params)
+	return sess.GetPrompt(ctx, params)
 }
 
 // ListResources calls the upstream.
 func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
-	if u.session == nil {
+	sess := u.currentSession()
+	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := u.session.ListResources(ctx, &mcp.ListResourcesParams{})
+	res, err := sess.ListResources(ctx, &mcp.ListResourcesParams{})
 	if err != nil {
 		return nil, err
 	}
@@ -242,10 +449,11 @@ func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
 
 // ListResourceTemplates calls the upstream.
 func (u *Upstream) ListResourceTemplates(ctx context.Context) ([]*mcp.ResourceTemplate, error) {
-	if u.session == nil {
+	sess := u.currentSession()
+	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := u.session.ListResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{})
+	res, err := sess.ListResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{})
 	if err != nil {
 		return nil, err
 	}
@@ -254,10 +462,11 @@ func (u *Upstream) ListResourceTemplates(ctx context.Context) ([]*mcp.ResourceTe
 
 // ReadResource forwards the call to the upstream session.
 func (u *Upstream) ReadResource(ctx context.Context, params *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error) {
-	if u.session == nil {
+	sess := u.currentSession()
+	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	return u.session.ReadResource(ctx, params)
+	return sess.ReadResource(ctx, params)
 }
 
 // BuildTools applies prefix, allow/deny globs (via path.Match), and desc trim.
