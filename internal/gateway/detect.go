@@ -4,6 +4,9 @@
 // bounded Shannon-entropy detection for high-entropy strings when enabled.
 // Entropy detection is intentionally conservative (len>=20) and may produce
 // false negatives on short secrets or false positives on random-looking data.
+//
+// Window-size math: a 20-rune window caps maximum entropy at log2(20) ≈ 4.32 bits.
+// Set minEntropy in the 3.5–3.8 range for practical API key / base64 detection.
 package gateway
 
 import (
@@ -11,6 +14,10 @@ import (
 	"regexp"
 	"strings"
 )
+
+// redactedRunes is the replacement sequence appended on every high-entropy hit.
+// Declared once at package level to avoid a new []rune allocation per redaction.
+var redactedRunes = []rune("[REDACTED]")
 
 // Redactor replaces sensitive substrings in text output.
 type Redactor struct {
@@ -57,31 +64,76 @@ func (r *Redactor) Redact(s string) string {
 	return s
 }
 
+// redactHighEntropy scans s in 20-rune sliding windows. Each window whose
+// Shannon entropy meets or exceeds minEntropy is replaced with [REDACTED] and
+// the scan advances past the full window. Non-overlapping windows are used
+// after a hit to avoid re-examining already-redacted material.
+//
+// Complexity: O(n·windowSize) time, O(n) space. The inner entropy calculation
+// uses a stack-allocated [256]float64 frequency array rather than a map to
+// eliminate GC pressure when scanning long strings. Non-ASCII runes in a window
+// are skipped in the frequency count; entropy may be underestimated for non-Latin
+// text, but this is correct for typical secrets (base64, hex, alphanumeric).
 func redactHighEntropy(s string, minEntropy float64) string {
-	// very simple: scan for >=20 char substrings with entropy >= min
-	for i := 0; i+20 <= len(s); i++ {
-		sub := s[i : i+20]
-		if shannon(sub) >= minEntropy {
-			s = s[:i] + "[REDACTED]" + s[i+20:]
-			i += 8 // rough skip
-		}
+	const windowSize = 20
+	runes := []rune(s)
+	n := len(runes)
+	if n < windowSize {
+		return s // strings shorter than the window can never trigger detection
 	}
-	return s
+
+	var out []rune
+	pos := 0
+	for pos+windowSize <= n {
+		win := runes[pos : pos+windowSize]
+		if shannonRunes(win) >= minEntropy {
+			if out == nil {
+				out = make([]rune, 0, n)
+				out = append(out, runes[:pos]...)
+			}
+			out = append(out, redactedRunes...)
+			pos += windowSize
+			continue
+		}
+		if out != nil {
+			out = append(out, runes[pos])
+		}
+		pos++
+	}
+
+	if out == nil {
+		return s // fast path: nothing was redacted
+	}
+	// append any tail runes that fell outside the last full window
+	out = append(out, runes[pos:]...)
+	return string(out)
 }
 
-func shannon(s string) float64 {
-	if s == "" {
+// shannonRunes computes the Shannon entropy of the rune window in bits.
+// Only runes in the Latin-1 range (0–255) are counted; higher code points are
+// skipped. This is deliberate: API keys, tokens, and base64 strings are
+// composed entirely of ASCII, so ignoring non-ASCII avoids inflating counts.
+// A stack-allocated [256]float64 array is used instead of a map to avoid
+// heap allocation on every call.
+func shannonRunes(win []rune) float64 {
+	var counts [256]float64
+	counted := 0
+	for _, r := range win {
+		if r < 256 {
+			counts[r]++
+			counted++
+		}
+	}
+	if counted == 0 {
 		return 0
 	}
-	counts := map[rune]int{}
-	for _, r := range s {
-		counts[r]++
-	}
 	var e float64
-	n := float64(len(s))
-	for _, c := range counts {
-		p := float64(c) / n
-		e -= p * math.Log2(p)
+	n := float64(counted)
+	for _, c := range &counts {
+		if c > 0 {
+			p := c / n
+			e -= p * math.Log2(p)
+		}
 	}
 	return e
 }
