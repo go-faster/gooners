@@ -622,7 +622,7 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 		prevTool := g.registry.registeredTools[name]
 		changed := !toolEqual(prevTool, final)
 		if owned && owner != u.cfg.Name {
-			collisions = append(collisions, Collision{Upstream: owner, Tool: "", ResultName: name})
+			collisions = append(collisions, Collision{Upstream: owner, Tool: rawNameByFinal[name], ResultName: name})
 			continue
 		}
 		if !owned || changed {

@@ -87,24 +87,32 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
 		Logger:    opts.Logger,
 		KeepAlive: keepAlive,
-		ToolListChangedHandler: func(_ context.Context, _ *mcp.ToolListChangedRequest) {
+		ToolListChangedHandler: func(ctx context.Context, _ *mcp.ToolListChangedRequest) {
 			if opts.OnToolListChanged != nil {
-				_ = opts.OnToolListChanged(context.Background(), cfg.Name)
+				if err := opts.OnToolListChanged(ctx, cfg.Name); err != nil {
+					u.logger.Warn("tool list changed handler failed", "upstream", cfg.Name, "error", err)
+				}
 			}
 		},
-		PromptListChangedHandler: func(_ context.Context, _ *mcp.PromptListChangedRequest) {
+		PromptListChangedHandler: func(ctx context.Context, _ *mcp.PromptListChangedRequest) {
 			if opts.OnPromptListChanged != nil {
-				_ = opts.OnPromptListChanged(context.Background(), cfg.Name)
+				if err := opts.OnPromptListChanged(ctx, cfg.Name); err != nil {
+					u.logger.Warn("prompt list changed handler failed", "upstream", cfg.Name, "error", err)
+				}
 			}
 		},
-		ResourceListChangedHandler: func(_ context.Context, _ *mcp.ResourceListChangedRequest) {
+		ResourceListChangedHandler: func(ctx context.Context, _ *mcp.ResourceListChangedRequest) {
 			if opts.OnResourceListChanged != nil {
-				_ = opts.OnResourceListChanged(context.Background(), cfg.Name)
+				if err := opts.OnResourceListChanged(ctx, cfg.Name); err != nil {
+					u.logger.Warn("resource list changed handler failed", "upstream", cfg.Name, "error", err)
+				}
 			}
 		},
-		ResourceUpdatedHandler: func(_ context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
+		ResourceUpdatedHandler: func(ctx context.Context, req *mcp.ResourceUpdatedNotificationRequest) {
 			if opts.OnResourceUpdated != nil && req != nil && req.Params != nil {
-				_ = opts.OnResourceUpdated(context.Background(), cfg.Name, req.Params.URI)
+				if err := opts.OnResourceUpdated(ctx, cfg.Name, req.Params.URI); err != nil {
+					u.logger.Warn("resource updated handler failed", "upstream", cfg.Name, "error", err)
+				}
 			}
 		},
 	})
@@ -174,7 +182,7 @@ func (u *Upstream) connectOnce(ctx context.Context) error {
 
 func (u *Upstream) startSupervisor(ctx context.Context, onReconnect func(context.Context, string) error) {
 	u.mu.Lock()
-	if u.closed || u.supervisorDone != nil || u.reconnectInitial <= 0 {
+	if u.closed || u.supervisorDone != nil || u.reconnectInitial < 0 {
 		u.mu.Unlock()
 		return
 	}

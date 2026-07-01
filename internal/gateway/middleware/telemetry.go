@@ -88,14 +88,15 @@ func NewTelemetry(next mcp.ToolHandler, opts TelemetryOptions) (mcp.ToolHandler,
 
 		start := time.Now()
 		res, err := next(ctx, req)
+		elapsed := time.Since(start)
 		lg.Info("tool call",
 			zap.String("name", req.Params.Name),
-			zap.Duration("took", time.Since(start)),
+			zap.Duration("took", elapsed),
 			zap.Error(err),
 		)
 		status := statusAttr(err)
 		m.Calls.Add(ctx, 1, metric.WithAttributes(status))
-		m.CallDuration.Record(ctx, time.Since(start).Seconds())
+		m.CallDuration.Record(ctx, elapsed.Seconds())
 
 		return res, err
 	}
