@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -104,6 +105,9 @@ func TestSecretResolver_Env_FallbackOnEmpty(t *testing.T) {
 }
 
 func TestSecretResolver_Command_NoCache(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("command secret source uses sh, not available on Windows")
+	}
 	dir := t.TempDir()
 	cnt := filepath.Join(dir, "cnt")
 	require.NoError(t, os.WriteFile(cnt, []byte("0\n"), 0o600))

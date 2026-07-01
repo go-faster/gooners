@@ -72,7 +72,7 @@ func (r *secretResolver) Resolve(ctx context.Context, name string) (string, erro
 }
 
 // resolveSource reads the secret value from its source without holding any lock.
-func (r *secretResolver) resolveSource(_ context.Context, name string, src SecretSource) (string, error) {
+func (r *secretResolver) resolveSource(ctx context.Context, name string, src SecretSource) (string, error) {
 	switch {
 	case src.Value != "":
 		return src.Value, nil
@@ -97,7 +97,7 @@ func (r *secretResolver) resolveSource(_ context.Context, name string, src Secre
 			return "", errors.New("empty command for secret")
 		}
 		argv = append(argv, name)
-		out, cmdErr := exec.Command(argv[0], argv[1:]...).Output() //nolint:gosec // G204: argv comes from operator TOML config, not user input
+		out, cmdErr := exec.CommandContext(ctx, argv[0], argv[1:]...).Output() //nolint:gosec // G204: argv comes from operator TOML config, not user input
 		if cmdErr != nil {
 			return "", errors.Wrapf(cmdErr, "run command for secret %q", name)
 		}
