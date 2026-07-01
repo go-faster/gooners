@@ -632,6 +632,7 @@ func TestGateway_RedactsToolOutput(t *testing.T) {
 	require.NoError(t, err)
 
 	u := newUpstreamWithInMemoryClient(cfg.Upstreams[0], upClientTr, g.onToolListChanged)
+	u.redactor = g.redactor
 	g.upstreams = []*Upstream{u}
 
 	sess, err := u.client.Connect(t.Context(), upClientTr, nil)

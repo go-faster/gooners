@@ -145,7 +145,7 @@ func (r *featureRegistry[T]) ensureUpstream(up string) {
 	}
 }
 
-func (r *featureRegistry[T]) diff(upstream string, newPayloads map[string]T, _ map[string]string) (toRemove, toAddOrChange []string, collisions []Collision) {
+func (r *featureRegistry[T]) diff(upstream string, newPayloads map[string]T, rawNameByFinal map[string]string) (toRemove, toAddOrChange []string, collisions []Collision) {
 	r.ensureUpstream(upstream)
 	prev := r.upstreamRegistered[upstream]
 	for name := range prev {
@@ -156,7 +156,13 @@ func (r *featureRegistry[T]) diff(upstream string, newPayloads map[string]T, _ m
 	for name, newP := range newPayloads {
 		owner, owned := r.finalToUpstream[name]
 		if owned && owner != upstream {
-			collisions = append(collisions, Collision{Upstream: owner, Tool: "", ResultName: name})
+			rawName := name
+			if rawNameByFinal != nil {
+				if n, ok := rawNameByFinal[name]; ok {
+					rawName = n
+				}
+			}
+			collisions = append(collisions, Collision{Upstream: owner, Tool: rawName, ResultName: name})
 			continue
 		}
 		if owned && owner == upstream {
@@ -265,6 +271,20 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 			OnResourceUpdated:     g.onResourceUpdated,
 			OnReconnect:           g.onUpstreamReconnect,
 		}
+
+		uopts.Redactor = redactor
+		if uc.Redact != nil {
+			if uc.Redact.Enabled {
+				r, err := NewRedactor(uc.Redact.Patterns, uc.Redact.MinEntropy)
+				if err != nil {
+					return nil, errors.Wrapf(err, "upstream %q: create redactor", uc.Name)
+				}
+				uopts.Redactor = r
+			} else {
+				uopts.Redactor = nil
+			}
+		}
+
 		if uc.Reconnect != nil {
 			if err := applyReconnectConfig(uc.Reconnect, &uopts); err != nil {
 				return nil, errors.Wrapf(err, "parse reconnect config for upstream %s", uc.Name)
@@ -297,7 +317,14 @@ func (g *Gateway) onToolListChanged(ctx context.Context, upstreamName string) er
 	}
 	added, removed, collisions := g.registerUpstreamTools(u, tools)
 	if len(collisions) > 0 {
-		g.logger.Warn("re-sync collisions", zap.String("upstream", upstreamName), zap.Int("collisions", len(collisions)))
+		for _, c := range collisions {
+			g.logger.Warn("tool collision: name already owned by another upstream",
+				zap.String("upstream", upstreamName),
+				zap.String("owner", c.Upstream),
+				zap.String("tool", c.Tool),
+				zap.String("result_name", c.ResultName),
+			)
+		}
 	}
 	g.logger.Info("tools re-synced",
 		zap.String("upstream", upstreamName),
@@ -321,7 +348,14 @@ func (g *Gateway) onPromptListChanged(ctx context.Context, upstreamName string) 
 	}
 	added, removed, collisions := g.registerUpstreamPrompts(u, prompts)
 	if len(collisions) > 0 {
-		g.logger.Warn("re-sync collisions", zap.String("upstream", upstreamName), zap.Int("collisions", len(collisions)))
+		for _, c := range collisions {
+			g.logger.Warn("prompt collision: name already owned by another upstream",
+				zap.String("upstream", upstreamName),
+				zap.String("owner", c.Upstream),
+				zap.String("tool", c.Tool),
+				zap.String("result_name", c.ResultName),
+			)
+		}
 	}
 	g.logger.Info("prompts re-synced",
 		zap.String("upstream", upstreamName),
@@ -354,7 +388,14 @@ func (g *Gateway) onResourceListChanged(ctx context.Context, upstreamName string
 	collisions = append(collisions, collisionsR...)
 	collisions = append(collisions, collisionsT...)
 	if len(collisions) > 0 {
-		g.logger.Warn("re-sync collisions", zap.String("upstream", upstreamName), zap.Int("collisions", len(collisions)))
+		for _, c := range collisions {
+			g.logger.Warn("resource collision: name already owned by another upstream",
+				zap.String("upstream", upstreamName),
+				zap.String("owner", c.Upstream),
+				zap.String("tool", c.Tool),
+				zap.String("result_name", c.ResultName),
+			)
+		}
 	}
 	g.logger.Info("resources re-synced",
 		zap.String("upstream", upstreamName),
@@ -406,6 +447,16 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 		g.logger.Warn("reconnect list tools failed", zap.String("upstream", upstreamName), zap.Error(err))
 	} else {
 		added, removed, collisions := g.registerUpstreamTools(u, tools)
+		if len(collisions) > 0 {
+			for _, c := range collisions {
+				g.logger.Warn("tool collision: name already owned by another upstream",
+					zap.String("upstream", upstreamName),
+					zap.String("owner", c.Upstream),
+					zap.String("tool", c.Tool),
+					zap.String("result_name", c.ResultName),
+				)
+			}
+		}
 		g.logger.Info("tools re-registered after reconnect",
 			zap.String("upstream", upstreamName),
 			zap.Int("added", len(added)),
@@ -418,6 +469,16 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 		g.logger.Warn("reconnect list prompts failed", zap.String("upstream", upstreamName), zap.Error(err))
 	} else {
 		added, removed, collisions := g.registerUpstreamPrompts(u, prompts)
+		if len(collisions) > 0 {
+			for _, c := range collisions {
+				g.logger.Warn("prompt collision: name already owned by another upstream",
+					zap.String("upstream", upstreamName),
+					zap.String("owner", c.Upstream),
+					zap.String("tool", c.Tool),
+					zap.String("result_name", c.ResultName),
+				)
+			}
+		}
 		g.logger.Info("prompts re-registered after reconnect",
 			zap.String("upstream", upstreamName),
 			zap.Int("added", len(added)),
@@ -436,6 +497,16 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 	}
 	if err == nil {
 		added, removed, collisions := g.registerUpstreamResources(u, resources)
+		if len(collisions) > 0 {
+			for _, c := range collisions {
+				g.logger.Warn("resource collision: name already owned by another upstream",
+					zap.String("upstream", upstreamName),
+					zap.String("owner", c.Upstream),
+					zap.String("tool", c.Tool),
+					zap.String("result_name", c.ResultName),
+				)
+			}
+		}
 		g.logger.Info("resources re-registered after reconnect",
 			zap.String("upstream", upstreamName),
 			zap.Int("added", len(added)),
@@ -445,6 +516,16 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 	}
 	if templateErr == nil {
 		added, removed, collisions := g.registerUpstreamResourceTemplates(u, templates)
+		if len(collisions) > 0 {
+			for _, c := range collisions {
+				g.logger.Warn("resource template collision: name already owned by another upstream",
+					zap.String("upstream", upstreamName),
+					zap.String("owner", c.Upstream),
+					zap.String("tool", c.Tool),
+					zap.String("result_name", c.ResultName),
+				)
+			}
+		}
 		g.logger.Info("resource templates re-registered after reconnect",
 			zap.String("upstream", upstreamName),
 			zap.Int("added", len(added)),
@@ -520,15 +601,15 @@ func (g *Gateway) Build(ctx context.Context) error {
 		_ = g.Close(ctx)
 		return err
 	}
-	if err := DetectCollisions(map[string]string{}, promptSets); err != nil {
+	if err := DetectCollisions(prefixes, promptSets); err != nil {
 		_ = g.Close(ctx)
 		return err
 	}
-	if err := DetectCollisions(map[string]string{}, resourceSets); err != nil {
+	if err := DetectCollisions(prefixes, resourceSets); err != nil {
 		_ = g.Close(ctx)
 		return err
 	}
-	if err := DetectCollisions(map[string]string{}, templateSets); err != nil {
+	if err := DetectCollisions(prefixes, templateSets); err != nil {
 		_ = g.Close(ctx)
 		return err
 	}
@@ -576,6 +657,10 @@ func (g *Gateway) Build(ctx context.Context) error {
 // Server returns the local MCP server for transport.Run.
 func (g *Gateway) Server() *mcp.Server { return g.server }
 
+// registerUpstreamTools applies the same diff/apply algorithm as featureRegistry[T]
+// but for tools, which additionally support prefix/allow/deny/desc-trim and
+// per-upstream redactor middleware wiring. Any fix to the core sync logic
+// must be mirrored here.
 func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (added, removed []string, collisions []Collision) {
 	g.registryMu.Lock()
 	defer g.registryMu.Unlock()
@@ -641,8 +726,8 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 			} else {
 				h = mw
 			}
-			if g.redactor != nil {
-				h = middleware.Redact(g.redactor.Redact)(h)
+			if u.redactor != nil {
+				h = middleware.Redact(u.redactor.Redact)(h)
 			}
 			g.server.AddTool(final, h)
 			g.registry.finalToUpstream[name] = u.cfg.Name
