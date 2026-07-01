@@ -204,7 +204,7 @@ func TestInterpolate_Table(t *testing.T) {
 			} else {
 				r = resolver(tt.secrets)
 			}
-			got, err := Interpolate(tt.input, r)
+			got, err := Interpolate(t.Context(), tt.input, r)
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -216,6 +216,6 @@ func TestInterpolate_Table(t *testing.T) {
 }
 
 func TestInterpolate_NilResolverRejectsSecretRef(t *testing.T) {
-	_, err := Interpolate("{secret:x}", nil)
+	_, err := Interpolate(t.Context(), "{secret:x}", nil)
 	require.Error(t, err)
 }
