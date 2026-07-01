@@ -660,20 +660,19 @@ func TestGateway_OnReconnect_ReRegistersAll(t *testing.T) {
 	clientTr1, cancel1 := newFeatureServer(t, "up1")
 	clientTr2, cancel2 := newFeatureServer(t, "up2")
 	defer cancel2()
+	t.Cleanup(cancel1)
 
 	transports := make(chan mcp.Transport, 2)
 	transports <- clientTr1
 	transports <- clientTr2
-	oldBuildTransport := BuildTransport
-	BuildTransport = func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
+	buildFn := TransportBuilder(func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
 		select {
 		case tr := <-transports:
 			return tr, func() error { return nil }, nil
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
 		}
-	}
-	t.Cleanup(func() { BuildTransport = oldBuildTransport })
+	})
 
 	cfg := &Config{
 		Server: ServerConfig{Name: "gw"},
@@ -690,6 +689,7 @@ func TestGateway_OnReconnect_ReRegistersAll(t *testing.T) {
 	}
 	g, err := New(cfg, Options{})
 	require.NoError(t, err)
+	g.upstreams[0].buildTransport = buildFn
 	reconnected := make(chan struct{}, 1)
 	g.upstreams[0].onReconnect = func(ctx context.Context, upstreamName string) error {
 		err := g.onUpstreamReconnect(ctx, upstreamName)
@@ -739,16 +739,14 @@ func TestGateway_Close_StopsAllSupervisors(t *testing.T) {
 	transports := make(chan mcp.Transport, 2)
 	transports <- clientTr1
 	transports <- clientTr2
-	oldBuildTransport := BuildTransport
-	BuildTransport = func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
+	buildFn := TransportBuilder(func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
 		select {
 		case tr := <-transports:
 			return tr, func() error { return nil }, nil
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
 		}
-	}
-	t.Cleanup(func() { BuildTransport = oldBuildTransport })
+	})
 
 	cfg := &Config{
 		Server: ServerConfig{Name: "gw"},
@@ -759,6 +757,9 @@ func TestGateway_Close_StopsAllSupervisors(t *testing.T) {
 	}
 	g, err := New(cfg, Options{})
 	require.NoError(t, err)
+	for _, u := range g.upstreams {
+		u.buildTransport = buildFn
+	}
 	require.NoError(t, g.Build(t.Context()))
 
 	done := make(chan error, 1)

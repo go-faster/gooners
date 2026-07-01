@@ -705,7 +705,11 @@ func (g *Gateway) registerUpstreamPrompts(u *Upstream, rawPrompts []*mcp.Prompt)
 			added = append(added, name)
 		}
 	}
-	g.promptRegistry.apply(u.cfg.Name, toRemove, promptByFinal, newSet)
+	toAddOrChangeMap := make(map[string]*mcp.Prompt, len(toAddOrChange))
+	for _, name := range toAddOrChange {
+		toAddOrChangeMap[name] = promptByFinal[name]
+	}
+	g.promptRegistry.apply(u.cfg.Name, toRemove, toAddOrChangeMap, newSet)
 
 	return added, removed, collisions
 }
@@ -750,7 +754,11 @@ func (g *Gateway) registerUpstreamResources(u *Upstream, rawResources []*mcp.Res
 			added = append(added, uri)
 		}
 	}
-	g.resourceRegistry.apply(u.cfg.Name, toRemove, resByFinal, newSet)
+	toAddOrChangeMap := make(map[string]*mcp.Resource, len(toAddOrChange))
+	for _, uri := range toAddOrChange {
+		toAddOrChangeMap[uri] = resByFinal[uri]
+	}
+	g.resourceRegistry.apply(u.cfg.Name, toRemove, toAddOrChangeMap, newSet)
 
 	return added, removed, collisions
 }
@@ -794,7 +802,11 @@ func (g *Gateway) registerUpstreamResourceTemplates(u *Upstream, rawTemplates []
 			added = append(added, ut)
 		}
 	}
-	g.resourceTemplateRegistry.apply(u.cfg.Name, toRemove, tplByFinal, newSet)
+	toAddOrChangeMap := make(map[string]*mcp.ResourceTemplate, len(toAddOrChange))
+	for _, ut := range toAddOrChange {
+		toAddOrChangeMap[ut] = tplByFinal[ut]
+	}
+	g.resourceTemplateRegistry.apply(u.cfg.Name, toRemove, toAddOrChangeMap, newSet)
 
 	return added, removed, collisions
 }
