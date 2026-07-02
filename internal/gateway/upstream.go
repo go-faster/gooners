@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"context"
+	"iter"
 	"log/slog"
 	"path"
 	"sync"
@@ -426,11 +427,7 @@ func (u *Upstream) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := sess.ListTools(ctx, &mcp.ListToolsParams{})
-	if err != nil {
-		return nil, err
-	}
-	return res.Tools, nil
+	return collectSeq(sess.Tools(ctx, &mcp.ListToolsParams{}))
 }
 
 // CallTool forwards the call to the upstream session.
@@ -448,11 +445,7 @@ func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
 	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := sess.ListPrompts(ctx, &mcp.ListPromptsParams{})
-	if err != nil {
-		return nil, err
-	}
-	return res.Prompts, nil
+	return collectSeq(sess.Prompts(ctx, &mcp.ListPromptsParams{}))
 }
 
 // GetPrompt forwards the call to the upstream session.
@@ -470,11 +463,7 @@ func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
 	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := sess.ListResources(ctx, &mcp.ListResourcesParams{})
-	if err != nil {
-		return nil, err
-	}
-	return res.Resources, nil
+	return collectSeq(sess.Resources(ctx, &mcp.ListResourcesParams{}))
 }
 
 // ListResourceTemplates calls the upstream.
@@ -483,11 +472,18 @@ func (u *Upstream) ListResourceTemplates(ctx context.Context) ([]*mcp.ResourceTe
 	if sess == nil {
 		return nil, errors.New("not connected")
 	}
-	res, err := sess.ListResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{})
-	if err != nil {
-		return nil, err
+	return collectSeq(sess.ResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{}))
+}
+
+func collectSeq[T any](seq iter.Seq2[T, error]) ([]T, error) {
+	out := make([]T, 0)
+	for v, err := range seq {
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
 	}
-	return res.ResourceTemplates, nil
+	return out, nil
 }
 
 // ReadResource forwards the call to the upstream session.

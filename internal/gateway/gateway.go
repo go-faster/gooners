@@ -175,7 +175,6 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		promptRegistry:           newFeatureRegistry[*mcp.Prompt](promptEqual),
 		resourceRegistry:         newFeatureRegistry[*mcp.Resource](resourceEqual),
 		resourceTemplateRegistry: newFeatureRegistry[*mcp.ResourceTemplate](resourceTemplateEqual),
-		server:                   &mcp.Server{},
 		upstreams:                []*Upstream{},
 		registryMu:               sync.RWMutex{},
 		mp:                       opts.MeterProvider,
@@ -535,11 +534,11 @@ func (g *Gateway) Build(ctx context.Context) error {
 		_ = g.Close(ctx)
 		return err
 	}
-	if err := DetectCollisions(prefixes, resourceSets); err != nil {
+	if err := DetectCollisions(map[string]string{}, resourceSets); err != nil {
 		_ = g.Close(ctx)
 		return err
 	}
-	if err := DetectCollisions(prefixes, templateSets); err != nil {
+	if err := DetectCollisions(map[string]string{}, templateSets); err != nil {
 		_ = g.Close(ctx)
 		return err
 	}
@@ -643,7 +642,7 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 		if !owned || changed {
 			orig := rawNameByFinal[name]
 			h := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return u.CallTool(ctx, &mcp.CallToolParams{Name: orig, Arguments: req.Params.Arguments})
+				return u.CallTool(ctx, &mcp.CallToolParams{Meta: req.Params.Meta, Name: orig, Arguments: req.Params.Arguments})
 			}
 			mw, err := middleware.NewTelemetry(h, middleware.TelemetryOptions{
 				Upstream:       u.cfg.Name,
@@ -713,7 +712,7 @@ func (g *Gateway) registerUpstreamPrompts(u *Upstream, rawPrompts []*mcp.Prompt)
 		orig := rawNameByFinal[name]
 		final := promptByFinal[name]
 		h := func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			return u.GetPrompt(ctx, &mcp.GetPromptParams{Name: orig, Arguments: req.Params.Arguments})
+			return u.GetPrompt(ctx, &mcp.GetPromptParams{Meta: req.Params.Meta, Name: orig, Arguments: req.Params.Arguments})
 		}
 		g.server.AddPrompt(final, h)
 		if _, owned := g.promptRegistry.finalToUpstream[name]; !owned {

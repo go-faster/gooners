@@ -295,8 +295,11 @@ func TestGateway_Build_RegistersPrompt(t *testing.T) {
 
 func TestGateway_Build_RegistersResource(t *testing.T) {
 	upServerTr, upClientTr := mcp.NewInMemoryTransports()
-	srv := mcp.NewServer(&mcp.Implementation{Name: "up", Version: "0"}, nil)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "up", Version: "0"}, &mcp.ServerOptions{PageSize: 1})
 	srv.AddResource(&mcp.Resource{URI: "file:///foo.txt", Name: "foo", Description: "a file"}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	srv.AddResource(&mcp.Resource{URI: "file:///bar.txt", Name: "bar", Description: "a file"}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{}, nil
 	})
 	go func() { _ = srv.Run(t.Context(), upServerTr) }()
@@ -331,14 +334,17 @@ func TestGateway_Build_RegistersResource(t *testing.T) {
 
 	res, err := downSess.ListResources(t.Context(), &mcp.ListResourcesParams{})
 	require.NoError(t, err)
-	require.Len(t, res.Resources, 1)
-	require.Equal(t, "file:///foo.txt", res.Resources[0].URI)
+	require.Len(t, res.Resources, 2)
+	require.ElementsMatch(t, []string{"file:///foo.txt", "file:///bar.txt"}, []string{res.Resources[0].URI, res.Resources[1].URI})
 }
 
 func TestGateway_Build_RegistersResourceTemplate(t *testing.T) {
 	upServerTr, upClientTr := mcp.NewInMemoryTransports()
-	srv := mcp.NewServer(&mcp.Implementation{Name: "up", Version: "0"}, nil)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "up", Version: "0"}, &mcp.ServerOptions{PageSize: 1})
 	srv.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "file:///{name}", Name: "tpl", Description: "template"}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	srv.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "file:///static/{name}", Name: "tpl2", Description: "template"}, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{}, nil
 	})
 	go func() { _ = srv.Run(t.Context(), upServerTr) }()
@@ -373,8 +379,52 @@ func TestGateway_Build_RegistersResourceTemplate(t *testing.T) {
 
 	res, err := downSess.ListResourceTemplates(t.Context(), &mcp.ListResourceTemplatesParams{})
 	require.NoError(t, err)
-	require.Len(t, res.ResourceTemplates, 1)
-	require.Equal(t, "file:///{name}", res.ResourceTemplates[0].URITemplate)
+	require.Len(t, res.ResourceTemplates, 2)
+	require.ElementsMatch(t, []string{"file:///{name}", "file:///static/{name}"}, []string{res.ResourceTemplates[0].URITemplate, res.ResourceTemplates[1].URITemplate})
+}
+
+func TestGateway_Build_ResourceCollisionIgnoresPrefix(t *testing.T) {
+	up1ServerTr, up1ClientTr := mcp.NewInMemoryTransports()
+	srv1 := mcp.NewServer(&mcp.Implementation{Name: "up1", Version: "0"}, nil)
+	srv1.AddResource(&mcp.Resource{URI: "file:///shared.txt", Name: "shared"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	go func() { _ = srv1.Run(t.Context(), up1ServerTr) }()
+
+	up2ServerTr, up2ClientTr := mcp.NewInMemoryTransports()
+	srv2 := mcp.NewServer(&mcp.Implementation{Name: "up2", Version: "0"}, nil)
+	srv2.AddResource(&mcp.Resource{URI: "file:///shared.txt", Name: "shared"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	go func() { _ = srv2.Run(t.Context(), up2ServerTr) }()
+
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{
+			{Name: "u1", Kind: "stdio", Command: []string{"ignored"}, Tools: ToolsConfig{Prefix: "a."}},
+			{Name: "u2", Kind: "stdio", Command: []string{"ignored"}, Tools: ToolsConfig{Prefix: "b."}},
+		},
+	}
+
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+	defer func() { _ = g.Close(t.Context()) }()
+
+	u1 := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], up1ClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
+	u2 := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[1], up2ClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
+	g.upstreams = []*Upstream{u1, u2}
+
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	require.NoError(t, err)
+	u1.session = s1
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	require.NoError(t, err)
+	u2.session = s2
+
+	err = g.Build(t.Context())
+	require.Error(t, err)
+	var ce *CollisionsError
+	require.ErrorAs(t, err, &ce)
 }
 
 func TestGateway_ReSync_Prompts(t *testing.T) {
@@ -571,14 +621,23 @@ func TestGateway_ResourceUpdated_Broadcast(t *testing.T) {
 
 func TestGateway_Upstream_ListMethods(t *testing.T) {
 	ct, st := mcp.NewInMemoryTransports()
-	srv := mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0"}, nil)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0"}, &mcp.ServerOptions{PageSize: 1})
 	srv.AddPrompt(&mcp.Prompt{Name: "p1"}, func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		return &mcp.GetPromptResult{}, nil
+	})
+	srv.AddPrompt(&mcp.Prompt{Name: "p2"}, func(context.Context, *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
 		return &mcp.GetPromptResult{}, nil
 	})
 	srv.AddResource(&mcp.Resource{URI: "file:///r1", Name: "r1"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{}, nil
 	})
+	srv.AddResource(&mcp.Resource{URI: "file:///r2", Name: "r2"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
 	srv.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "file:///{n}", Name: "t1"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	srv.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "file:///static/{n}", Name: "t2"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{}, nil
 	})
 	go srv.Run(context.Background(), st)
@@ -590,21 +649,21 @@ func TestGateway_Upstream_ListMethods(t *testing.T) {
 
 	prompts, err := u.ListPrompts(t.Context())
 	require.NoError(t, err)
-	require.Len(t, prompts, 1)
-	require.Equal(t, "p1", prompts[0].Name)
+	require.Len(t, prompts, 2)
+	require.ElementsMatch(t, []string{"p1", "p2"}, []string{prompts[0].Name, prompts[1].Name})
 
 	_, err = u.GetPrompt(t.Context(), &mcp.GetPromptParams{Name: "p1"})
 	require.NoError(t, err)
 
 	resources, err := u.ListResources(t.Context())
 	require.NoError(t, err)
-	require.Len(t, resources, 1)
-	require.Equal(t, "file:///r1", resources[0].URI)
+	require.Len(t, resources, 2)
+	require.ElementsMatch(t, []string{"file:///r1", "file:///r2"}, []string{resources[0].URI, resources[1].URI})
 
 	tpls, err := u.ListResourceTemplates(t.Context())
 	require.NoError(t, err)
-	require.Len(t, tpls, 1)
-	require.Equal(t, "file:///{n}", tpls[0].URITemplate)
+	require.Len(t, tpls, 2)
+	require.ElementsMatch(t, []string{"file:///{n}", "file:///static/{n}"}, []string{tpls[0].URITemplate, tpls[1].URITemplate})
 
 	_, err = u.ReadResource(t.Context(), &mcp.ReadResourceParams{URI: "file:///r1"})
 	require.Error(t, err) // handler returns nil info, SDK errors
@@ -655,6 +714,52 @@ func TestGateway_RedactsToolOutput(t *testing.T) {
 	require.Len(t, res.Content, 1)
 	tc := res.Content[0].(*mcp.TextContent)
 	require.Equal(t, "password=[REDACTED] token=[REDACTED]", tc.Text)
+}
+
+func TestGateway_ForwardsMeta(t *testing.T) {
+	upServerTr, upClientTr := mcp.NewInMemoryTransports()
+	toolMeta := make(chan mcp.Meta, 1)
+	promptMeta := make(chan mcp.Meta, 1)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "up", Version: "0"}, nil)
+	srv.AddTool(&mcp.Tool{Name: "echo", Description: "echo", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		toolMeta <- req.Params.Meta
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
+	})
+	srv.AddPrompt(&mcp.Prompt{Name: "prompt", Description: "prompt"}, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		promptMeta <- req.Params.Meta
+		return &mcp.GetPromptResult{Messages: []*mcp.PromptMessage{}}, nil
+	})
+	go func() { _ = srv.Run(t.Context(), upServerTr) }()
+
+	cfg := &Config{
+		Server:    ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}},
+	}
+
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+	g.upstreams = []*Upstream{newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnToolListChanged: g.onToolListChanged, OnPromptListChanged: g.onPromptListChanged})}
+	sess, err := g.upstreams[0].client.Connect(t.Context(), upClientTr, nil)
+	require.NoError(t, err)
+	g.upstreams[0].session = sess
+	require.NoError(t, g.Build(t.Context()))
+	t.Cleanup(func() { _ = g.Close(t.Context()) })
+
+	gwServerTr, gwClientTr := mcp.NewInMemoryTransports()
+	go func() { _ = g.Server().Run(t.Context(), gwServerTr) }()
+
+	downClient := mcp.NewClient(&mcp.Implementation{Name: "down", Version: "0"}, nil)
+	downSess, err := downClient.Connect(t.Context(), gwClientTr, nil)
+	require.NoError(t, err)
+	defer downSess.Close()
+
+	_, err = downSess.CallTool(t.Context(), &mcp.CallToolParams{Meta: mcp.Meta{"client": "tool"}, Name: "echo"})
+	require.NoError(t, err)
+	require.Equal(t, mcp.Meta{"client": "tool"}, <-toolMeta)
+
+	_, err = downSess.GetPrompt(t.Context(), &mcp.GetPromptParams{Meta: mcp.Meta{"client": "prompt"}, Name: "prompt"})
+	require.NoError(t, err)
+	require.Equal(t, mcp.Meta{"client": "prompt"}, <-promptMeta)
 }
 
 func TestGateway_OnReconnect_ReRegistersAll(t *testing.T) {
