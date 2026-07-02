@@ -41,3 +41,11 @@ func TestTransportFlags_ResolveExposeProvider(t *testing.T) {
 		})
 	}
 }
+
+func TestTransportFlags_ApplyExposeDefaults(t *testing.T) {
+	flags := TransportFlags{ExposeName: "foo"}
+
+	require.NoError(t, flags.applyExposeDefaults())
+	require.Equal(t, "cloudflare", flags.ExposeProvider)
+	require.True(t, flags.DisableLocalhostProtection)
+}

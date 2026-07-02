@@ -97,8 +97,8 @@ func (flags TransportFlags) Run(ctx context.Context, name string, s *mcp.Server,
 	if flags.Transport == "stdio" && (flags.ExposeProvider != "" || flags.ExposeType != "" || flags.ExposeConfig != "" || flags.ExposeName != "") {
 		return errors.New("cannot use expose flags with stdio transport")
 	}
-	if flags.ExposeProvider != "" {
-		flags.DisableLocalhostProtection = true
+	if err := flags.applyExposeDefaults(); err != nil {
+		return err
 	}
 
 	handler := func(*http.Request) *mcp.Server { return s }
@@ -192,4 +192,16 @@ func (flags TransportFlags) resolveExposeProvider() (string, error) {
 		return "", fmt.Errorf("expose-type tcp is not supported with cloudflare provider")
 	}
 	return provider, nil
+}
+
+func (flags *TransportFlags) applyExposeDefaults() error {
+	provider, err := flags.resolveExposeProvider()
+	if err != nil {
+		return err
+	}
+	flags.ExposeProvider = provider
+	if provider != "" {
+		flags.DisableLocalhostProtection = true
+	}
+	return nil
 }
