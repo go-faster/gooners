@@ -322,6 +322,8 @@ func TestTruncateBanner(t *testing.T) {
 		{"   Leading and trailing space   \nAnother line", "Leading and trailing space"},
 		{strings.Repeat("A", 120), strings.Repeat("A", 100)},
 		{"\n" + strings.Repeat("B", 150) + "\nLine 2", strings.Repeat("B", 100)},
+		{"Привет мир", "Привет мир"},
+		{strings.Repeat("界", 40), strings.Repeat("界", 33)},
 	}
 
 	for _, tc := range tests {
@@ -330,6 +332,32 @@ func TestTruncateBanner(t *testing.T) {
 			require.Equal(t, tc.expected, got)
 		})
 	}
+}
+
+func TestPool_PingUpdatesLastPing(t *testing.T) {
+	sshSrv := newTestServerPassword(t, "secret")
+	pool := NewPool(PoolOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go pool.RunLoop(ctx)
+
+	openRes, err := pool.OpenCfg(ctx, Config{Machine: sshSrv.addr, Password: "secret", KnownHosts: "insecure"})
+	require.NoError(t, err)
+
+	list, err := pool.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, "new", list[0].Status)
+
+	took, err := pool.Ping(ctx, openRes.ID)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, took, time.Duration(0))
+
+	list, err = pool.List(ctx)
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, "connected", list[0].Status)
+	require.NotZero(t, list[0].LastPing)
 }
 
 func TestDetectPlatform(t *testing.T) {

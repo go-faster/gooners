@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -84,7 +85,7 @@ func (p *Pool) watchSession(poolCtx context.Context, sessionID string, c *ssh.Cl
 				continue
 			}
 			if _, _, err := c.SendRequest("keepalive@openssh.com", true, nil); err != nil {
-				_ = c.Close()
+				_ = p.Close(poolCtx, sessionID)
 				return
 			}
 			s.lastPing.Store(time.Now().UnixNano())
@@ -520,6 +521,16 @@ func (p *Pool) handleMachine(sessions map[string]*Session, r MachineRequest) {
 	}
 }
 
+func (p *Pool) handleTouch(sessions map[string]*Session, r TouchRequest) {
+	s, ok := sessions[r.SessionID]
+	if !ok {
+		r.resp <- fmt.Errorf("session not found: %s", r.SessionID)
+		return
+	}
+	s.lastPing.Store(r.At.UnixNano())
+	r.resp <- nil
+}
+
 func (p *Pool) handleExec(sessions map[string]*Session, r ExecRequest) {
 	s, ok := sessions[r.SessionID]
 	if !ok {
@@ -536,7 +547,17 @@ func truncateBanner(s string) string {
 	s = strings.TrimSpace(s)
 	line, _, _ := strings.Cut(s, "\n")
 	line = strings.TrimSpace(line)
-	cutLen := min(len(line), 100)
+	if len(line) <= 100 {
+		return line
+	}
+	cutLen := 0
+	for cutLen < len(line) {
+		_, size := utf8.DecodeRuneInString(line[cutLen:])
+		if cutLen+size > 100 {
+			break
+		}
+		cutLen += size
+	}
 	return line[:cutLen]
 }
 
