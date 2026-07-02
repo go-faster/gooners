@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,6 +177,7 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 	serverVersion := string(client.ServerVersion())
 	if !strings.Contains(serverVersion, "OpenSSH") {
 		lg.DebugContext(ctx, "ssh ping: non-OpenSSH server, skipping keepalive", "server_version", serverVersion)
+		p.touchLastPing(ctx, id)
 		return time.Since(start), nil
 	}
 
@@ -201,7 +201,15 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 		}
 		took := time.Since(start)
 		lg.DebugContext(ctx, "ssh ping: keepalive succeeded", "took", took)
+		p.touchLastPing(ctx, id)
 		return took, nil
+	}
+}
+
+func (p *Pool) touchLastPing(ctx context.Context, id string) {
+	respCh := make(chan error, 1)
+	if err, ok := send(ctx, p.reqCh, TouchRequest{SessionID: id, At: time.Now(), resp: respCh}, respCh); ok {
+		_ = err
 	}
 }
 
@@ -278,6 +286,8 @@ func (p *Pool) RunLoop(ctx context.Context) {
 				p.handleDeleteSpool(sessions, r)
 			case MachineRequest:
 				p.handleMachine(sessions, r)
+			case TouchRequest:
+				p.handleTouch(sessions, r)
 			case ExecRequest:
 				p.handleExec(sessions, r)
 			}
@@ -433,7 +443,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			StdoutSpoolID: mapSpoolID(stdout),
 			StderrSpoolID: mapSpoolID(stderr),
 		}
-		go p.cleanupExec(ctx, client, sess, r, cmdText, done, stdout, stderr)
+		go p.cleanupExec(ctx, sess, r, cmdText, done, stdout, stderr)
 		return
 	case <-ctx.Done():
 		out, errOut := stdout.String(), stderr.String()
@@ -452,7 +462,7 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 			StderrSpoolID: mapSpoolID(stderr),
 			Err:           ctx.Err(),
 		}
-		go p.cleanupExec(context.Background(), client, sess, r, cmdText, done, stdout, stderr)
+		go p.cleanupExec(context.Background(), sess, r, cmdText, done, stdout, stderr)
 		return
 	case err := <-done:
 		_ = sess.Close()
@@ -503,35 +513,11 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 	}
 }
 
-func (p *Pool) cleanupExec(spoolCtx context.Context, client *ssh.Client, sess *ssh.Session, r ExecRequest, cmdText string, done <-chan error, stdout, stderr *SpoolingBuffer) {
+func (p *Pool) cleanupExec(spoolCtx context.Context, sess *ssh.Session, r ExecRequest, cmdText string, done <-chan error, stdout, stderr *SpoolingBuffer) {
 	lg := p.logger.With("session_id", r.SessionID, "command", cmdText)
 
 	killCtx, killCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer killCancel()
-
-	type abortRes struct{}
-	abortDone := make(chan abortRes, 1)
-	go func() {
-		lg.DebugContext(spoolCtx, "ssh run: sending abort command to kill remote process")
-		abortSess, err := client.NewSession()
-		if err == nil {
-			lg.DebugContext(spoolCtx, "ssh run: abort session created")
-			abortCmd := "timeout 3s pkill -f " + shellquote.Join(regexp.QuoteMeta(cmdText)) + " 2>/dev/null || true"
-			if err := abortSess.Run(abortCmd); err != nil {
-				lg.DebugContext(spoolCtx, "ssh run: abort command failed", "err", err)
-			} else {
-				lg.DebugContext(spoolCtx, "ssh run: abort command succeeded")
-			}
-			_ = abortSess.Close()
-		}
-		abortDone <- abortRes{}
-	}()
-
-	select {
-	case <-killCtx.Done():
-		_ = client.Close()
-	case <-abortDone:
-	}
 
 	if err := sess.Signal(ssh.SIGKILL); err != nil {
 		lg.DebugContext(spoolCtx, "ssh run: failed to send SIGKILL", "err", err)
@@ -542,6 +528,7 @@ func (p *Pool) cleanupExec(spoolCtx context.Context, client *ssh.Client, sess *s
 
 	select {
 	case <-killCtx.Done():
+		lg.DebugContext(spoolCtx, "ssh run: cancel cleanup timed out")
 	case <-done:
 	}
 
