@@ -37,11 +37,20 @@ func TestChain_Order(t *testing.T) {
 func TestRedact_Middleware(t *testing.T) {
 	red := func(s string) string { return "[REDACTED]" }
 	h := Redact(red)(func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "password=secret"}}}, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: "password=secret"},
+				&mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: "file:///x", Text: "token=abc"}},
+			},
+			StructuredContent: map[string]any{"password": "secret", "nested": []any{"token=abc"}},
+		}, nil
 	})
 	res, _ := h(context.Background(), &mcp.CallToolRequest{})
 	tc := res.Content[0].(*mcp.TextContent)
 	require.Contains(t, tc.Text, "[REDACTED]")
+	errRes := res.Content[1].(*mcp.EmbeddedResource)
+	require.Contains(t, errRes.Resource.Text, "[REDACTED]")
+	require.Equal(t, map[string]any{"password": "[REDACTED]", "nested": []any{"[REDACTED]"}}, res.StructuredContent)
 }
 
 func TestTelemetry_RecordsSpanAndMetrics(t *testing.T) {
