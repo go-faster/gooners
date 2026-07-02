@@ -94,8 +94,8 @@ func (flags *TransportFlags) Register(fs *flag.FlagSet) {
 
 // Run starts an MCP server using the selected transport.
 func (flags TransportFlags) Run(ctx context.Context, name string, s *mcp.Server, lg *slog.Logger) error {
-	if flags.ExposeProvider != "" && flags.Transport == "stdio" {
-		return errors.New("cannot use expose provider with stdio transport")
+	if flags.Transport == "stdio" && (flags.ExposeProvider != "" || flags.ExposeType != "" || flags.ExposeConfig != "" || flags.ExposeName != "") {
+		return errors.New("cannot use expose flags with stdio transport")
 	}
 	if flags.ExposeProvider != "" {
 		flags.DisableLocalhostProtection = true
@@ -133,9 +133,9 @@ func (flags TransportFlags) runHTTPServer(ctx context.Context, srv *http.Server,
 	var ln net.Listener
 	var err error
 
-	provider := flags.ExposeProvider
-	if flags.ExposeName != "" || flags.ExposeConfig != "" {
-		provider = "cloudflare"
+	provider, err := flags.resolveExposeProvider()
+	if err != nil {
+		return err
 	}
 	if provider != "" {
 		ln, err = tunnel.Listen(ctx, provider, tunnel.Options{
@@ -175,4 +175,21 @@ func (flags TransportFlags) runHTTPServer(ctx context.Context, srv *http.Server,
 		return nil
 	})
 	return g.Wait()
+}
+
+func (flags TransportFlags) resolveExposeProvider() (string, error) {
+	provider := flags.ExposeProvider
+	if flags.ExposeName != "" || flags.ExposeConfig != "" {
+		if provider != "" && provider != "cloudflare" && provider != "cloudflared" {
+			return "", fmt.Errorf("expose-name and expose-config require cloudflare provider")
+		}
+		provider = "cloudflare"
+	}
+	if provider == "cloudflared" {
+		provider = "cloudflare"
+	}
+	if provider == "cloudflare" && flags.ExposeType == "tcp" {
+		return "", fmt.Errorf("expose-type tcp is not supported with cloudflare provider")
+	}
+	return provider, nil
 }
