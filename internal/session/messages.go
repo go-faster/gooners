@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -248,3 +249,12 @@ type MachineResponse struct {
 	Machine string
 	Err     error
 }
+
+// TouchRequest updates session metadata without performing any action on the remote host.
+type TouchRequest struct {
+	SessionID string
+	At        time.Time
+	resp      chan<- error
+}
+
+func (TouchRequest) isRequest() {}

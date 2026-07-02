@@ -1,0 +1,107 @@
+version: 2
+project_name: gooners
+
+builds:
+  - id: ssh-mcp
+    main: ./cmd/ssh-mcp
+    binary: ssh-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  - id: grafana-dashboard-mcp
+    main: ./cmd/grafana-dashboard-mcp
+    binary: grafana-dashboard-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  - id: mcpgateway
+    main: ./cmd/mcpgateway
+    binary: mcpgateway
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  - id: opencode-handoff-mcp
+    main: ./cmd/opencode-handoff-mcp
+    binary: opencode-handoff-mcp
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+dockers_v2:
+  - id: ssh-mcp
+    ids: [ssh-mcp]
+    images:
+      - "ghcr.io/go-faster/gooners/ssh-mcp"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    build_args:
+      BINARY_NAME: ssh-mcp
+    dockerfile: Dockerfile.goreleaser
+
+  - id: grafana-dashboard-mcp
+    ids: [grafana-dashboard-mcp]
+    images:
+      - "ghcr.io/go-faster/gooners/grafana-dashboard-mcp"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    build_args:
+      BINARY_NAME: grafana-dashboard-mcp
+    dockerfile: Dockerfile.goreleaser
+
+  - id: mcpgateway
+    ids: [mcpgateway]
+    images:
+      - "ghcr.io/go-faster/gooners/mcpgateway"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    build_args:
+      BINARY_NAME: mcpgateway
+    dockerfile: Dockerfile.goreleaser
+
+  - id: opencode-handoff-mcp
+    ids: [opencode-handoff-mcp]
+    images:
+      - "ghcr.io/go-faster/gooners/opencode-handoff-mcp"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    build_args:
+      BINARY_NAME: opencode-handoff-mcp
+    dockerfile: Dockerfile.goreleaser
+
+archives:
+  - formats: tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"

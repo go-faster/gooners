@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"time"
@@ -15,6 +16,8 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/go-faster/gooners/internal/tunnel"
 )
 
 // LoggingFlags are common flags for configuring slog output.
@@ -69,18 +72,35 @@ func (flags *LoggingFlags) Setup() (func(), *slog.Logger, error) {
 
 // TransportFlags are common MCP server transport flags.
 type TransportFlags struct {
-	Transport string
-	Addr      string
+	Transport                  string
+	Addr                       string
+	ExposeProvider             string
+	ExposeType                 string
+	ExposeConfig               string
+	ExposeName                 string
+	DisableLocalhostProtection bool
 }
 
 // Register registers common MCP transport flags on fs.
 func (flags *TransportFlags) Register(fs *flag.FlagSet) {
 	fs.StringVar(&flags.Transport, "transport", "stdio", "transport: stdio, streamable-http, sse")
 	fs.StringVar(&flags.Addr, "addr", ":8080", "listen address for HTTP transports (streamable-http, sse)")
+	fs.StringVar(&flags.ExposeProvider, "expose-provider", "", "expose provider: ngrok, cloudflared")
+	fs.StringVar(&flags.ExposeType, "expose-type", "", "expose type: http, tcp (depends on provider)")
+	fs.StringVar(&flags.ExposeConfig, "expose-config", "", "expose config file (for cloudflared)")
+	fs.StringVar(&flags.ExposeName, "expose-name", "", "expose tunnel name (for cloudflared)")
+	fs.BoolVar(&flags.DisableLocalhostProtection, "disable-localhost-protection", false, "disable localhost protection (for exposure via external tunnels)")
 }
 
 // Run starts an MCP server using the selected transport.
 func (flags TransportFlags) Run(ctx context.Context, name string, s *mcp.Server, lg *slog.Logger) error {
+	if flags.Transport == "stdio" && (flags.ExposeProvider != "" || flags.ExposeType != "" || flags.ExposeConfig != "" || flags.ExposeName != "") {
+		return errors.New("cannot use expose flags with stdio transport")
+	}
+	if err := flags.applyExposeDefaults(); err != nil {
+		return err
+	}
+
 	handler := func(*http.Request) *mcp.Server { return s }
 
 	switch flags.Transport {
@@ -89,21 +109,52 @@ func (flags TransportFlags) Run(ctx context.Context, name string, s *mcp.Server,
 		return s.Run(ctx, &mcp.StdioTransport{})
 
 	case "streamable-http":
-		h := mcp.NewStreamableHTTPHandler(handler, &mcp.StreamableHTTPOptions{Logger: slog.Default()})
+		h := mcp.NewStreamableHTTPHandler(handler, &mcp.StreamableHTTPOptions{
+			Logger:                     slog.Default(),
+			DisableLocalhostProtection: flags.DisableLocalhostProtection,
+		})
 		lg.Info("starting MCP server on streamable-http transport", "server", name, "at", fmt.Sprintf("http://%s/mcp", flags.Addr))
-		return runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: h}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
+		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: h}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
 
 	case "sse":
-		h := mcp.NewSSEHandler(handler, nil)
+		opts := &mcp.SSEOptions{
+			DisableLocalhostProtection: flags.DisableLocalhostProtection,
+		}
+		h := mcp.NewSSEHandler(handler, opts)
 		lg.Info("starting MCP server on SSE transport", "server", name, "at", fmt.Sprintf("http://%s", flags.Addr))
-		return runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: h}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
+		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: h}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
 
 	default:
 		return fmt.Errorf("unknown transport: %q", flags.Transport)
 	}
 }
 
-func runHTTPServer(ctx context.Context, srv *http.Server, lg *slog.Logger) error {
+func (flags TransportFlags) runHTTPServer(ctx context.Context, srv *http.Server, lg *slog.Logger) error {
+	var ln net.Listener
+	var err error
+
+	provider, err := flags.resolveExposeProvider()
+	if err != nil {
+		return err
+	}
+	if provider != "" {
+		ln, err = tunnel.Listen(ctx, provider, tunnel.Options{
+			Type:   flags.ExposeType,
+			Config: flags.ExposeConfig,
+			Name:   flags.ExposeName,
+			Logger: lg.With("component", "tunnel"),
+		})
+		if err != nil {
+			return fmt.Errorf("tunnel listen: %w", err)
+		}
+		lg.Info("started tunnel", "provider", provider)
+	} else {
+		ln, err = net.Listen("tcp", srv.Addr)
+		if err != nil {
+			return fmt.Errorf("listen %s: %w", srv.Addr, err)
+		}
+	}
+
 	parentCtx := ctx
 	g, ctx := errgroup.WithContext(ctx)
 	g.Go(func() error {
@@ -114,7 +165,7 @@ func runHTTPServer(ctx context.Context, srv *http.Server, lg *slog.Logger) error
 		return srv.Shutdown(shutCtx)
 	})
 	g.Go(func() error {
-		if err := srv.ListenAndServe(); err != nil {
+		if err := srv.Serve(ln); err != nil {
 			if errors.Is(err, http.ErrServerClosed) && parentCtx.Err() != nil {
 				lg.Info("HTTP server closed gracefully")
 				return nil
@@ -124,4 +175,33 @@ func runHTTPServer(ctx context.Context, srv *http.Server, lg *slog.Logger) error
 		return nil
 	})
 	return g.Wait()
+}
+
+func (flags TransportFlags) resolveExposeProvider() (string, error) {
+	provider := flags.ExposeProvider
+	if flags.ExposeName != "" || flags.ExposeConfig != "" {
+		if provider != "" && provider != "cloudflare" && provider != "cloudflared" {
+			return "", fmt.Errorf("expose-name and expose-config require cloudflare provider")
+		}
+		provider = "cloudflare"
+	}
+	if provider == "cloudflared" {
+		provider = "cloudflare"
+	}
+	if provider == "cloudflare" && flags.ExposeType == "tcp" {
+		return "", fmt.Errorf("expose-type tcp is not supported with cloudflare provider")
+	}
+	return provider, nil
+}
+
+func (flags *TransportFlags) applyExposeDefaults() error {
+	provider, err := flags.resolveExposeProvider()
+	if err != nil {
+		return err
+	}
+	flags.ExposeProvider = provider
+	if provider != "" {
+		flags.DisableLocalhostProtection = true
+	}
+	return nil
 }

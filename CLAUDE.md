@@ -13,6 +13,8 @@ module github.com/go-faster/gooners
 go 1.26.3
 ```
 
+Note: `cmd/mcpgateway/` is the MCP gateway proxy binary (aggregates multiple upstream MCP servers).
+
 ## Commands
 
 ```bash
