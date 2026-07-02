@@ -329,6 +329,29 @@ func TestWriteFileHandler(t *testing.T) {
 	require.Equal(t, "hello write", string(content))
 }
 
+func TestWriteFileHandler_EmptyContent(t *testing.T) {
+	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
+		return "", 0
+	})
+	defer cleanup()
+
+	tmpFile := filepath.Join(t.TempDir(), "empty.txt")
+	handler := writeFileHandler(&dummyPool{client: client})
+
+	res, _, err := handler(context.Background(), &mcp.CallToolRequest{}, writeFileParams{
+		SessionID: "test_id",
+		Path:      tmpFile,
+		Content:   "",
+		Mode:      "0644",
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	content, err := os.ReadFile(tmpFile)
+	require.NoError(t, err)
+	require.Empty(t, content)
+}
+
 func TestUploadFileHandler_Security(t *testing.T) {
 	client, cleanup := setupMockSSHServer(t, func(cmd string) (string, int) {
 		return "", 0

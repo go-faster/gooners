@@ -405,7 +405,7 @@ type writeFileParams struct {
 
 func writeFileHandler(p SessionProvider) mcp.ToolHandlerFor[writeFileParams, mcputil.SuccessResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args writeFileParams) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
-		if args.SessionID == "" || args.Path == "" || args.Content == "" {
+		if args.SessionID == "" || args.Path == "" {
 			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id and path are required")
 		}
 		timeout := 60.0
