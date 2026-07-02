@@ -74,6 +74,7 @@ func TestBuild_HTTPMultiTokenInterpolation(t *testing.T) {
 	require.NotNil(t, sct.HTTPClient)
 	cl := sct.HTTPClient
 	require.NotNil(t, cl.Transport)
+	require.Zero(t, cl.Timeout)
 	hrt, ok := cl.Transport.(*headerRT)
 	require.True(t, ok)
 
@@ -87,4 +88,13 @@ func TestBuild_HTTPMultiTokenInterpolation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Bearer tok", resp.Request.Header.Get("Authorization"))
 	resp.Body.Close()
+}
+
+func TestBuild_SSENoTimeout(t *testing.T) {
+	tr, _, err := Build(context.Background(), "sse", nil, "http://example.invalid", nil, nil, nil)
+	require.NoError(t, err)
+	sct, ok := tr.(*mcp.SSEClientTransport)
+	require.True(t, ok)
+	require.NotNil(t, sct.HTTPClient)
+	require.Zero(t, sct.HTTPClient.Timeout)
 }

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -78,7 +77,7 @@ func buildStdio(command []string, env map[string]string, interpolate func(string
 }
 
 func buildHTTP(url string, headers map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
-	cl := &http.Client{Timeout: 60 * time.Second}
+	cl := &http.Client{}
 	if len(headers) > 0 {
 		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, interpolate: interpolate}
 	}
@@ -86,7 +85,7 @@ func buildHTTP(url string, headers map[string]string, interpolate func(string) (
 }
 
 func buildSSE(url string, headers map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
-	cl := &http.Client{Timeout: 60 * time.Second}
+	cl := &http.Client{}
 	if len(headers) > 0 {
 		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, interpolate: interpolate}
 	}
