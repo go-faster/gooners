@@ -7,6 +7,9 @@ builds:
     binary: ssh-mcp
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
     goarch:
@@ -18,6 +21,9 @@ builds:
     binary: grafana-dashboard-mcp
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
     goarch:
@@ -29,6 +35,9 @@ builds:
     binary: mcpgateway
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
     goarch:
@@ -40,6 +49,9 @@ builds:
     binary: opencode-handoff-mcp
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
     goarch:
@@ -99,6 +111,98 @@ archives:
       {{- if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
+    builds_info:
+      group: root
+      owner: root
+    files:
+      - README.md
+      - LICENSE
+
+release:
+  github:
+    owner: go-faster
+    name: gooners
+  mode: replace
+  draft: false
+  prerelease: auto
+  footer: |
+    ## Docker images
+
+    ```
+    ghcr.io/go-faster/gooners/ssh-mcp:v{{ .Version }}
+    ghcr.io/go-faster/gooners/grafana-dashboard-mcp:v{{ .Version }}
+    ghcr.io/go-faster/gooners/mcpgateway:v{{ .Version }}
+    ghcr.io/go-faster/gooners/opencode-handoff-mcp:v{{ .Version }}
+    ```
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - "--bundle=${signature}"
+      - "${artifact}"
+      - --yes
+    artifacts: checksum
+
+sboms:
+  - id: archive
+    artifacts: archive
+  - id: source
+    artifacts: source
+
+nfpms:
+  - id: ssh-mcp
+    package_name: ssh-mcp
+    ids: [ssh-mcp]
+    homepage: https://github.com/go-faster/gooners
+    maintainer: tdakkota <tdakkota@users.noreply.github.com>
+    description: SSH MCP server exposing SSH, SFTP, and system tools for agent workflows.
+    license: Apache 2.0
+    formats: [apk, deb, rpm, archlinux]
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+
+  - id: grafana-dashboard-mcp
+    package_name: grafana-dashboard-mcp
+    ids: [grafana-dashboard-mcp]
+    homepage: https://github.com/go-faster/gooners
+    maintainer: tdakkota <tdakkota@users.noreply.github.com>
+    description: Grafana dashboard builder MCP server.
+    license: Apache 2.0
+    formats: [apk, deb, rpm, archlinux]
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+
+  - id: mcpgateway
+    package_name: mcpgateway
+    ids: [mcpgateway]
+    homepage: https://github.com/go-faster/gooners
+    maintainer: tdakkota <tdakkota@users.noreply.github.com>
+    description: MCP gateway proxy that aggregates multiple upstream MCP servers.
+    license: Apache 2.0
+    formats: [apk, deb, rpm, archlinux]
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+
+  - id: opencode-handoff-mcp
+    package_name: opencode-handoff-mcp
+    ids: [opencode-handoff-mcp]
+    homepage: https://github.com/go-faster/gooners
+    maintainer: tdakkota <tdakkota@users.noreply.github.com>
+    description: MCP server for delegating coding tasks to opencode agents.
+    license: Apache 2.0
+    formats: [apk, deb, rpm, archlinux]
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
 
 checksum:
   name_template: 'checksums.txt'
