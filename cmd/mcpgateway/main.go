@@ -41,6 +41,6 @@ func main() {
 		if err := gw.Build(ctx); err != nil {
 			return errors.Wrap(err, "build gateway")
 		}
-		return transport.Run(ctx, "mcpgateway", gw.Server(), slogger.With("component", "transport"))
+		return transport.RunWithHandler(ctx, "mcpgateway", gw.ServerForRequest, slogger.With("component", "transport"))
 	}, app.WithServiceName("mcpgateway"))
 }

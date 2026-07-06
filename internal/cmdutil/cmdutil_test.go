@@ -17,6 +17,18 @@ func TestTransportFlags_Run_RejectsExposeFlagsWithStdio(t *testing.T) {
 	require.Contains(t, err.Error(), "stdio")
 }
 
+func TestTransportFlags_Run_RejectsTLSFlagsWithStdio(t *testing.T) {
+	flags := TransportFlags{Transport: "stdio", TLSCertFile: "cert.pem", TLSKeyFile: "key.pem"}
+	err := flags.Run(context.Background(), "srv", mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0"}, nil), nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "TLS")
+}
+
+func TestTransportFlags_TLSConfig_RequiresCertAndKey(t *testing.T) {
+	_, err := TransportFlags{TLSCertFile: "cert.pem"}.tlsConfig()
+	require.ErrorContains(t, err, "must be set together")
+}
+
 func TestTransportFlags_ResolveExposeProvider(t *testing.T) {
 	tests := []struct {
 		name    string

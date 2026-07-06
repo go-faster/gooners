@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -43,9 +44,17 @@ type UpstreamConfig struct {
 	Headers   map[string]string `toml:"headers"`
 	Env       map[string]string `toml:"env"`
 	Tools     ToolsConfig       `toml:"tools"`
+	Route     RouteConfig       `toml:"route"`
 	Reconnect *ReconnectConfig  `toml:"reconnect"`
 	// Redact overrides the global redact config when present; nil inherits the global [redact] section.
 	Redact *RedactConfig `toml:"redact"`
+}
+
+// RouteConfig optionally exposes an upstream as its own MCP server on a host
+// and/or URL path prefix handled by the gateway HTTP transport.
+type RouteConfig struct {
+	Host string `toml:"host"`
+	Path string `toml:"path"`
 }
 
 // ReconnectConfig configures per-upstream reconnect supervision.
@@ -133,6 +142,12 @@ func (c *Config) Validate() error {
 				return err
 			}
 		}
+		if err := validateRouteConfig(u.Name, u.Route); err != nil {
+			return err
+		}
+	}
+	if err := validateRouteCollisions(c.Upstreams); err != nil {
+		return err
 	}
 	seenSec := map[string]bool{}
 	for i, s := range c.Secrets {
@@ -193,6 +208,37 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("telemetry: invalid metrics_addr %q: %w", c.Telemetry.MetricsAddr, err)
 			}
 		}
+	}
+	return nil
+}
+
+func validateRouteConfig(upstream string, cfg RouteConfig) error {
+	if cfg.Host == "" && cfg.Path == "" {
+		return nil
+	}
+	if strings.Contains(cfg.Host, "://") || strings.Contains(cfg.Host, "/") {
+		return fmt.Errorf("upstream %q: route.host must be a host name, not a URL", upstream)
+	}
+	if strings.Contains(cfg.Host, ":") {
+		return fmt.Errorf("upstream %q: route.host must not contain a port", upstream)
+	}
+	if cfg.Path != "" && !strings.HasPrefix(cfg.Path, "/") {
+		return fmt.Errorf("upstream %q: route.path must start with /", upstream)
+	}
+	return nil
+}
+
+func validateRouteCollisions(upstreams []UpstreamConfig) error {
+	seen := map[RouteConfig]string{}
+	for _, u := range upstreams {
+		if u.Route.Host == "" && u.Route.Path == "" {
+			continue
+		}
+		prev, ok := seen[u.Route]
+		if ok {
+			return fmt.Errorf("upstream %q: route duplicates upstream %q", u.Name, prev)
+		}
+		seen[u.Route] = u.Name
 	}
 	return nil
 }

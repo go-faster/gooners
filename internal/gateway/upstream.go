@@ -384,6 +384,8 @@ func newUpstreamWithInMemoryClientWithCallbacks(cfg UpstreamConfig, clientTr mcp
 // Name returns the upstream name from config.
 func (u *Upstream) Name() string { return u.cfg.Name }
 
+func (u *Upstream) hasRoute() bool { return u.cfg.Route.Host != "" || u.cfg.Route.Path != "" }
+
 // Close shuts the session and runs cleanup.
 func (u *Upstream) Close(_ context.Context) error {
 	u.mu.Lock()

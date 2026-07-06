@@ -48,6 +48,29 @@ func TestConfigValidateErrors(t *testing.T) {
 			wantErr: "requires url",
 		},
 		{
+			name:    "route path no slash",
+			cfg:     Config{Upstreams: []UpstreamConfig{{Name: "u", Kind: "stdio", Command: []string{"x"}, Route: RouteConfig{Path: "mcp"}}}},
+			wantErr: "route.path",
+		},
+		{
+			name:    "route host url",
+			cfg:     Config{Upstreams: []UpstreamConfig{{Name: "u", Kind: "stdio", Command: []string{"x"}, Route: RouteConfig{Host: "https://example.com"}}}},
+			wantErr: "route.host",
+		},
+		{
+			name:    "route host port",
+			cfg:     Config{Upstreams: []UpstreamConfig{{Name: "u", Kind: "stdio", Command: []string{"x"}, Route: RouteConfig{Host: "example.com:8443"}}}},
+			wantErr: "route.host",
+		},
+		{
+			name: "duplicate routes",
+			cfg: Config{Upstreams: []UpstreamConfig{
+				{Name: "u1", Kind: "stdio", Command: []string{"x"}, Route: RouteConfig{Host: "example.com", Path: "/mcp"}},
+				{Name: "u2", Kind: "stdio", Command: []string{"x"}, Route: RouteConfig{Host: "example.com", Path: "/mcp"}},
+			}},
+			wantErr: "duplicates",
+		},
+		{
 			name: "dup secret",
 			cfg: Config{
 				Upstreams: []UpstreamConfig{{Name: "u", Kind: "stdio", Command: []string{"x"}}},

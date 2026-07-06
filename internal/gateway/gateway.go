@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"maps"
+	"net"
+	"net/http"
 	"sync"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/go-faster/gooners/internal/gateway/middleware"
+	"github.com/go-faster/gooners/internal/gateway/router"
 	"github.com/go-faster/gooners/internal/mcputil"
 )
 
@@ -30,9 +33,12 @@ type Gateway struct {
 	upstreams []*Upstream
 	server    *mcp.Server
 	resolver  SecretResolver
+	routes    []routedServer
+	router    *router.Router[*mcp.Server]
 
 	registry   upstreamRegistry
 	registryMu sync.RWMutex
+	routeMu    sync.RWMutex
 
 	promptRegistry           featureRegistry[*mcp.Prompt]
 	resourceRegistry         featureRegistry[*mcp.Resource]
@@ -43,6 +49,13 @@ type Gateway struct {
 	mp       metric.MeterProvider
 	tp       trace.TracerProvider
 	redactor *Redactor
+}
+
+type routedServer struct {
+	upstream string
+	host     string
+	path     string
+	server   *mcp.Server
 }
 
 type upstreamRegistry struct {
@@ -259,6 +272,9 @@ func (g *Gateway) onToolListChanged(ctx context.Context, upstreamName string) er
 		zap.Int("removed", len(removed)),
 		zap.Int("collisions", len(collisions)),
 	)
+	if err := g.refreshRouteServer(ctx, u, routeRefresh{tools: tools, haveTools: true}); err != nil {
+		g.logger.Warn("route server refresh failed", zap.String("upstream", upstreamName), zap.Error(err))
+	}
 	return nil
 }
 
@@ -290,6 +306,9 @@ func (g *Gateway) onPromptListChanged(ctx context.Context, upstreamName string) 
 		zap.Int("removed", len(removed)),
 		zap.Int("collisions", len(collisions)),
 	)
+	if err := g.refreshRouteServer(ctx, u, routeRefresh{prompts: prompts, havePrompts: true}); err != nil {
+		g.logger.Warn("route server refresh failed", zap.String("upstream", upstreamName), zap.Error(err))
+	}
 	return nil
 }
 
@@ -330,6 +349,9 @@ func (g *Gateway) onResourceListChanged(ctx context.Context, upstreamName string
 		zap.Int("removed", len(removedR)+len(removedT)),
 		zap.Int("collisions", len(collisions)),
 	)
+	if err := g.refreshRouteServer(ctx, u, routeRefresh{resources: resources, haveResources: true, templates: templates, haveTemplates: true}); err != nil {
+		g.logger.Warn("route server refresh failed", zap.String("upstream", upstreamName), zap.Error(err))
+	}
 	return nil
 }
 
@@ -370,9 +392,12 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 		return nil
 	}
 
+	var route routeRefresh
 	if tools, err := u.ListTools(ctx); err != nil {
 		g.logger.Warn("reconnect list tools failed", zap.String("upstream", upstreamName), zap.Error(err))
 	} else {
+		route.tools = tools
+		route.haveTools = true
 		added, removed, collisions := g.registerUpstreamTools(u, tools)
 		if len(collisions) > 0 {
 			for _, c := range collisions {
@@ -395,6 +420,8 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 	if prompts, err := u.ListPrompts(ctx); err != nil {
 		g.logger.Warn("reconnect list prompts failed", zap.String("upstream", upstreamName), zap.Error(err))
 	} else {
+		route.prompts = prompts
+		route.havePrompts = true
 		added, removed, collisions := g.registerUpstreamPrompts(u, prompts)
 		if len(collisions) > 0 {
 			for _, c := range collisions {
@@ -423,6 +450,8 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 		g.logger.Warn("reconnect list resource templates failed", zap.String("upstream", upstreamName), zap.Error(templateErr))
 	}
 	if err == nil {
+		route.resources = resources
+		route.haveResources = true
 		added, removed, collisions := g.registerUpstreamResources(u, resources)
 		if len(collisions) > 0 {
 			for _, c := range collisions {
@@ -442,6 +471,8 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 		)
 	}
 	if templateErr == nil {
+		route.templates = templates
+		route.haveTemplates = true
 		added, removed, collisions := g.registerUpstreamResourceTemplates(u, templates)
 		if len(collisions) > 0 {
 			for _, c := range collisions {
@@ -459,6 +490,9 @@ func (g *Gateway) onUpstreamReconnect(ctx context.Context, upstreamName string) 
 			zap.Int("removed", len(removed)),
 			zap.Int("collisions", len(collisions)),
 		)
+	}
+	if err := g.refreshRouteServer(ctx, u, route); err != nil {
+		g.logger.Warn("route server refresh failed", zap.String("upstream", upstreamName), zap.Error(err))
 	}
 	return nil
 }
@@ -579,12 +613,200 @@ func (g *Gateway) Build(ctx context.Context) error {
 			zap.Int("removed", len(removedR)+len(removedT)),
 			zap.Int("collisions", len(collisionsAll)),
 		)
+		if u.hasRoute() {
+			g.setRouteServer(u, g.newUpstreamRouteServer(u, lt.tools, lt.prompts, lt.resources, lt.templates))
+		}
 	}
 	return nil
 }
 
 // Server returns the local MCP server for transport.Run.
 func (g *Gateway) Server() *mcp.Server { return g.server }
+
+// ServerForRequest returns a route-specific upstream server when the request
+// host/path matches an upstream route, otherwise the aggregate gateway server.
+func (g *Gateway) ServerForRequest(req *http.Request) *mcp.Server {
+	if req == nil {
+		return g.server
+	}
+	host := req.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+
+	g.routeMu.RLock()
+	rt := g.router
+	g.routeMu.RUnlock()
+
+	if rt != nil {
+		if best, ok := rt.Lookup(host, req.URL.Path); ok {
+			return best
+		}
+	}
+	return g.server
+}
+
+type routeRefresh struct {
+	tools         []*mcp.Tool
+	haveTools     bool
+	prompts       []*mcp.Prompt
+	havePrompts   bool
+	resources     []*mcp.Resource
+	haveResources bool
+	templates     []*mcp.ResourceTemplate
+	haveTemplates bool
+}
+
+func (g *Gateway) refreshRouteServer(ctx context.Context, u *Upstream, known routeRefresh) error {
+	if !u.hasRoute() {
+		return nil
+	}
+	tools := known.tools
+	if !known.haveTools {
+		var err error
+		tools, err = u.ListTools(ctx)
+		if err != nil {
+			return errors.Wrap(err, "list tools")
+		}
+	}
+	prompts := known.prompts
+	if !known.havePrompts {
+		var err error
+		prompts, err = u.ListPrompts(ctx)
+		if err != nil {
+			return errors.Wrap(err, "list prompts")
+		}
+	}
+	resources := known.resources
+	if !known.haveResources {
+		var err error
+		resources, err = u.ListResources(ctx)
+		if err != nil {
+			return errors.Wrap(err, "list resources")
+		}
+	}
+	templates := known.templates
+	if !known.haveTemplates {
+		var err error
+		templates, err = u.ListResourceTemplates(ctx)
+		if err != nil {
+			return errors.Wrap(err, "list resource templates")
+		}
+	}
+	g.setRouteServer(u, g.newUpstreamRouteServer(u, tools, prompts, resources, templates))
+	return nil
+}
+
+func (g *Gateway) setRouteServer(u *Upstream, server *mcp.Server) {
+	g.routeMu.Lock()
+	defer g.routeMu.Unlock()
+
+	updated := false
+	for i := range g.routes {
+		if g.routes[i].upstream == u.cfg.Name {
+			g.routes[i].server = server
+			updated = true
+			break
+		}
+	}
+	if !updated {
+		g.routes = append(g.routes, routedServer{
+			upstream: u.cfg.Name,
+			host:     u.cfg.Route.Host,
+			path:     u.cfg.Route.Path,
+			server:   server,
+		})
+	}
+
+	rt := router.New[*mcp.Server]()
+	for _, r := range g.routes {
+		rt.Add(r.host, r.path, r.server)
+	}
+	g.router = rt
+}
+
+func (g *Gateway) newUpstreamRouteServer(u *Upstream, tools []*mcp.Tool, prompts []*mcp.Prompt, resources []*mcp.Resource, templates []*mcp.ResourceTemplate) *mcp.Server {
+	s := mcputil.NewServer(mcputil.ServerConfig{
+		Name:         u.cfg.Name,
+		Instructions: g.cfg.Server.Instructions,
+		Logger:       g.slogger.With("component", "route-server", "upstream", u.cfg.Name),
+	})
+	for _, rt := range tools {
+		if !u.allowed(rt.Name) {
+			continue
+		}
+		orig := rt.Name
+		tool := &mcp.Tool{
+			Name:         orig,
+			Description:  TrimDescription(rt.Description, u.cfg.Tools.DescMax),
+			InputSchema:  rt.InputSchema,
+			OutputSchema: rt.OutputSchema,
+			Annotations:  rt.Annotations,
+			Title:        rt.Title,
+		}
+		h := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			return u.CallTool(ctx, &mcp.CallToolParams{Meta: req.Params.Meta, Name: orig, Arguments: req.Params.Arguments})
+		}
+		mw, err := middleware.NewTelemetry(h, middleware.TelemetryOptions{
+			Upstream:       u.cfg.Name,
+			MeterProvider:  g.mp,
+			TracerProvider: g.tp,
+			Logger:         g.logger,
+		})
+		if err != nil {
+			g.slogger.Error("failed to create telemetry middleware", "error", err)
+		} else {
+			h = mw
+		}
+		if u.redactor != nil {
+			h = middleware.Redact(u.redactor.Redact)(h)
+		}
+		s.AddTool(tool, h)
+	}
+	for _, rp := range prompts {
+		orig := rp.Name
+		prompt := &mcp.Prompt{
+			Name:        orig,
+			Description: TrimDescription(rp.Description, u.cfg.Tools.DescMax),
+			Arguments:   rp.Arguments,
+			Title:       rp.Title,
+			Meta:        rp.Meta,
+		}
+		s.AddPrompt(prompt, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return u.GetPrompt(ctx, &mcp.GetPromptParams{Meta: req.Params.Meta, Name: orig, Arguments: req.Params.Arguments})
+		})
+	}
+	for _, rr := range resources {
+		resource := &mcp.Resource{
+			URI:         rr.URI,
+			Name:        rr.Name,
+			Description: TrimDescription(rr.Description, u.cfg.Tools.DescMax),
+			MIMEType:    rr.MIMEType,
+			Size:        rr.Size,
+			Title:       rr.Title,
+			Annotations: rr.Annotations,
+			Meta:        rr.Meta,
+		}
+		s.AddResource(resource, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return u.ReadResource(ctx, &mcp.ReadResourceParams{URI: req.Params.URI})
+		})
+	}
+	for _, rt := range templates {
+		tpl := &mcp.ResourceTemplate{
+			URITemplate: rt.URITemplate,
+			Name:        rt.Name,
+			Description: TrimDescription(rt.Description, u.cfg.Tools.DescMax),
+			MIMEType:    rt.MIMEType,
+			Title:       rt.Title,
+			Annotations: rt.Annotations,
+			Meta:        rt.Meta,
+		}
+		s.AddResourceTemplate(tpl, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return u.ReadResource(ctx, &mcp.ReadResourceParams{URI: req.Params.URI})
+		})
+	}
+	return s
+}
 
 // registerUpstreamTools applies the same diff/apply algorithm as featureRegistry[T]
 // but for tools, which additionally support prefix/allow/deny/desc-trim and

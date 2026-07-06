@@ -3,6 +3,8 @@ package gateway
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -94,6 +96,26 @@ func TestGateway_Build_RegistersTool(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, res.Tools, 1)
 	require.Equal(t, "echo", res.Tools[0].Name)
+}
+
+func TestGateway_ServerForRequest_RoutesByHostAndPath(t *testing.T) {
+	aggregate := mcp.NewServer(&mcp.Implementation{Name: "aggregate", Version: "0"}, nil)
+	pathServer := mcp.NewServer(&mcp.Implementation{Name: "path", Version: "0"}, nil)
+	hostServer := mcp.NewServer(&mcp.Implementation{Name: "host", Version: "0"}, nil)
+	g := &Gateway{
+		server: aggregate,
+	}
+	g.setRouteServer(&Upstream{cfg: UpstreamConfig{Name: "path", Route: RouteConfig{Path: "/prod"}}}, pathServer)
+	g.setRouteServer(&Upstream{cfg: UpstreamConfig{Name: "host", Route: RouteConfig{Host: "api.example.com", Path: "/prod"}}}, hostServer)
+
+	req := httptest.NewRequest("POST", "http://localhost/prod/mcp", http.NoBody)
+	require.Same(t, pathServer, g.ServerForRequest(req))
+
+	req = httptest.NewRequest("POST", "http://api.example.com/prod/mcp", http.NoBody)
+	require.Same(t, hostServer, g.ServerForRequest(req))
+
+	req = httptest.NewRequest("POST", "http://localhost/other/mcp", http.NoBody)
+	require.Same(t, aggregate, g.ServerForRequest(req))
 }
 
 func TestGateway_ReSync_AddsAndRemoves(t *testing.T) {

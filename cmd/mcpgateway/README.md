@@ -31,6 +31,13 @@ kind = "http"
 url = "http://staging.internal:8080/mcp"
 tools.prefix = "stg."
 
+# Optional: expose this upstream as its own MCP endpoint in addition to the
+# aggregate gateway endpoint. Routed endpoints use the upstream's original
+# tool/prompt names, while the aggregate endpoint still uses tools.prefix.
+[upstream.route]
+host = "staging-mcp.example.com"
+path = "/staging"
+
 [secret]
 name = "PROD_TOKEN"
 env = "PROD_TOKEN"
@@ -40,8 +47,18 @@ env = "PROD_TOKEN"
 
 - `-config` path to TOML (default `gateway.toml`)
 - Standard `-log-*` and `-transport` flags from cmdutil
+- HTTP TLS flags: `-tls-cert-file`, `-tls-key-file`, and optional `-tls-client-ca-file` for mTLS
 
 For `streamable-http`/`sse` transports, a `/health` endpoint is also served on the same address for liveness checks.
+
+When an upstream has `[upstream.route]`, requests matching `host` and/or `path` are served by a per-upstream MCP server. Requests that do not match a route use the default aggregate gateway server.
+
+Example HTTPS gateway with routed upstreams:
+
+```bash
+./mcpgateway -config gateway.toml -transport streamable-http -addr :8443 \
+  -tls-cert-file server.crt -tls-key-file server.key
+```
 
 ## Limitations (scaffold)
 
