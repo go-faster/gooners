@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,6 +110,43 @@ func TestUpstream_Reconnect_AfterSessionDrops(t *testing.T) {
 	}, time.Second, 10*time.Millisecond)
 }
 
+func TestUpstream_Reconnect_AfterInitialConnectFailure(t *testing.T) {
+	clientTr, cancelServer := newToolServer(t, "up")
+	t.Cleanup(cancelServer)
+
+	var builds atomic.Int32
+	buildFn := func(context.Context, UpstreamConfig, SecretResolver) (mcp.Transport, func() error, error) {
+		if builds.Add(1) == 1 {
+			return nil, nil, errors.New("upstream unavailable")
+		}
+		return clientTr, func() error { return nil }, nil
+	}
+
+	reconnected := make(chan string, 1)
+	u, err := NewUpstream(UpstreamConfig{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}, UpstreamOptions{
+		TransportBuilder: buildFn,
+		KeepAlive:        -1,
+		ReconnectInitial: 10 * time.Millisecond,
+		ReconnectMax:     10 * time.Millisecond,
+		OnReconnect: func(_ context.Context, upstreamName string) error {
+			reconnected <- upstreamName
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	require.ErrorContains(t, u.Connect(t.Context()), "upstream unavailable")
+	t.Cleanup(func() { _ = u.Close(t.Context()) })
+
+	require.Eventually(t, func() bool {
+		select {
+		case name := <-reconnected:
+			return name == "u1" && u.currentSession() != nil
+		default:
+			return false
+		}
+	}, time.Second, 10*time.Millisecond)
+}
+
 func TestUpstream_Supervisor_ExitsOnContextCancel(t *testing.T) {
 	clientTr, cancelServer := newToolServer(t, "up")
 	defer cancelServer()
@@ -163,27 +201,6 @@ func TestUpstream_Close_Idempotent(t *testing.T) {
 	require.NoError(t, u.Connect(t.Context()))
 	require.NoError(t, u.Close(t.Context()))
 	require.NoError(t, u.Close(t.Context()))
-}
-
-func TestUpstream_Backoff_Doubles(t *testing.T) {
-	tests := []struct {
-		name    string
-		current time.Duration
-		initial time.Duration
-		max     time.Duration
-		want    time.Duration
-	}{
-		{name: "zero uses initial", current: 0, initial: time.Second, max: 30 * time.Second, want: 2 * time.Second},
-		{name: "doubles", current: time.Second, initial: time.Second, max: 30 * time.Second, want: 2 * time.Second},
-		{name: "caps", current: 20 * time.Second, initial: time.Second, max: 30 * time.Second, want: 30 * time.Second},
-		{name: "overflow caps", current: time.Duration(1<<63 - 1), initial: time.Second, max: 30 * time.Second, want: 30 * time.Second},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.want, nextBackoff(tt.current, tt.initial, tt.max))
-		})
-	}
 }
 
 func newToolServer(t *testing.T, serverName string) (mcp.Transport, context.CancelFunc) {

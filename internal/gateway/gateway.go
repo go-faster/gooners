@@ -510,28 +510,32 @@ func (g *Gateway) Build(ctx context.Context) error {
 
 	for _, u := range g.upstreams {
 		if err := u.Connect(ctx); err != nil {
-			_ = g.Close(ctx)
-			return errors.Wrapf(err, "connect upstream %s", u.cfg.Name)
+			g.logger.Warn("upstream unavailable during build; will retry in background", zap.String("upstream", u.cfg.Name), zap.Error(err))
+			continue
 		}
 		tools, err := u.ListTools(ctx)
 		if err != nil {
-			_ = g.Close(ctx)
-			return errors.Wrapf(err, "list tools %s", u.cfg.Name)
+			g.logger.Warn("list tools failed during build; skipping upstream", zap.String("upstream", u.cfg.Name), zap.Error(err))
+			u.closeSessionResources()
+			continue
 		}
 		prompts, err := u.ListPrompts(ctx)
 		if err != nil {
-			_ = g.Close(ctx)
-			return errors.Wrapf(err, "list prompts %s", u.cfg.Name)
+			g.logger.Warn("list prompts failed during build; skipping upstream", zap.String("upstream", u.cfg.Name), zap.Error(err))
+			u.closeSessionResources()
+			continue
 		}
 		resources, err := u.ListResources(ctx)
 		if err != nil {
-			_ = g.Close(ctx)
-			return errors.Wrapf(err, "list resources %s", u.cfg.Name)
+			g.logger.Warn("list resources failed during build; skipping upstream", zap.String("upstream", u.cfg.Name), zap.Error(err))
+			u.closeSessionResources()
+			continue
 		}
 		templates, err := u.ListResourceTemplates(ctx)
 		if err != nil {
-			_ = g.Close(ctx)
-			return errors.Wrapf(err, "list resource templates %s", u.cfg.Name)
+			g.logger.Warn("list resource templates failed during build; skipping upstream", zap.String("upstream", u.cfg.Name), zap.Error(err))
+			u.closeSessionResources()
+			continue
 		}
 		listedItems = append(listedItems, listed{u: u, tools: tools, prompts: prompts, resources: resources, templates: templates})
 	}

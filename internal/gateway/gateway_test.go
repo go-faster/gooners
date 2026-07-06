@@ -98,6 +98,32 @@ func TestGateway_Build_RegistersTool(t *testing.T) {
 	require.Equal(t, "echo", res.Tools[0].Name)
 }
 
+func TestGateway_Build_SkipsUnavailableUpstream(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{
+			{Name: "down", Kind: "stdio", Command: []string{"ignored"}},
+		},
+	}
+
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+
+	u, err := NewUpstream(cfg.Upstreams[0], UpstreamOptions{
+		TransportBuilder: func(context.Context, UpstreamConfig, SecretResolver) (mcp.Transport, func() error, error) {
+			return nil, nil, errors.New("upstream unavailable")
+		},
+		ReconnectInitial: 10 * time.Millisecond,
+		ReconnectMax:     10 * time.Millisecond,
+	})
+	require.NoError(t, err)
+	g.upstreams = []*Upstream{u}
+	t.Cleanup(func() { _ = g.Close(t.Context()) })
+
+	require.NoError(t, g.Build(t.Context()))
+	require.Empty(t, g.RegisteredTools())
+}
+
 func TestGateway_ServerForRequest_RoutesByHostAndPath(t *testing.T) {
 	aggregate := mcp.NewServer(&mcp.Implementation{Name: "aggregate", Version: "0"}, nil)
 	pathServer := mcp.NewServer(&mcp.Implementation{Name: "path", Version: "0"}, nil)

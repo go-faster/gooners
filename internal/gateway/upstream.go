@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	backoff "github.com/cenkalti/backoff/v5"
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -159,6 +160,7 @@ func (u *Upstream) Connect(ctx context.Context) error {
 		return nil
 	}
 	if err := u.connectOnce(ctx); err != nil {
+		u.startSupervisor(ctx, u.onReconnect)
 		return err
 	}
 	u.startSupervisor(ctx, u.onReconnect)
@@ -230,12 +232,14 @@ func (u *Upstream) startSupervisor(ctx context.Context, onReconnect func(context
 
 func (u *Upstream) supervise(ctx context.Context, done chan struct{}, onReconnect func(context.Context, string) error) {
 	defer close(done)
-	backoff := u.reconnectInitial
-	attempt := 0
+	bo := u.newReconnectBackOff()
 	for {
 		sess := u.currentSession()
 		if sess == nil {
-			return
+			if !u.reconnectLoop(ctx, bo, onReconnect) {
+				return
+			}
+			continue
 		}
 
 		waitErr := make(chan error, 1)
@@ -255,30 +259,48 @@ func (u *Upstream) supervise(ctx context.Context, done chan struct{}, onReconnec
 		u.logger.Info("upstream session dropped", "error", err)
 		u.closeSessionResources()
 
-		for {
-			if !waitBackoff(ctx, backoff) {
-				return
-			}
-			attempt++
-			if err := u.connectOnce(ctx); err != nil {
-				u.logger.Warn("upstream reconnect failed", "attempt", attempt, "backoff", backoff, "error", err)
-				backoff = nextBackoff(backoff, u.reconnectInitial, u.reconnectMax)
-				continue
-			}
-			u.logger.Info("upstream reconnected", "attempt", attempt)
-			backoff = u.reconnectInitial
-			attempt = 0
-			if onReconnect != nil {
-				if err := onReconnect(ctx, u.cfg.Name); err != nil {
-					u.logger.Warn("upstream reconnect re-sync failed", "error", err)
-				}
-			}
-			break
+		if !u.reconnectLoop(ctx, bo, onReconnect) {
+			return
 		}
 	}
 }
 
-func waitBackoff(ctx context.Context, d time.Duration) bool {
+func (u *Upstream) newReconnectBackOff() *backoff.ExponentialBackOff {
+	bo := backoff.NewExponentialBackOff()
+	bo.InitialInterval = u.reconnectInitial
+	bo.MaxInterval = u.reconnectMax
+	bo.Multiplier = 2
+	bo.Reset()
+	return bo
+}
+
+func (u *Upstream) reconnectLoop(ctx context.Context, bo *backoff.ExponentialBackOff, onReconnect func(context.Context, string) error) bool {
+	attempt := 0
+	for {
+		delay := bo.NextBackOff()
+		if delay == backoff.Stop {
+			return false
+		}
+		if !waitBackOff(ctx, delay) {
+			return false
+		}
+		attempt++
+		if err := u.connectOnce(ctx); err != nil {
+			u.logger.Warn("upstream reconnect failed", "attempt", attempt, "backoff", delay, "error", err)
+			continue
+		}
+		u.logger.Info("upstream connected", "attempt", attempt)
+		bo.Reset()
+		if onReconnect != nil {
+			if err := onReconnect(ctx, u.cfg.Name); err != nil {
+				u.logger.Warn("upstream reconnect re-sync failed", "error", err)
+			}
+		}
+		return true
+	}
+}
+
+func waitBackOff(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer func() {
 		if !timer.Stop() {
@@ -294,17 +316,6 @@ func waitBackoff(ctx context.Context, d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
-}
-
-func nextBackoff(current, initial, maxBackoff time.Duration) time.Duration {
-	if current <= 0 {
-		current = initial
-	}
-	next := current * 2
-	if next < current || next > maxBackoff {
-		return maxBackoff
-	}
-	return next
 }
 
 func (u *Upstream) currentSession() *mcp.ClientSession {
