@@ -671,6 +671,34 @@ func TestGateway_Upstream_ListMethods(t *testing.T) {
 	_ = u.Close(t.Context())
 }
 
+func TestGateway_Upstream_ListMethods_ToolsOnly(t *testing.T) {
+	ct, st := mcp.NewInMemoryTransports()
+	srv := mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0"}, nil)
+	srv.AddTool(&mcp.Tool{Name: "echo", Description: "echo", InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	})
+	go func() { _ = srv.Run(t.Context(), st) }()
+
+	u := newUpstreamWithInMemoryClientWithCallbacks(UpstreamConfig{Name: "u1"}, ct, upstreamCallbacks{})
+	sess, err := u.client.Connect(t.Context(), ct, nil)
+	require.NoError(t, err)
+	u.session = sess
+
+	prompts, err := u.ListPrompts(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, prompts)
+
+	resources, err := u.ListResources(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, resources)
+
+	templates, err := u.ListResourceTemplates(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, templates)
+
+	_ = u.Close(t.Context())
+}
+
 func TestGateway_RedactsToolOutput(t *testing.T) {
 	upServerTr, upClientTr := mcp.NewInMemoryTransports()
 	srv := mcp.NewServer(&mcp.Implementation{Name: "up", Version: "0"}, nil)

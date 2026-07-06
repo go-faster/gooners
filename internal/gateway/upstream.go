@@ -439,11 +439,15 @@ func (u *Upstream) CallTool(ctx context.Context, params *mcp.CallToolParams) (*m
 	return sess.CallTool(ctx, params)
 }
 
-// ListPrompts calls the upstream.
+// ListPrompts calls the upstream. Upstreams that don't declare the prompts
+// capability are treated as having none, rather than failing the gateway.
 func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
 	sess := u.currentSession()
 	if sess == nil {
 		return nil, errors.New("not connected")
+	}
+	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Prompts == nil {
+		return nil, nil
 	}
 	return collectSeq(sess.Prompts(ctx, &mcp.ListPromptsParams{}))
 }
@@ -457,20 +461,30 @@ func (u *Upstream) GetPrompt(ctx context.Context, params *mcp.GetPromptParams) (
 	return sess.GetPrompt(ctx, params)
 }
 
-// ListResources calls the upstream.
+// ListResources calls the upstream. Upstreams that don't declare the
+// resources capability are treated as having none, rather than failing the
+// gateway.
 func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
 	sess := u.currentSession()
 	if sess == nil {
 		return nil, errors.New("not connected")
 	}
+	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Resources == nil {
+		return nil, nil
+	}
 	return collectSeq(sess.Resources(ctx, &mcp.ListResourcesParams{}))
 }
 
-// ListResourceTemplates calls the upstream.
+// ListResourceTemplates calls the upstream. Upstreams that don't declare the
+// resources capability are treated as having none, rather than failing the
+// gateway.
 func (u *Upstream) ListResourceTemplates(ctx context.Context) ([]*mcp.ResourceTemplate, error) {
 	sess := u.currentSession()
 	if sess == nil {
 		return nil, errors.New("not connected")
+	}
+	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Resources == nil {
+		return nil, nil
 	}
 	return collectSeq(sess.ResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{}))
 }
