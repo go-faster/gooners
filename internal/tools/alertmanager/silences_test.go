@@ -416,6 +416,7 @@ func TestSilenceSummaryFromModel_AllFields(t *testing.T) {
 	require.Equal(t, "test silence", summary.Comment)
 	require.Len(t, summary.Matchers, 1)
 	require.Equal(t, "alertname", summary.Matchers[0].Name)
+	require.Equal(t, `alertname="TestAlert"`, summary.Matchers[0].Raw)
 	require.NotEmpty(t, summary.StartsAt)
 	require.NotEmpty(t, summary.EndsAt)
 	require.NotEmpty(t, summary.UpdatedAt)

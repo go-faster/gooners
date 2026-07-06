@@ -11,6 +11,7 @@ import (
 	alertops "github.com/prometheus/alertmanager/api/v2/client/alert"
 	silenceops "github.com/prometheus/alertmanager/api/v2/client/silence"
 	"github.com/prometheus/alertmanager/api/v2/models"
+	"github.com/prometheus/alertmanager/pkg/labels"
 
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
@@ -25,6 +26,23 @@ type SilenceSummary struct {
 	CreatedBy string          `json:"created_by,omitempty"`
 	Comment   string          `json:"comment,omitempty"`
 	UpdatedAt string          `json:"updated_at,omitempty"`
+}
+
+// modelMatchType maps the AM API's IsEqual/IsRegex bool pair onto the
+// labels.MatchType enum, so Raw formatting can reuse labels.Matcher.String()
+// (which applies Alertmanager's actual matcher escaping rules) instead of
+// hand-rolled formatting.
+func modelMatchType(isEqual, isRegex bool) labels.MatchType {
+	switch {
+	case isEqual && !isRegex:
+		return labels.MatchEqual
+	case !isEqual && !isRegex:
+		return labels.MatchNotEqual
+	case isEqual && isRegex:
+		return labels.MatchRegexp
+	default:
+		return labels.MatchNotRegexp
+	}
 }
 
 func modelMatchersToResults(ms models.Matchers) []MatcherResult {
@@ -45,6 +63,9 @@ func modelMatchersToResults(ms models.Matchers) []MatcherResult {
 		}
 		if m.IsEqual != nil {
 			mr.IsEqual = *m.IsEqual
+		}
+		if lm, err := labels.NewMatcher(modelMatchType(mr.IsEqual, mr.IsRegex), mr.Name, mr.Value); err == nil {
+			mr.Raw = lm.String()
 		}
 		out = append(out, mr)
 	}
