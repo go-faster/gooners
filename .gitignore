@@ -21,6 +21,7 @@ secret.yaml
 /grafana-dashboard-mcp
 /opencode-handoff-mcp
 /mcpgateway
+/alertmanager-mcp
 
 # goreleaser
 dist
