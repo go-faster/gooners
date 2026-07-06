@@ -3,6 +3,8 @@ package alertmanager
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -78,20 +80,49 @@ func matchersToModels(ms []*labels.Matcher) models.Matchers {
 	return out
 }
 
-// isCatchAllOnly reports whether every matcher in ms is a broad wildcard
-// regex (value ".*" or ".+"), meaning the set does not meaningfully scope
-// which alerts it targets.
+// isCatchAllOnly reports whether the matcher set lacks any positive,
+// non-wildcard constraint. Negative matchers and regexes that match arbitrary
+// values are too broad to satisfy the create_silence guardrail by themselves.
 func isCatchAllOnly(ms []*labels.Matcher) bool {
 	if len(ms) == 0 {
 		return false
 	}
-	for _, m := range ms {
-		broad := m.Type == labels.MatchRegexp && (m.Value == ".*" || m.Value == ".+")
-		if !broad {
-			return false
-		}
+	return !slices.ContainsFunc(ms, isScopedMatcher)
+}
+
+func isScopedMatcher(m *labels.Matcher) bool {
+	if m == nil {
+		return false
 	}
-	return true
+	switch m.Type {
+	case labels.MatchEqual:
+		return m.Value != ""
+	case labels.MatchRegexp:
+		return !isBroadRegex(m.Value)
+	default:
+		return false
+	}
+}
+
+func isBroadRegex(expr string) bool {
+	re, err := regexp.Compile("^(?:" + expr + ")$")
+	if err != nil {
+		return false
+	}
+	if re.MatchString("") {
+		return true
+	}
+	return re.MatchString("gooners-catch-all-probe") && re.MatchString("gooners-catch-all-probe-2")
+}
+
+func validateSilenceMatchers(ms []*labels.Matcher) error {
+	if len(ms) == 0 {
+		return fmt.Errorf("at least one matcher is required")
+	}
+	if isCatchAllOnly(ms) {
+		return fmt.Errorf("matchers must include at least one non-wildcard matcher; refusing a catch-all silence")
+	}
+	return nil
 }
 
 type ValidateMatcherQueryReq struct {

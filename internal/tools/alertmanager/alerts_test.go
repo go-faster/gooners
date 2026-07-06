@@ -92,6 +92,34 @@ func TestListAlerts_WithFilter(t *testing.T) {
 	require.Equal(t, 0, res.Count)
 }
 
+func TestListAlerts_SkipsNullEntries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+  null,
+  {
+    "labels": {"alertname": "HighErrorRate"},
+    "annotations": {},
+    "fingerprint": "abc123",
+    "startsAt": "2024-01-01T00:00:00Z",
+    "endsAt": "0001-01-01T00:00:00Z",
+    "status": {"state": "active", "silencedBy": [], "inhibitedBy": [], "mutedBy": []},
+    "receivers": []
+  }
+]`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{AlertmanagerURL: server.URL})
+	require.NoError(t, err)
+
+	handler := listAlertsHandler(client)
+	_, res, err := handler(context.Background(), nil, ListAlertsReq{})
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Count)
+	require.Len(t, res.Alerts, 1)
+}
+
 func TestListAlerts_ServerError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

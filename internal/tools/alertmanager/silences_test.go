@@ -121,6 +121,47 @@ func TestPreviewSilence_HappyPath(t *testing.T) {
 	require.Equal(t, "HighErrorRate", res.Matchers[0].Value)
 }
 
+func TestPreviewSilence_GuardrailCatchAllOnly(t *testing.T) {
+	failServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unexpected network request")
+	}))
+	defer failServer.Close()
+
+	client, err := NewClient(Config{AlertmanagerURL: failServer.URL})
+	require.NoError(t, err)
+
+	handler := previewSilenceHandler(client)
+	_, _, err = handler(context.Background(), nil, PreviewSilenceReq{Matchers: `service=~"(.*)"`})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "catch-all")
+}
+
+func TestListSilences_SkipsNullEntries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+  null,
+  {
+    "id": "11111111-1111-1111-1111-111111111111",
+    "matchers": [],
+    "startsAt": "2024-01-01T00:00:00Z",
+    "endsAt": "2024-01-01T01:00:00Z",
+    "status": {"state": "active"}
+  }
+]`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{AlertmanagerURL: server.URL})
+	require.NoError(t, err)
+
+	handler := listSilencesHandler(client)
+	_, res, err := handler(context.Background(), nil, ListSilencesReq{})
+	require.NoError(t, err)
+	require.Equal(t, 1, res.Count)
+	require.Len(t, res.Silences, 1)
+}
+
 // CreateSilence guardrail tests - these should NOT make network calls
 
 func TestCreateSilence_GuardrailEmptyMatchers(t *testing.T) {

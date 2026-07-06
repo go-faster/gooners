@@ -55,32 +55,41 @@ type EvaluatePromQLQueryRes struct {
 
 func validatePromQLQueryHandler() mcp.ToolHandlerFor[ValidatePromQLQueryReq, ValidatePromQLQueryRes] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, args ValidatePromQLQueryReq) (*mcp.CallToolResult, ValidatePromQLQueryRes, error) {
-		e, err := metricsql.Parse(args.Expr)
+		names, err := parsePromQLMetricNames(args.Expr)
 		if err != nil {
 			return nil, ValidatePromQLQueryRes{Valid: false, Error: err.Error()}, nil
 		}
 
-		metricNames := make(map[string]bool)
-		metricsql.VisitAll(e, func(node metricsql.Expr) {
-			me, ok := node.(*metricsql.MetricExpr)
-			if !ok || len(me.LabelFilterss) == 0 {
-				return
-			}
-			for _, f := range me.LabelFilterss[0] {
-				if f.Label == "__name__" && !f.IsNegative && !f.IsRegexp {
-					metricNames[f.Value] = true
-				}
-			}
-		})
-
-		names := make([]string, 0, len(metricNames))
-		for name := range metricNames {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-
 		return nil, ValidatePromQLQueryRes{Valid: true, MetricNames: names}, nil
 	}
+}
+
+func parsePromQLMetricNames(expr string) ([]string, error) {
+	e, err := metricsql.Parse(expr)
+	if err != nil {
+		return nil, err
+	}
+
+	metricNames := make(map[string]bool)
+	metricsql.VisitAll(e, func(node metricsql.Expr) {
+		me, ok := node.(*metricsql.MetricExpr)
+		if !ok || len(me.LabelFilterss) == 0 {
+			return
+		}
+		for _, f := range me.LabelFilterss[0] {
+			if f.Label == "__name__" && !f.IsNegative && !f.IsRegexp {
+				metricNames[f.Value] = true
+			}
+		}
+	})
+
+	names := make([]string, 0, len(metricNames))
+	for name := range metricNames {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	return names, nil
 }
 
 func parseTimeOrNow(s string) (time.Time, error) {
@@ -130,9 +139,17 @@ func evaluatePromQLQueryHandler(c *Client) mcp.ToolHandlerFor[EvaluatePromQLQuer
 			return nil, EvaluatePromQLQueryRes{}, fmt.Errorf("no Prometheus URL configured; evaluate_promql_query requires -prometheus-url (or PROMETHEUS_URL) to be set")
 		}
 
-		// Validate PromQL syntax first
-		if _, err := metricsql.Parse(args.Expr); err != nil {
+		if _, err := parsePromQLMetricNames(args.Expr); err != nil {
 			return nil, EvaluatePromQLQueryRes{}, fmt.Errorf("invalid PromQL: %w", err)
+		}
+		if (args.Start == "") != (args.End == "") {
+			return nil, EvaluatePromQLQueryRes{}, fmt.Errorf("start and end must be provided together for a range query")
+		}
+
+		if c.cfg.Timeout > 0 {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, c.cfg.Timeout)
+			defer cancel()
 		}
 
 		var (

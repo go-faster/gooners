@@ -111,6 +111,9 @@ func listAlertsHandler(c *Client) mcp.ToolHandlerFor[ListAlertsReq, ListAlertsRe
 
 		alerts := make([]AlertSummary, 0, len(res.Payload))
 		for _, a := range res.Payload {
+			if a == nil {
+				continue
+			}
 			alerts = append(alerts, alertSummaryFromModel(a))
 		}
 		return nil, ListAlertsRes{Alerts: alerts, Count: len(alerts)}, nil
@@ -161,11 +164,17 @@ func listAlertGroupsHandler(c *Client) mcp.ToolHandlerFor[ListAlertGroupsReq, Li
 
 		groups := make([]AlertGroupSummary, 0, len(res.Payload))
 		for _, g := range res.Payload {
+			if g == nil {
+				continue
+			}
 			gs := AlertGroupSummary{Labels: map[string]string(g.Labels)}
 			if g.Receiver != nil && g.Receiver.Name != nil {
 				gs.Receiver = *g.Receiver.Name
 			}
 			for _, a := range g.Alerts {
+				if a == nil {
+					continue
+				}
 				gs.Alerts = append(gs.Alerts, alertSummaryFromModel(a))
 			}
 			groups = append(groups, gs)

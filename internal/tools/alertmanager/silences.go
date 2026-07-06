@@ -123,6 +123,9 @@ func listSilencesHandler(c *Client) mcp.ToolHandlerFor[ListSilencesReq, ListSile
 
 		silences := make([]SilenceSummary, 0, len(res.Payload))
 		for _, sil := range res.Payload {
+			if sil == nil {
+				continue
+			}
 			silences = append(silences, silenceSummaryFromModel(sil))
 		}
 		return nil, ListSilencesRes{Silences: silences, Count: len(silences)}, nil
@@ -159,6 +162,9 @@ func previewSilenceHandler(c *Client) mcp.ToolHandlerFor[PreviewSilenceReq, Prev
 		if err != nil {
 			return nil, PreviewSilenceRes{}, fmt.Errorf("invalid matchers: %w", err)
 		}
+		if err := validateSilenceMatchers(ms); err != nil {
+			return nil, PreviewSilenceRes{}, err
+		}
 
 		res, err := c.am.Alert.GetAlerts(alertops.NewGetAlertsParams().WithContext(ctx).WithFilter(matchersToFilter(ms)))
 		if err != nil {
@@ -167,6 +173,9 @@ func previewSilenceHandler(c *Client) mcp.ToolHandlerFor[PreviewSilenceReq, Prev
 
 		alerts := make([]AlertSummary, 0, len(res.Payload))
 		for _, a := range res.Payload {
+			if a == nil {
+				continue
+			}
 			alerts = append(alerts, alertSummaryFromModel(a))
 		}
 		return nil, PreviewSilenceRes{Matchers: toMatcherResults(ms), Alerts: alerts, Count: len(alerts)}, nil
@@ -203,14 +212,8 @@ func createSilenceHandler(c *Client) mcp.ToolHandlerFor[CreateSilenceReq, Create
 			return nil, CreateSilenceRes{}, fmt.Errorf("invalid matchers: %w", err)
 		}
 
-		// Check at least one matcher
-		if len(ms) == 0 {
-			return nil, CreateSilenceRes{}, fmt.Errorf("at least one matcher is required")
-		}
-
-		// Check not catch-all only
-		if isCatchAllOnly(ms) {
-			return nil, CreateSilenceRes{}, fmt.Errorf("matchers must include at least one non-wildcard matcher; refusing a catch-all silence")
+		if err := validateSilenceMatchers(ms); err != nil {
+			return nil, CreateSilenceRes{}, err
 		}
 
 		// Validate created_by

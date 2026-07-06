@@ -36,6 +36,11 @@ func main() {
 		prometheusToken    = flag.String("prometheus-token", os.Getenv("PROMETHEUS_TOKEN"), "Prometheus API token")
 		prometheusUser     = flag.String("prometheus-user", os.Getenv("PROMETHEUS_USER"), "Prometheus username for basic auth")
 		prometheusPassword = flag.String("prometheus-password", os.Getenv("PROMETHEUS_PASSWORD"), "Prometheus password for basic auth")
+
+		upstreamCAFile             = flag.String("upstream-ca-file", os.Getenv("UPSTREAM_CA_FILE"), "CA bundle file for Alertmanager and Prometheus TLS connections")
+		upstreamClientCertFile     = flag.String("upstream-client-cert-file", os.Getenv("UPSTREAM_CLIENT_CERT_FILE"), "client certificate file for Alertmanager and Prometheus mTLS connections")
+		upstreamClientKeyFile      = flag.String("upstream-client-key-file", os.Getenv("UPSTREAM_CLIENT_KEY_FILE"), "client key file for Alertmanager and Prometheus mTLS connections")
+		upstreamInsecureSkipVerify = flag.Bool("upstream-insecure-skip-verify", os.Getenv("UPSTREAM_INSECURE_SKIP_VERIFY") == "true", "skip upstream TLS certificate verification for Alertmanager and Prometheus")
 	)
 
 	flag.TextVar(&maxSilenceDuration, "max-silence-duration", &maxSilenceDuration, "maximum duration a create_silence call may request (default: 24h; e.g. 1h, 2d)")
@@ -52,15 +57,19 @@ func main() {
 	defer cancel()
 
 	cfg := alertmanager.Config{
-		AlertmanagerURL:      *alertmanagerURL,
-		AlertmanagerToken:    *alertmanagerToken,
-		AlertmanagerUser:     *alertmanagerUser,
-		AlertmanagerPassword: *alertmanagerPassword,
-		PrometheusURL:        *prometheusURL,
-		PrometheusToken:      *prometheusToken,
-		PrometheusUser:       *prometheusUser,
-		PrometheusPassword:   *prometheusPassword,
-		MaxSilenceDuration:   time.Duration(maxSilenceDuration),
+		AlertmanagerURL:       *alertmanagerURL,
+		AlertmanagerToken:     *alertmanagerToken,
+		AlertmanagerUser:      *alertmanagerUser,
+		AlertmanagerPassword:  *alertmanagerPassword,
+		PrometheusURL:         *prometheusURL,
+		PrometheusToken:       *prometheusToken,
+		PrometheusUser:        *prometheusUser,
+		PrometheusPassword:    *prometheusPassword,
+		MaxSilenceDuration:    time.Duration(maxSilenceDuration),
+		TLSCAFile:             *upstreamCAFile,
+		TLSCertFile:           *upstreamClientCertFile,
+		TLSKeyFile:            *upstreamClientKeyFile,
+		TLSInsecureSkipVerify: *upstreamInsecureSkipVerify,
 	}
 
 	c, err := alertmanager.NewClient(cfg)

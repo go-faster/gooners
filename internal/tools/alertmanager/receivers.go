@@ -31,7 +31,7 @@ func listReceiversHandler(c *Client) mcp.ToolHandlerFor[ListReceiversReq, ListRe
 
 		receivers := make([]ReceiverSummary, 0, len(res.Payload))
 		for _, r := range res.Payload {
-			if r.Name == nil {
+			if r == nil || r.Name == nil {
 				continue
 			}
 			receivers = append(receivers, ReceiverSummary{

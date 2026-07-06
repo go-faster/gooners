@@ -122,6 +122,23 @@ func TestListReceivers_SkipsNilNames(t *testing.T) {
 	require.Equal(t, "another", res.Receivers[1].Name)
 }
 
+func TestListReceivers_SkipsNullEntries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[null,{"name":"valid"}]`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(Config{AlertmanagerURL: server.URL})
+	require.NoError(t, err)
+
+	handler := listReceiversHandler(client)
+	_, res, err := handler(context.Background(), nil, ListReceiversReq{})
+	require.NoError(t, err)
+	require.Len(t, res.Receivers, 1)
+	require.Equal(t, "valid", res.Receivers[0].Name)
+}
+
 func TestListReceivers_Empty(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

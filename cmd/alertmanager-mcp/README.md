@@ -20,6 +20,12 @@ Optional (only needed for `evaluate_promql_query`):
 - `PROMETHEUS_TOKEN` — a bearer token for Prometheus API authentication
 - `PROMETHEUS_USER` / `PROMETHEUS_PASSWORD` — basic auth fallback for Prometheus
 
+Optional upstream TLS settings for Alertmanager and Prometheus:
+
+- `UPSTREAM_CA_FILE` — custom CA bundle file
+- `UPSTREAM_CLIENT_CERT_FILE` / `UPSTREAM_CLIENT_KEY_FILE` — client certificate and key for mTLS
+- `UPSTREAM_INSECURE_SKIP_VERIFY` — set to `true` to skip upstream certificate verification
+
 ## Build
 
 ```bash
@@ -63,6 +69,9 @@ A `/health` endpoint is also served on the same address (e.g. `http://localhost:
 - `-addr <host:port>` — listen address for HTTP transports (`streamable-http`, `sse`). Default `:8080`
 - `-log-file <path>` — write structured debug logs (slog TextHandler) to the given file.
 - `-max-silence-duration <duration>` — cap on how long a single `create_silence` call may request (default: 24h). Supports Prometheus duration strings: `1h`, `2d`, `1w`.
+- `-upstream-ca-file <path>` — custom CA bundle file for Alertmanager and Prometheus TLS connections.
+- `-upstream-client-cert-file <path>` / `-upstream-client-key-file <path>` — client certificate and key for mTLS upstream connections.
+- `-upstream-insecure-skip-verify` — skip upstream TLS certificate verification.
 
 ## Tools
 
@@ -83,5 +92,5 @@ A `/health` endpoint is also served on the same address (e.g. `http://localhost:
 
 ### Validation Tools
 - `validate_matcher_query` — validate Alertmanager matcher expressions (e.g. `job="prometheus"`)
-- `validate_promql_query` — validate PromQL syntax (requires Prometheus configuration)
+- `validate_promql_query` — validate PromQL syntax offline
 - `evaluate_promql_query` — evaluate a PromQL query and return the result (requires Prometheus configuration)

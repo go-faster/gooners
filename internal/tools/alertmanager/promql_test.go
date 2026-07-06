@@ -378,6 +378,48 @@ func TestEvaluatePromQLQuery_InvalidStartTime(t *testing.T) {
 	require.Contains(t, err.Error(), "invalid start")
 }
 
+func TestEvaluatePromQLQuery_RejectsLoneStart(t *testing.T) {
+	promServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unexpected network request")
+	}))
+	defer promServer.Close()
+
+	client, err := NewClient(Config{
+		AlertmanagerURL: "http://unused.invalid",
+		PrometheusURL:   promServer.URL,
+	})
+	require.NoError(t, err)
+
+	handler := evaluatePromQLQueryHandler(client)
+	_, _, err = handler(context.Background(), nil, EvaluatePromQLQueryReq{
+		Expr:  "up",
+		Start: time.Now().UTC().Add(-5 * time.Minute).Format(time.RFC3339),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "start and end")
+}
+
+func TestEvaluatePromQLQuery_RejectsLoneEnd(t *testing.T) {
+	promServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unexpected network request")
+	}))
+	defer promServer.Close()
+
+	client, err := NewClient(Config{
+		AlertmanagerURL: "http://unused.invalid",
+		PrometheusURL:   promServer.URL,
+	})
+	require.NoError(t, err)
+
+	handler := evaluatePromQLQueryHandler(client)
+	_, _, err = handler(context.Background(), nil, EvaluatePromQLQueryReq{
+		Expr: "up",
+		End:  time.Now().UTC().Format(time.RFC3339),
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "start and end")
+}
+
 func TestEvaluatePromQLQuery_InvalidStep(t *testing.T) {
 	promServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("unexpected network request")

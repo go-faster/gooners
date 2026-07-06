@@ -4,9 +4,12 @@
 package alertmanager
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -41,6 +44,11 @@ type Config struct {
 	MaxSilenceDuration time.Duration
 
 	Timeout time.Duration
+
+	TLSCAFile             string
+	TLSCertFile           string
+	TLSKeyFile            string
+	TLSInsecureSkipVerify bool
 }
 
 func (c *Config) setDefaults() {
@@ -83,7 +91,14 @@ func NewClient(cfg Config) (*Client, error) {
 		basePath = defaultAlertmanagerBasePath
 	}
 
-	httpClient := &http.Client{Timeout: cfg.Timeout}
+	tlsConfig, err := cfg.tlsConfig()
+	if err != nil {
+		return nil, err
+	}
+	httpClient := &http.Client{
+		Timeout:   cfg.Timeout,
+		Transport: newTransport(tlsConfig),
+	}
 	rt := httptransport.NewWithClient(u.Host, basePath+"/", []string{u.Scheme}, httpClient)
 	switch {
 	case cfg.AlertmanagerToken != "":
@@ -100,7 +115,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.PrometheusURL != "" {
 		promClient, err := promapi.NewClient(promapi.Config{
 			Address:      cfg.PrometheusURL,
-			RoundTripper: promRoundTripper(cfg, cfg.Timeout),
+			RoundTripper: promRoundTripper(cfg, tlsConfig),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create prometheus client: %w", err)
@@ -111,9 +126,44 @@ func NewClient(cfg Config) (*Client, error) {
 	return c, nil
 }
 
-func promRoundTripper(cfg Config, timeout time.Duration) http.RoundTripper {
-	base := &http.Transport{}
-	_ = timeout // Prometheus API client applies its own per-call context deadline.
+func (c Config) tlsConfig() (*tls.Config, error) {
+	if c.TLSCAFile == "" && c.TLSCertFile == "" && c.TLSKeyFile == "" && !c.TLSInsecureSkipVerify {
+		return nil, nil
+	}
+
+	cfg := &tls.Config{InsecureSkipVerify: c.TLSInsecureSkipVerify} //nolint:gosec // Explicit user-controlled upstream option.
+	if c.TLSCAFile != "" {
+		pem, err := os.ReadFile(c.TLSCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read upstream CA file: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("parse upstream CA file: no certificates found")
+		}
+		cfg.RootCAs = pool
+	}
+	if c.TLSCertFile != "" || c.TLSKeyFile != "" {
+		if c.TLSCertFile == "" || c.TLSKeyFile == "" {
+			return nil, fmt.Errorf("both upstream client certificate and key files must be configured")
+		}
+		cert, err := tls.LoadX509KeyPair(c.TLSCertFile, c.TLSKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load upstream client certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+	return cfg, nil
+}
+
+func newTransport(tlsConfig *tls.Config) *http.Transport {
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.TLSClientConfig = tlsConfig
+	return base
+}
+
+func promRoundTripper(cfg Config, tlsConfig *tls.Config) http.RoundTripper {
+	base := newTransport(tlsConfig)
 	switch {
 	case cfg.PrometheusToken != "":
 		return &bearerAuthTransport{token: cfg.PrometheusToken, base: base}

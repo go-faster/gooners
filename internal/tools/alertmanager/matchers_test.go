@@ -257,6 +257,34 @@ func TestIsCatchAllOnly(t *testing.T) {
 			isCatchAll: true,
 		},
 		{
+			name: "single_catchall_empty_regex",
+			matchers: []*labels.Matcher{
+				{Name: "service", Value: "", Type: labels.MatchRegexp},
+			},
+			isCatchAll: true,
+		},
+		{
+			name: "single_catchall_grouped_regex",
+			matchers: []*labels.Matcher{
+				{Name: "service", Value: "(.*)", Type: labels.MatchRegexp},
+			},
+			isCatchAll: true,
+		},
+		{
+			name: "single_catchall_quantifier_regex",
+			matchers: []*labels.Matcher{
+				{Name: "service", Value: ".{0,}", Type: labels.MatchRegexp},
+			},
+			isCatchAll: true,
+		},
+		{
+			name: "not_equal_only",
+			matchers: []*labels.Matcher{
+				{Name: "service", Value: "", Type: labels.MatchNotEqual},
+			},
+			isCatchAll: true,
+		},
+		{
 			name: "multiple_catchalls",
 			matchers: []*labels.Matcher{
 				{Name: "service", Value: ".*", Type: labels.MatchRegexp},
@@ -291,7 +319,7 @@ func TestIsCatchAllOnly(t *testing.T) {
 			matchers: []*labels.Matcher{
 				{Name: "env", Value: ".*", Type: labels.MatchNotRegexp},
 			},
-			isCatchAll: false,
+			isCatchAll: true,
 		},
 	}
 
