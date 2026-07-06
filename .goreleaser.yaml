@@ -58,6 +58,20 @@ builds:
       - amd64
       - arm64
 
+  - id: alertmanager-mcp
+    main: ./cmd/alertmanager-mcp
+    binary: alertmanager-mcp
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
 dockers_v2:
   - id: ssh-mcp
     ids: [ssh-mcp]
@@ -103,6 +117,17 @@ dockers_v2:
       BINARY_NAME: opencode-handoff-mcp
     dockerfile: Dockerfile.goreleaser
 
+  - id: alertmanager-mcp
+    ids: [alertmanager-mcp]
+    images:
+      - "ghcr.io/go-faster/gooners/alertmanager-mcp"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    build_args:
+      BINARY_NAME: alertmanager-mcp
+    dockerfile: Dockerfile.goreleaser
+
 archives:
   - formats: tar.gz
     name_template: >-
@@ -133,6 +158,7 @@ release:
     ghcr.io/go-faster/gooners/grafana-dashboard-mcp:v{{ .Version }}
     ghcr.io/go-faster/gooners/mcpgateway:v{{ .Version }}
     ghcr.io/go-faster/gooners/opencode-handoff-mcp:v{{ .Version }}
+    ghcr.io/go-faster/gooners/alertmanager-mcp:v{{ .Version }}
     ```
 
 signs:
@@ -197,6 +223,19 @@ nfpms:
     homepage: https://github.com/go-faster/gooners
     maintainer: tdakkota <tdakkota@users.noreply.github.com>
     description: MCP server for delegating coding tasks to opencode agents.
+    license: Apache 2.0
+    formats: [apk, deb, rpm, archlinux]
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+
+  - id: alertmanager-mcp
+    package_name: alertmanager-mcp
+    ids: [alertmanager-mcp]
+    homepage: https://github.com/go-faster/gooners
+    maintainer: tdakkota <tdakkota@users.noreply.github.com>
+    description: Alertmanager MCP server for alerts, silences, receivers, and PromQL validation.
     license: Apache 2.0
     formats: [apk, deb, rpm, archlinux]
     deb:

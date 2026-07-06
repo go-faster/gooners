@@ -39,6 +39,7 @@ golangci-lint run ./...
 ```
 cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
 cmd/grafana-dashboard-mcp/ ← MCP server binary (go build ./cmd/grafana-dashboard-mcp)
+cmd/alertmanager-mcp/ ← MCP server binary (go build ./cmd/alertmanager-mcp)
 internal/
   mcputil/            ← Standardized MCP server config, prompts, and log streaming
   session/            ← SSH session pool & async upload tracking
@@ -79,6 +80,16 @@ go build ./cmd/grafana-dashboard-mcp
 ./grafana-dashboard-mcp
 # Or HTTP transport with debug logging and custom session dir:
 ./grafana-dashboard-mcp -transport streamable-http -addr :8081 -sessions-dir /tmp/sessions -log-file /tmp/grafana-mcp.log
+```
+
+## alertmanager-mcp Build
+
+```bash
+go build ./cmd/alertmanager-mcp
+# Run with default stdio transport:
+./alertmanager-mcp
+# Or HTTP transport with debug logging:
+./alertmanager-mcp -transport streamable-http -addr :8082 -log-file /tmp/alertmanager-mcp.log
 ```
 
 ## Skills
