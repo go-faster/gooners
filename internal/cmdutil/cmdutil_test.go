@@ -2,6 +2,8 @@ package cmdutil
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -40,6 +42,17 @@ func TestTransportFlags_ResolveExposeProvider(t *testing.T) {
 			require.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestHealthHandler(t *testing.T) {
+	h := healthHandler("srv")
+
+	req := httptest.NewRequest(http.MethodGet, "/health", http.NoBody)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.JSONEq(t, `{"status":"ok","server":"srv"}`, rec.Body.String())
 }
 
 func TestTransportFlags_ApplyExposeDefaults(t *testing.T) {

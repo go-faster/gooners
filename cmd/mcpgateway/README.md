@@ -41,6 +41,8 @@ env = "PROD_TOKEN"
 - `-config` path to TOML (default `gateway.toml`)
 - Standard `-log-*` and `-transport` flags from cmdutil
 
+For `streamable-http`/`sse` transports, a `/health` endpoint is also served on the same address for liveness checks.
+
 ## Limitations (scaffold)
 
 - tools/listChanged notifications are received but only logged ("re-sync not implemented")

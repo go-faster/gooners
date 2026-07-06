@@ -53,6 +53,8 @@ docker run --rm -p 8081:8081 \
   grafana-dashboard-mcp -transport streamable-http -addr :8081
 ```
 
+A `/health` endpoint is also served on the same address (e.g. `http://localhost:8081/health`) for liveness checks.
+
 ### Docker Compose Sandbox
 
 For a complete local sandbox environment containing both a Grafana instance and the MCP server configured to communicate, see the [examples/grafana-dashboard-mcp](../../examples/grafana-dashboard-mcp) directory.

@@ -3,6 +3,7 @@ package cmdutil
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -113,20 +114,35 @@ func (flags TransportFlags) Run(ctx context.Context, name string, s *mcp.Server,
 			Logger:                     slog.Default(),
 			DisableLocalhostProtection: flags.DisableLocalhostProtection,
 		})
+		mux := http.NewServeMux()
+		mux.Handle("/health", healthHandler(name))
+		mux.Handle("/", h)
 		lg.Info("starting MCP server on streamable-http transport", "server", name, "at", fmt.Sprintf("http://%s/mcp", flags.Addr))
-		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: h}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
+		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
 
 	case "sse":
 		opts := &mcp.SSEOptions{
 			DisableLocalhostProtection: flags.DisableLocalhostProtection,
 		}
 		h := mcp.NewSSEHandler(handler, opts)
+		mux := http.NewServeMux()
+		mux.Handle("/health", healthHandler(name))
+		mux.Handle("/", h)
 		lg.Info("starting MCP server on SSE transport", "server", name, "at", fmt.Sprintf("http://%s", flags.Addr))
-		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: h}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
+		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
 
 	default:
 		return fmt.Errorf("unknown transport: %q", flags.Transport)
 	}
+}
+
+// healthHandler returns a handler for a liveness check endpoint, reporting
+// that the process is up and serving requests.
+func healthHandler(name string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "server": name})
+	})
 }
 
 func (flags TransportFlags) runHTTPServer(ctx context.Context, srv *http.Server, lg *slog.Logger) error {

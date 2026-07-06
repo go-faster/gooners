@@ -43,6 +43,8 @@ docker run --rm -p 8080:8080 \
 
 Then point your client at `http://localhost:8080/mcp`.
 
+A `/health` endpoint is also served on the same address (e.g. `http://localhost:8080/health`) for liveness checks.
+
 Notes:
 - Mount your `~/.ssh` read-only so `ssh_open` / `ssh_once_exec` can use your keys and `~/.ssh/config`.
 - The container working directory (`/work` above) becomes the file access root for `upload_file`, `download_file`, and exec `stdin_file`.

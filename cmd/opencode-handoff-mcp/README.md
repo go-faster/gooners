@@ -44,6 +44,8 @@ HTTP transport:
 ./opencode-handoff-mcp -transport streamable-http -addr :8082
 ```
 
+A `/health` endpoint is also served on the same address (e.g. `http://localhost:8082/health`) for liveness checks.
+
 ## Configuration
 
 | Flag | Env | Default | Description |
