@@ -9,7 +9,7 @@ tool (
 
 require (
 	github.com/BurntSushi/toml v1.6.0
-	github.com/VictoriaMetrics/metricsql v0.87.2
+	github.com/VictoriaMetrics/metricsql v0.87.3
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/go-faster/errors v0.7.1
 	github.com/go-faster/jx v1.2.0
