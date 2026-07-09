@@ -241,6 +241,7 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		Instructions: cfg.Server.Instructions,
 		Logger:       opts.Slogger.With("component", "server"),
 	})
+	g.server.AddReceivingMiddleware(g.scopeMiddleware(nil))
 	return g, nil
 }
 
@@ -735,6 +736,7 @@ func (g *Gateway) newUpstreamRouteServer(u *Upstream, tools []*mcp.Tool, prompts
 		Instructions: g.cfg.Server.Instructions,
 		Logger:       g.slogger.With("component", "route-server", "upstream", u.cfg.Name),
 	})
+	s.AddReceivingMiddleware(g.scopeMiddleware(u))
 	for _, rt := range tools {
 		if !u.allowed(rt.Name) {
 			continue

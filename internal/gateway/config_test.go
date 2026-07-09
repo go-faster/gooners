@@ -474,3 +474,101 @@ max_backoff = "1s"
 	require.Error(t, err)
 	require.ErrorContains(t, err, "initial_backoff")
 }
+
+func TestConfig_ToolsScope_Valid(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "grafana"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[[upstream.tools.scope]]
+name = "read"
+match = ["get_*", "list_*"]
+
+[[upstream.tools.scope]]
+name = "write"
+match = ["add_*"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.Len(t, c.Upstreams[0].Tools.Scopes, 2)
+	require.Equal(t, "read", c.Upstreams[0].Tools.Scopes[0].Name)
+	require.Equal(t, []string{"get_*", "list_*"}, c.Upstreams[0].Tools.Scopes[0].Match)
+}
+
+func TestConfig_ToolsScope_MissingName(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "grafana"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[[upstream.tools.scope]]
+match = ["get_*"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "name is required")
+}
+
+func TestConfig_ToolsScope_DuplicateName(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "grafana"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[[upstream.tools.scope]]
+name = "read"
+match = ["get_*"]
+
+[[upstream.tools.scope]]
+name = "read"
+match = ["list_*"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "duplicated")
+}
+
+func TestConfig_ToolsScope_EmptyMatch(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "grafana"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[[upstream.tools.scope]]
+name = "read"
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "match is required")
+}
+
+func TestConfig_ToolsScope_NameWithColon(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "grafana"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[[upstream.tools.scope]]
+name = "read:only"
+match = ["get_*"]
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	_, err := Load(p)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "must not contain ':'")
+}

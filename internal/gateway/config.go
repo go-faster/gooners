@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -90,10 +91,20 @@ type ReconnectConfig struct {
 
 // ToolsConfig controls tool filtering, namespacing and description trimming for an upstream.
 type ToolsConfig struct {
-	Allow   []string `toml:"allow"`
-	Deny    []string `toml:"deny"`
-	Prefix  string   `toml:"prefix"`
-	DescMax int      `toml:"desc_max"`
+	Allow   []string      `toml:"allow"`
+	Deny    []string      `toml:"deny"`
+	Prefix  string        `toml:"prefix"`
+	DescMax int           `toml:"desc_max"`
+	Scopes  []ScopeConfig `toml:"scope"`
+}
+
+// ScopeConfig defines a named OAuth sub-scope for an upstream, granting access to
+// only the tools (matched by their unprefixed name) covered by Match. The upstream's
+// base scope "mcp:<upstream>" always grants every tool regardless of ScopeConfig;
+// named scopes ("mcp:<upstream>:<name>") are for issuing narrower tokens.
+type ScopeConfig struct {
+	Name  string   `toml:"name"`
+	Match []string `toml:"match"`
 }
 
 // SecretConfig defines a named secret that can be interpolated into env/headers.
@@ -120,8 +131,8 @@ type RedactConfig struct {
 }
 
 // Load reads a TOML file, decodes it, applies defaults and validates.
-func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // G304: operator-controlled config file path
+func Load(cfgPath string) (*Config, error) {
+	data, err := os.ReadFile(cfgPath) //nolint:gosec // G304: operator-controlled config file path
 	if err != nil {
 		return nil, errors.Wrap(err, "read config")
 	}
@@ -167,6 +178,9 @@ func (c *Config) Validate() error {
 			}
 		}
 		if err := validateRouteConfig(u.Name, u.Route); err != nil {
+			return err
+		}
+		if err := validateScopeConfigs(u.Name, u.Tools.Scopes); err != nil {
 			return err
 		}
 	}
@@ -280,6 +294,31 @@ func validateRouteConfig(upstream string, cfg RouteConfig) error {
 	}
 	if cfg.Path != "" && !strings.HasPrefix(cfg.Path, "/") {
 		return fmt.Errorf("upstream %q: route.path must start with /", upstream)
+	}
+	return nil
+}
+
+func validateScopeConfigs(upstream string, scopes []ScopeConfig) error {
+	seen := map[string]bool{}
+	for _, sc := range scopes {
+		if sc.Name == "" {
+			return fmt.Errorf("upstream %q: tools.scope: name is required", upstream)
+		}
+		if strings.Contains(sc.Name, ":") {
+			return fmt.Errorf("upstream %q: tools.scope %q: name must not contain ':'", upstream, sc.Name)
+		}
+		if seen[sc.Name] {
+			return fmt.Errorf("upstream %q: tools.scope %q duplicated", upstream, sc.Name)
+		}
+		seen[sc.Name] = true
+		if len(sc.Match) == 0 {
+			return fmt.Errorf("upstream %q: tools.scope %q: match is required", upstream, sc.Name)
+		}
+		for _, pat := range sc.Match {
+			if _, err := path.Match(pat, ""); err != nil {
+				return fmt.Errorf("upstream %q: tools.scope %q: invalid match pattern %q: %w", upstream, sc.Name, pat, err)
+			}
+		}
 	}
 	return nil
 }

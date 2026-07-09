@@ -15,60 +15,61 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/auth"
 )
 
 const defaultOAuthTokenTTL = time.Hour
 
 // HTTPMiddleware returns middleware that enforces optional inbound gateway auth.
+//
+// The static shared-secret check (cfg.Header/cfg.Value) grants unrestricted access,
+// same as before OAuth existed: it is the trusted-operator credential. OAuth-issued
+// bearer tokens are scope-restricted instead; verifying them through auth.RequireBearerToken
+// stores their *auth.TokenInfo on the request context in the exact form the MCP SDK's
+// streamable HTTP transport already looks for (see auth.TokenInfoFromContext), so every
+// tool-call handler sees the caller's granted scopes with no extra plumbing on our side.
 func (g *Gateway) HTTPMiddleware() func(http.Handler) http.Handler {
 	cfg := g.cfg.Auth
 	if !cfg.Enabled {
 		return nil
 	}
-	oauth := newOAuthState(cfg.OAuth)
+	oauth := newOAuthState(cfg.OAuth, g.cfg.Upstreams)
 	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if oauth != nil && oauth.serve(g, w, r) {
-				return
-			}
-
-			ok, err := g.authenticateRequest(r.Context(), r, cfg, oauth)
-			if err != nil {
-				http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
-				return
-			}
-			if !ok {
-				if oauth != nil {
-					w.Header().Set("WWW-Authenticate", `Bearer resource_metadata="`+oauth.resourceMetadataURL()+`"`)
-				} else {
-					w.Header().Set("WWW-Authenticate", `Bearer realm="mcpgateway"`)
-				}
-				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-				return
-			}
-
+		stripped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Do not let gateway credentials leak into downstream handlers/transports.
 			r = r.Clone(r.Context())
 			r.Header.Del(cfg.Header)
 			next.ServeHTTP(w, r)
 		})
-	}
-}
+		var bearer http.Handler
+		if oauth != nil {
+			bearer = auth.RequireBearerToken(oauth.verifyAccessToken, &auth.RequireBearerTokenOptions{
+				ResourceMetadataURL: oauth.resourceMetadataURL(),
+			})(stripped)
+		}
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if oauth != nil && oauth.serve(g, w, r) {
+				return
+			}
 
-func (g *Gateway) authenticateRequest(ctx context.Context, r *http.Request, cfg AuthConfig, oauth *oauthState) (bool, error) {
-	expected, err := Interpolate(ctx, cfg.Value, g.resolver)
-	if err != nil {
-		return false, err
+			expected, err := Interpolate(r.Context(), cfg.Value, g.resolver)
+			if err != nil {
+				http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
+				return
+			}
+			if constantTimeEqual(r.Header.Get(cfg.Header), expected) {
+				stripped.ServeHTTP(w, r)
+				return
+			}
+			if oauth == nil {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="mcpgateway"`)
+				http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+				return
+			}
+			bearer.ServeHTTP(w, r)
+		})
 	}
-	authz := r.Header.Get(cfg.Header)
-	if constantTimeEqual(authz, expected) {
-		return true, nil
-	}
-	if oauth == nil {
-		return false, nil
-	}
-	token, ok := strings.CutPrefix(authz, "Bearer ")
-	return ok && oauth.verifyAccessToken(token), nil
 }
 
 func constantTimeEqual(a, b string) bool {
@@ -80,10 +81,13 @@ func constantTimeEqual(a, b string) bool {
 type oauthState struct {
 	cfg      OAuthConfig
 	tokenTTL time.Duration
+	// derivedScopes are the "mcp:<upstream>" and "mcp:<upstream>:<name>" scopes
+	// computed from the gateway's configured upstreams; see scopes().
+	derivedScopes []string
 
 	mu     sync.Mutex
 	codes  map[string]oauthCode
-	tokens map[string]time.Time
+	tokens map[string]auth.TokenInfo
 }
 
 type oauthCode struct {
@@ -95,7 +99,7 @@ type oauthCode struct {
 	Expires             time.Time
 }
 
-func newOAuthState(cfg OAuthConfig) *oauthState {
+func newOAuthState(cfg OAuthConfig, upstreams []UpstreamConfig) *oauthState {
 	if !cfg.Enabled {
 		return nil
 	}
@@ -104,11 +108,34 @@ func newOAuthState(cfg OAuthConfig) *oauthState {
 		ttl = parsed
 	}
 	return &oauthState{
-		cfg:      cfg,
-		tokenTTL: ttl,
-		codes:    map[string]oauthCode{},
-		tokens:   map[string]time.Time{},
+		cfg:           cfg,
+		tokenTTL:      ttl,
+		derivedScopes: derivedUpstreamScopes(upstreams),
+		codes:         map[string]oauthCode{},
+		tokens:        map[string]auth.TokenInfo{},
 	}
+}
+
+// derivedUpstreamScopes computes the "mcp:<upstream>" base scope (full access to
+// that upstream) and "mcp:<upstream>:<name>" sub-scope for every configured
+// ScopeConfig, for every upstream.
+func derivedUpstreamScopes(upstreams []UpstreamConfig) []string {
+	var out []string
+	for _, u := range upstreams {
+		out = append(out, upstreamScope(u.Name))
+		for _, sc := range u.Tools.Scopes {
+			out = append(out, upstreamSubScope(u.Name, sc.Name))
+		}
+	}
+	return out
+}
+
+func upstreamScope(upstream string) string {
+	return "mcp:" + upstream
+}
+
+func upstreamSubScope(upstream, name string) string {
+	return "mcp:" + upstream + ":" + name
 }
 
 func (o *oauthState) serve(g *Gateway, w http.ResponseWriter, r *http.Request) bool {
@@ -326,7 +353,10 @@ func (o *oauthState) serveToken(w http.ResponseWriter, r *http.Request) {
 	}
 	expires := time.Now().Add(o.tokenTTL)
 	o.mu.Lock()
-	o.tokens[accessToken] = expires
+	o.tokens[accessToken] = auth.TokenInfo{
+		Scopes:     strings.Fields(stored.Scope),
+		Expiration: expires,
+	}
 	o.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token": accessToken,
@@ -343,15 +373,19 @@ func (o *oauthState) serveJWKS(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"keys": []any{}})
 }
 
-func (o *oauthState) verifyAccessToken(token string) bool {
+// verifyAccessToken implements auth.TokenVerifier for tokens issued by /token.
+func (o *oauthState) verifyAccessToken(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
 	o.mu.Lock()
-	expires, ok := o.tokens[token]
-	if ok && time.Now().After(expires) {
+	info, ok := o.tokens[token]
+	if ok && time.Now().After(info.Expiration) {
 		delete(o.tokens, token)
 		ok = false
 	}
 	o.mu.Unlock()
-	return ok
+	if !ok {
+		return nil, auth.ErrInvalidToken
+	}
+	return &info, nil
 }
 
 func (o *oauthState) validClient(clientID string) bool {
@@ -362,11 +396,18 @@ func (o *oauthState) validRedirectURI(redirectURI string) bool {
 	return slices.Contains(o.cfg.RedirectURIs, redirectURI)
 }
 
+// scopes returns the scope set advertised in metadata and granted when a client
+// requests no explicit scope. cfg.Scopes, if set, overrides the derived
+// "mcp:<upstream>[:<name>]" scopes for backward compatibility with a flat,
+// manually maintained scope list.
 func (o *oauthState) scopes() []string {
-	if len(o.cfg.Scopes) == 0 {
-		return []string{"mcp"}
+	if len(o.cfg.Scopes) > 0 {
+		return o.cfg.Scopes
 	}
-	return o.cfg.Scopes
+	if len(o.derivedScopes) > 0 {
+		return o.derivedScopes
+	}
+	return []string{"mcp"}
 }
 
 func (o *oauthState) normalizeScope(scope string) string {

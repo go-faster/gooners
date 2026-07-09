@@ -52,6 +52,49 @@ func TestGatewayOAuthMetadata(t *testing.T) {
 	}`, rr.Body.String())
 }
 
+func TestGatewayOAuthMetadata_DerivedUpstreamScopes(t *testing.T) {
+	g, err := New(&Config{
+		Upstreams: []UpstreamConfig{
+			{
+				Name: "grafana",
+				Tools: ToolsConfig{
+					Scopes: []ScopeConfig{
+						{Name: "read", Match: []string{"get_*", "list_*"}},
+						{Name: "write", Match: []string{"add_*"}},
+					},
+				},
+			},
+			{Name: "github"},
+		},
+		Auth: AuthConfig{
+			Enabled: true,
+			Header:  "Authorization",
+			Value:   "Bearer secret",
+			OAuth: OAuthConfig{
+				Enabled:  true,
+				Issuer:   "https://mcp.example.com",
+				Resource: "https://mcp.example.com/mcp",
+			},
+		},
+	}, Options{})
+	require.NoError(t, err)
+
+	h := g.HTTPMiddleware()(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", http.NoBody))
+
+	require.Equal(t, http.StatusOK, rr.Code)
+	var body struct {
+		ScopesSupported []string `json:"scopes_supported"`
+	}
+	require.NoError(t, json.NewDecoder(rr.Body).Decode(&body))
+	require.ElementsMatch(t, []string{
+		"mcp:grafana", "mcp:grafana:read", "mcp:grafana:write", "mcp:github",
+	}, body.ScopesSupported)
+}
+
 func TestGatewayOAuthAuthorizationCodeFlow(t *testing.T) {
 	g, err := New(&Config{
 		Auth: AuthConfig{
