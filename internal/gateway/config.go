@@ -18,6 +18,7 @@ type Config struct {
 	Server    ServerConfig     `toml:"server"`
 	Upstreams []UpstreamConfig `toml:"upstream"`
 	Secrets   []SecretConfig   `toml:"secret"`
+	Auth      AuthConfig       `toml:"auth"`
 	Telemetry TelemetryConfig  `toml:"telemetry"`
 	Redact    RedactConfig     `toml:"redact"`
 }
@@ -37,17 +38,25 @@ type ServerConfig struct {
 
 // UpstreamConfig describes one upstream MCP server to proxy.
 type UpstreamConfig struct {
-	Name      string            `toml:"name"`
-	Kind      string            `toml:"kind"`
-	Command   []string          `toml:"command"`
-	URL       string            `toml:"url"`
-	Headers   map[string]string `toml:"headers"`
-	Env       map[string]string `toml:"env"`
-	Tools     ToolsConfig       `toml:"tools"`
-	Route     RouteConfig       `toml:"route"`
-	Reconnect *ReconnectConfig  `toml:"reconnect"`
+	Name         string            `toml:"name"`
+	Kind         string            `toml:"kind"`
+	Command      []string          `toml:"command"`
+	URL          string            `toml:"url"`
+	Headers      map[string]string `toml:"headers"`
+	StripHeaders []string          `toml:"strip_headers"`
+	Env          map[string]string `toml:"env"`
+	Tools        ToolsConfig       `toml:"tools"`
+	Route        RouteConfig       `toml:"route"`
+	Reconnect    *ReconnectConfig  `toml:"reconnect"`
 	// Redact overrides the global redact config when present; nil inherits the global [redact] section.
 	Redact *RedactConfig `toml:"redact"`
+}
+
+// AuthConfig configures optional inbound HTTP authentication for the gateway.
+type AuthConfig struct {
+	Enabled bool   `toml:"enabled"`
+	Header  string `toml:"header"`
+	Value   string `toml:"value"`
 }
 
 // RouteConfig optionally exposes an upstream as its own MCP server on a host
@@ -176,9 +185,27 @@ func (c *Config) Validate() error {
 				}
 			}
 		}
+		for _, h := range u.StripHeaders {
+			if h == "" {
+				joinErrs = append(joinErrs, fmt.Errorf("upstream %q: strip_headers contains empty header name", u.Name))
+			}
+		}
 		if u.Redact != nil && u.Redact.Enabled && len(u.Redact.Patterns) > 0 {
 			if _, err := NewRedactor(u.Redact.Patterns, u.Redact.MinEntropy); err != nil {
 				joinErrs = append(joinErrs, errors.Wrapf(err, "upstream %q: compile redact patterns", u.Name))
+			}
+		}
+	}
+	if c.Auth.Enabled {
+		if c.Auth.Header == "" {
+			joinErrs = append(joinErrs, errors.New("auth: header is required when enabled"))
+		}
+		if c.Auth.Value == "" {
+			joinErrs = append(joinErrs, errors.New("auth: value is required when enabled"))
+		}
+		for name := range extractSecretRefs(c.Auth.Value) {
+			if !seenSec[name] {
+				joinErrs = append(joinErrs, fmt.Errorf("auth: secret %q referenced in value is not defined", name))
 			}
 		}
 	}

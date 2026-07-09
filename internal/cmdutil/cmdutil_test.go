@@ -12,14 +12,14 @@ import (
 
 func TestTransportFlags_Run_RejectsExposeFlagsWithStdio(t *testing.T) {
 	flags := TransportFlags{Transport: "stdio", ExposeName: "foo"}
-	err := flags.Run(context.Background(), "srv", mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0"}, nil), nil)
+	err := flags.Run(context.Background(), RunOptions{Name: "srv", Server: mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0"}, nil)})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "stdio")
 }
 
 func TestTransportFlags_Run_RejectsTLSFlagsWithStdio(t *testing.T) {
 	flags := TransportFlags{Transport: "stdio", TLSCertFile: "cert.pem", TLSKeyFile: "key.pem"}
-	err := flags.Run(context.Background(), "srv", mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0"}, nil), nil)
+	err := flags.Run(context.Background(), RunOptions{Name: "srv", Server: mcp.NewServer(&mcp.Implementation{Name: "srv", Version: "0"}, nil)})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "TLS")
 }

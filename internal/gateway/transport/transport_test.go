@@ -13,13 +13,13 @@ import (
 )
 
 func TestBuild_Stdio(t *testing.T) {
-	tr, _, err := Build(context.Background(), "stdio", []string{"true"}, "", nil, nil, nil)
+	tr, _, err := Build(context.Background(), "stdio", []string{"true"}, "", nil, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 }
 
 func TestBuild_BadKind(t *testing.T) {
-	_, _, err := Build(context.Background(), "nope", nil, "", nil, nil, nil)
+	_, _, err := Build(context.Background(), "nope", nil, "", nil, nil, nil, nil)
 	require.Error(t, err)
 }
 
@@ -30,13 +30,13 @@ func TestBuild_Interpolate(t *testing.T) {
 		}
 		return s, nil
 	}
-	tr, _, err := Build(context.Background(), "stdio", []string{"true"}, "", map[string]string{"X": "{secret:k}"}, nil, interp)
+	tr, _, err := Build(context.Background(), "stdio", []string{"true"}, "", map[string]string{"X": "{secret:k}"}, nil, nil, interp)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 }
 
 func TestBuild_StdioEnvInheritance(t *testing.T) {
-	tr, _, err := Build(context.Background(), "stdio", []string{"true"}, "", map[string]string{"FOO": "bar"}, nil, nil)
+	tr, _, err := Build(context.Background(), "stdio", []string{"true"}, "", map[string]string{"FOO": "bar"}, nil, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 	ct, ok := tr.(*mcp.CommandTransport)
@@ -66,7 +66,7 @@ func TestBuild_HTTPMultiTokenInterpolation(t *testing.T) {
 		}
 		return s, nil
 	}
-	tr, _, err := Build(context.Background(), "http", nil, "http://example.invalid", nil, map[string]string{"Authorization": "Bearer {secret:t}"}, interp)
+	tr, _, err := Build(context.Background(), "http", nil, "http://example.invalid", nil, map[string]string{"Authorization": "Bearer {secret:t}"}, nil, interp)
 	require.NoError(t, err)
 	require.NotNil(t, tr)
 	sct, ok := tr.(*mcp.StreamableClientTransport)
@@ -91,10 +91,33 @@ func TestBuild_HTTPMultiTokenInterpolation(t *testing.T) {
 }
 
 func TestBuild_SSENoTimeout(t *testing.T) {
-	tr, _, err := Build(context.Background(), "sse", nil, "http://example.invalid", nil, nil, nil)
+	tr, _, err := Build(context.Background(), "sse", nil, "http://example.invalid", nil, nil, nil, nil)
 	require.NoError(t, err)
 	sct, ok := tr.(*mcp.SSEClientTransport)
 	require.True(t, ok)
 	require.NotNil(t, sct.HTTPClient)
 	require.Zero(t, sct.HTTPClient.Timeout)
+}
+
+func TestBuild_HTTPStripHeaders(t *testing.T) {
+	tr, _, err := Build(context.Background(), "http", nil, "http://example.invalid", nil, map[string]string{"X-Upstream": "ok"}, []string{"Authorization"}, nil)
+	require.NoError(t, err)
+	sct, ok := tr.(*mcp.StreamableClientTransport)
+	require.True(t, ok)
+	hrt, ok := sct.HTTPClient.Transport.(*headerRT)
+	require.True(t, ok)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	req := httptest.NewRequest(http.MethodGet, srv.URL, http.NoBody)
+	req.Header.Set("Authorization", "Bearer gateway")
+	req.Header.Set("X-Upstream", "client")
+	resp, err := hrt.RoundTrip(req)
+	require.NoError(t, err)
+	require.Empty(t, resp.Request.Header.Get("Authorization"))
+	require.Equal(t, "ok", resp.Request.Header.Get("X-Upstream"))
+	resp.Body.Close()
 }

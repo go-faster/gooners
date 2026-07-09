@@ -146,6 +146,46 @@ func TestConfigValidateSecretRefEmptyEnvHeaders(t *testing.T) {
 	require.NoError(t, cfg.Validate())
 }
 
+func TestConfigValidateAuthSecretRef(t *testing.T) {
+	cfg := Config{
+		Upstreams: []UpstreamConfig{{Name: "u1", Kind: "stdio", Command: []string{"x"}}},
+		Auth: AuthConfig{
+			Enabled: true,
+			Header:  "Authorization",
+			Value:   "Bearer {secret:gateway}",
+		},
+		Secrets: []SecretConfig{{Name: "gateway"}},
+	}
+	require.NoError(t, cfg.Validate())
+}
+
+func TestConfigValidateAuthSecretRefUnknown(t *testing.T) {
+	cfg := Config{
+		Upstreams: []UpstreamConfig{{Name: "u1", Kind: "stdio", Command: []string{"x"}}},
+		Auth: AuthConfig{
+			Enabled: true,
+			Header:  "Authorization",
+			Value:   "Bearer {secret:missing}",
+		},
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	require.ErrorContains(t, err, "auth")
+	require.ErrorContains(t, err, "missing")
+}
+
+func TestConfigValidateStripHeaders(t *testing.T) {
+	cfg := Config{
+		Upstreams: []UpstreamConfig{{
+			Name:         "u1",
+			Kind:         "http",
+			URL:          "http://example.invalid/mcp",
+			StripHeaders: []string{"Authorization"},
+		}},
+	}
+	require.NoError(t, cfg.Validate())
+}
+
 func TestConfig_Redact_InvalidPattern(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "g.toml")

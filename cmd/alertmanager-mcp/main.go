@@ -86,7 +86,11 @@ func main() {
 
 	alertmanager.Register(s, c)
 
-	if err := transport.Run(ctx, "alertmanager-mcp", s, logger.With("component", "transport")); err != nil {
+	if err := transport.Run(ctx, cmdutil.RunOptions{
+		Name:   "alertmanager-mcp",
+		Server: s,
+		Logger: logger.With("component", "transport"),
+	}); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}

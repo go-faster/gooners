@@ -13,14 +13,14 @@ import (
 )
 
 // Build constructs a transport. interpolate is called for env/headers values (supports {secret:NAME}).
-func Build(_ context.Context, kind string, command []string, url string, env, headers map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
+func Build(_ context.Context, kind string, command []string, url string, env, headers map[string]string, stripHeaders []string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
 	switch kind {
 	case "stdio":
 		return buildStdio(command, env, interpolate)
 	case "http":
-		return buildHTTP(url, headers, interpolate)
+		return buildHTTP(url, headers, stripHeaders, interpolate)
 	case "sse":
-		return buildSSE(url, headers, interpolate)
+		return buildSSE(url, headers, stripHeaders, interpolate)
 	default:
 		return nil, nil, errors.Errorf("unknown upstream kind %q", kind)
 	}
@@ -76,30 +76,34 @@ func buildStdio(command []string, env map[string]string, interpolate func(string
 	return &mcp.CommandTransport{Command: cmd}, cleanup, nil
 }
 
-func buildHTTP(url string, headers map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
+func buildHTTP(url string, headers map[string]string, stripHeaders []string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
 	cl := &http.Client{}
-	if len(headers) > 0 {
-		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, interpolate: interpolate}
+	if len(headers) > 0 || len(stripHeaders) > 0 {
+		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, stripHeaders: stripHeaders, interpolate: interpolate}
 	}
 	return &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: cl}, func() error { return nil }, nil
 }
 
-func buildSSE(url string, headers map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
+func buildSSE(url string, headers map[string]string, stripHeaders []string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
 	cl := &http.Client{}
-	if len(headers) > 0 {
-		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, interpolate: interpolate}
+	if len(headers) > 0 || len(stripHeaders) > 0 {
+		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, stripHeaders: stripHeaders, interpolate: interpolate}
 	}
 	return &mcp.SSEClientTransport{Endpoint: url, HTTPClient: cl}, func() error { return nil }, nil
 }
 
 type headerRT struct {
-	base        http.RoundTripper
-	headers     map[string]string
-	interpolate func(string) (string, error)
+	base         http.RoundTripper
+	headers      map[string]string
+	stripHeaders []string
+	interpolate  func(string) (string, error)
 }
 
 func (h *headerRT) RoundTrip(req *http.Request) (*http.Response, error) {
 	req = req.Clone(req.Context())
+	for _, header := range h.stripHeaders {
+		req.Header.Del(header)
+	}
 	for k, v := range h.headers {
 		iv := v
 		if h.interpolate != nil {

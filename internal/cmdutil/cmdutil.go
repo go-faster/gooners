@@ -101,14 +101,38 @@ func (flags *TransportFlags) Register(fs *flag.FlagSet) {
 	fs.BoolVar(&flags.DisableLocalhostProtection, "disable-localhost-protection", false, "disable localhost protection (for exposure via external tunnels)")
 }
 
-// Run starts an MCP server using the selected transport.
-func (flags TransportFlags) Run(ctx context.Context, name string, s *mcp.Server, lg *slog.Logger) error {
-	handler := func(*http.Request) *mcp.Server { return s }
-	return flags.RunWithHandler(ctx, name, handler, lg)
+// RunOptions configures TransportFlags.Run.
+type RunOptions struct {
+	Name       string
+	Server     *mcp.Server
+	Handler    func(*http.Request) *mcp.Server
+	Middleware func(http.Handler) http.Handler
+	Logger     *slog.Logger
 }
 
-// RunWithHandler starts an MCP server using a request-aware server selector.
-func (flags TransportFlags) RunWithHandler(ctx context.Context, name string, handler func(*http.Request) *mcp.Server, lg *slog.Logger) error {
+func (o *RunOptions) setDefaults() error {
+	if o.Name == "" {
+		return errors.New("server name is required")
+	}
+	if o.Handler == nil && o.Server != nil {
+		s := o.Server
+		o.Handler = func(*http.Request) *mcp.Server { return s }
+	}
+	if o.Handler == nil {
+		return errors.New("server or handler is required")
+	}
+	if o.Logger == nil {
+		o.Logger = slog.Default()
+	}
+	return nil
+}
+
+// Run starts an MCP server using the selected transport. Middleware wraps MCP
+// endpoints only; the /health endpoint is intentionally left unwrapped.
+func (flags TransportFlags) Run(ctx context.Context, opts RunOptions) error {
+	if err := opts.setDefaults(); err != nil {
+		return err
+	}
 	if flags.Transport == "stdio" {
 		if flags.ExposeProvider != "" || flags.ExposeType != "" || flags.ExposeConfig != "" || flags.ExposeName != "" {
 			return errors.New("cannot use expose flags with stdio transport")
@@ -123,32 +147,38 @@ func (flags TransportFlags) RunWithHandler(ctx context.Context, name string, han
 
 	switch flags.Transport {
 	case "stdio", "":
-		lg.Info("starting MCP server on stdio transport", "server", name)
-		return handler(nil).Run(ctx, &mcp.StdioTransport{})
+		opts.Logger.Info("starting MCP server on stdio transport", "server", opts.Name)
+		return opts.Handler(nil).Run(ctx, &mcp.StdioTransport{})
 
 	case "streamable-http":
 		scheme := flags.httpScheme()
-		h := mcp.NewStreamableHTTPHandler(handler, &mcp.StreamableHTTPOptions{
+		var h http.Handler = mcp.NewStreamableHTTPHandler(opts.Handler, &mcp.StreamableHTTPOptions{
 			Logger:                     slog.Default(),
 			DisableLocalhostProtection: flags.DisableLocalhostProtection,
 		})
+		if opts.Middleware != nil {
+			h = opts.Middleware(h)
+		}
 		mux := http.NewServeMux()
-		mux.Handle("/health", healthHandler(name))
+		mux.Handle("/health", healthHandler(opts.Name))
 		mux.Handle("/", h)
-		lg.Info("starting MCP server on streamable-http transport", "server", name, "at", fmt.Sprintf("%s://%s/mcp", scheme, flags.Addr))
-		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
+		opts.Logger.Info("starting MCP server on streamable-http transport", "server", opts.Name, "at", fmt.Sprintf("%s://%s/mcp", scheme, flags.Addr))
+		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, opts.Logger) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
 
 	case "sse":
 		scheme := flags.httpScheme()
-		opts := &mcp.SSEOptions{
+		sseOpts := &mcp.SSEOptions{
 			DisableLocalhostProtection: flags.DisableLocalhostProtection,
 		}
-		h := mcp.NewSSEHandler(handler, opts)
+		var h http.Handler = mcp.NewSSEHandler(opts.Handler, sseOpts)
+		if opts.Middleware != nil {
+			h = opts.Middleware(h)
+		}
 		mux := http.NewServeMux()
-		mux.Handle("/health", healthHandler(name))
+		mux.Handle("/health", healthHandler(opts.Name))
 		mux.Handle("/", h)
-		lg.Info("starting MCP server on SSE transport", "server", name, "at", fmt.Sprintf("%s://%s", scheme, flags.Addr))
-		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, lg) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
+		opts.Logger.Info("starting MCP server on SSE transport", "server", opts.Name, "at", fmt.Sprintf("%s://%s", scheme, flags.Addr))
+		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, opts.Logger) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
 
 	default:
 		return fmt.Errorf("unknown transport: %q", flags.Transport)

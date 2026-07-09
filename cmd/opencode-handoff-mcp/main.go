@@ -74,7 +74,11 @@ func main() {
 	})
 	opencode.Register(s, client, mgr)
 
-	if err := transport.Run(ctx, "opencode-handoff-mcp", s, logger.WithGroup("transport")); err != nil {
+	if err := transport.Run(ctx, cmdutil.RunOptions{
+		Name:   "opencode-handoff-mcp",
+		Server: s,
+		Logger: logger.WithGroup("transport"),
+	}); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}

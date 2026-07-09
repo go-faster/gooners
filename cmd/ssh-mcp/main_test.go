@@ -19,6 +19,6 @@ func TestRunServerUnknownTransport(t *testing.T) {
 		s = mcp.NewServer(&mcp.Implementation{Name: "test", Version: "test"}, nil)
 	)
 
-	err := transport.Run(t.Context(), "test", s, slog.Default())
+	err := transport.Run(t.Context(), cmdutil.RunOptions{Name: "test", Server: s, Logger: slog.Default()})
 	require.ErrorContains(t, err, `unknown transport: "bad"`)
 }

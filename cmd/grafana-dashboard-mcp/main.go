@@ -103,7 +103,11 @@ func main() {
 	go sm.StartCleanupLoop(ctx, time.Duration(sessionTTL))
 	grafana.Register(s, sm, gc)
 
-	if err := transport.Run(ctx, "grafana-dashboard-mcp", s, logger.With("component", "transport")); err != nil {
+	if err := transport.Run(ctx, cmdutil.RunOptions{
+		Name:   "grafana-dashboard-mcp",
+		Server: s,
+		Logger: logger.With("component", "transport"),
+	}); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}
