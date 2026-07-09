@@ -1,0 +1,53 @@
+name: Feature request
+description: Request a new capability or user-facing behavior.
+title: "<component>: "
+labels:
+  - feature
+  - type:feature
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Pick the most specific affected component.
+      options:
+        - gooners
+        - cmd/alertmanager-mcp
+        - cmd/grafana-dashboard-mcp
+        - cmd/mcpgateway
+        - cmd/opencode-handoff-mcp
+        - cmd/ssh-mcp
+        - skill/alerts-writing
+        - skill/golang-refactor-tools
+        - skill/jx
+        - skill/linux-hardening-skill
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow, limitation, or user need should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Requested behavior
+      description: Describe the desired outcome. Keep this at capability level; no full implementation plan needed.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds
+      description: Existing workarounds or alternative approaches, if any.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance cues
+      description: How would we know this feature is present and usable?
+    validations:
+      required: false

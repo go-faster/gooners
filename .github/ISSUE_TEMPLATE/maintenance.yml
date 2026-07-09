@@ -1,0 +1,52 @@
+name: Maintenance task
+description: Track refactoring, cleanup, documentation upkeep, or internal quality work.
+title: "<component>: "
+labels:
+  - type:maintenance
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Pick the most specific affected component.
+      options:
+        - gooners
+        - cmd/alertmanager-mcp
+        - cmd/grafana-dashboard-mcp
+        - cmd/mcpgateway
+        - cmd/opencode-handoff-mcp
+        - cmd/ssh-mcp
+        - skill/alerts-writing
+        - skill/golang-refactor-tools
+        - skill/jx
+        - skill/linux-hardening-skill
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What should be cleaned up, refactored, documented, or maintained?
+    validations:
+      required: true
+  - type: textarea
+    id: rationale
+    attributes:
+      label: Rationale
+      description: Why is this maintenance useful now?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Boundaries for the task. Mention anything explicitly out of scope.
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance cues
+      description: What should be true after this maintenance work is done?
+    validations:
+      required: false

@@ -158,3 +158,9 @@ func NewFoo(ctx context.Context, opts FooOptions) *Foo {
 - Update `CLAUDE.md` with any new instructions or guidelines for AI coding assistants.
 - Tools go in the **Tools** table; skills go in the **Skills** table.
 - Keep the **Tools** and **Skills** tables accurate and comprehensive.
+
+## GitHub Labels
+
+- When adding, removing, or renaming a component under `cmd/` or `skills/`, update the GitHub component label set if repository access allows it.
+- Component labels use `component:cmd/<name>` and `component:skill/<name>`; repository-wide issues use `component:gooners`.
+- If label updates were needed but could not be performed, state that explicitly to the user before finishing.

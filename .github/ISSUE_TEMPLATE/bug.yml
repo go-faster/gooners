@@ -1,0 +1,66 @@
+name: Bug report
+description: Report incorrect behavior or a regression.
+title: "<component>: "
+labels:
+  - bug
+  - type:bug
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      description: Pick the most specific affected component.
+      options:
+        - gooners
+        - cmd/alertmanager-mcp
+        - cmd/grafana-dashboard-mcp
+        - cmd/mcpgateway
+        - cmd/opencode-handoff-mcp
+        - cmd/ssh-mcp
+        - skill/alerts-writing
+        - skill/golang-refactor-tools
+        - skill/jx
+        - skill/linux-hardening-skill
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: Describe the observed incorrect behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal steps, config, command, or MCP tool call that reproduces the issue.
+      placeholder: |
+        1. Run ...
+        2. Call ...
+        3. Observe ...
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Version, OS, transport, config shape, and any relevant runtime details.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or output
+      description: Paste relevant logs, errors, or tool output. Redact secrets.
+      render: text
+    validations:
+      required: false
