@@ -54,9 +54,24 @@ type UpstreamConfig struct {
 
 // AuthConfig configures optional inbound HTTP authentication for the gateway.
 type AuthConfig struct {
-	Enabled bool   `toml:"enabled"`
-	Header  string `toml:"header"`
-	Value   string `toml:"value"`
+	Enabled bool        `toml:"enabled"`
+	Header  string      `toml:"header"`
+	Value   string      `toml:"value"`
+	OAuth   OAuthConfig `toml:"oauth"`
+}
+
+// OAuthConfig configures an optional local OAuth authorization-code facade for inbound clients.
+type OAuthConfig struct {
+	Enabled  bool     `toml:"enabled"`
+	Issuer   string   `toml:"issuer"`
+	Resource string   `toml:"resource"`
+	Scopes   []string `toml:"scopes"`
+	ClientID string   `toml:"client_id"`
+	TokenTTL string   `toml:"token_ttl"`
+	// RedirectURIs is the allowlist of exact redirect_uri values the authorization
+	// endpoint will redirect to. Required when Enabled: without it any caller could
+	// redirect authorization codes to an attacker-controlled origin.
+	RedirectURIs []string `toml:"redirect_uris"`
 }
 
 // RouteConfig optionally exposes an upstream as its own MCP server on a host
@@ -206,6 +221,20 @@ func (c *Config) Validate() error {
 		for name := range extractSecretRefs(c.Auth.Value) {
 			if !seenSec[name] {
 				joinErrs = append(joinErrs, fmt.Errorf("auth: secret %q referenced in value is not defined", name))
+			}
+		}
+		if c.Auth.OAuth.Enabled {
+			if c.Auth.OAuth.Issuer == "" {
+				joinErrs = append(joinErrs, errors.New("auth.oauth: issuer is required when enabled"))
+			}
+			if c.Auth.OAuth.Resource == "" {
+				joinErrs = append(joinErrs, errors.New("auth.oauth: resource is required when enabled"))
+			}
+			if len(c.Auth.OAuth.RedirectURIs) == 0 {
+				joinErrs = append(joinErrs, errors.New("auth.oauth: redirect_uris is required when enabled"))
+			}
+			if _, err := parseOptionalDuration(c.Auth.OAuth.TokenTTL); err != nil {
+				joinErrs = append(joinErrs, fmt.Errorf("auth.oauth: token_ttl: %w", err))
 			}
 		}
 	}
