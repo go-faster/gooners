@@ -95,64 +95,6 @@ func toolEqual(a, b *mcp.Tool) bool {
 	return bytes.Equal(aj, bj)
 }
 
-// dropIdenticalToolCollisions removes collision groups where every owner's
-// tool definition (name, title, description, schemas, annotations) is
-// byte-identical: such overlaps are harmless (the same tool exposed
-// redundantly) and are logged as a warning rather than failing the build.
-// It returns nil if no hard (non-identical) collisions remain, or a new
-// CollisionsError containing only the genuine conflicts.
-func (g *Gateway) dropIdenticalToolCollisions(ce *CollisionsError, toolByUpstream map[string]map[string]*mcp.Tool) *CollisionsError {
-	var hard []Collision
-	for i := 0; i < len(ce.Conflicts); {
-		j := i
-		for j < len(ce.Conflicts) && ce.Conflicts[j].ResultName == ce.Conflicts[i].ResultName {
-			j++
-		}
-		group := ce.Conflicts[i:j]
-		if identicalToolGroup(group, toolByUpstream) {
-			owners := make([]string, 0, len(group))
-			for _, c := range group {
-				owners = append(owners, c.Upstream+":"+c.Tool)
-			}
-			g.logger.Warn("tool name collision ignored: identical tool definitions",
-				zap.String("result_name", group[0].ResultName),
-				zap.Strings("owners", owners),
-			)
-		} else {
-			hard = append(hard, group...)
-		}
-		i = j
-	}
-	if len(hard) == 0 {
-		return nil
-	}
-	counts := make(map[string]int, len(hard))
-	for _, c := range hard {
-		if _, ok := counts[c.Upstream]; !ok {
-			counts[c.Upstream] = len(toolByUpstream[c.Upstream])
-		}
-	}
-	return &CollisionsError{Conflicts: hard, ToolCounts: counts}
-}
-
-func identicalToolGroup(group []Collision, toolByUpstream map[string]map[string]*mcp.Tool) bool {
-	var first *mcp.Tool
-	for _, c := range group {
-		t := toolByUpstream[c.Upstream][c.Tool]
-		if t == nil {
-			return false
-		}
-		if first == nil {
-			first = t
-			continue
-		}
-		if !toolEqual(first, t) {
-			return false
-		}
-	}
-	return true
-}
-
 func promptEqual(a, b *mcp.Prompt) bool {
 	if a == nil || b == nil {
 		return a == b
@@ -600,56 +542,34 @@ func (g *Gateway) Build(ctx context.Context) error {
 	}
 
 	var (
-		prefixes       = map[string]string{}
-		toolSets       = map[string][]string{}
-		toolByUpstream = map[string]map[string]*mcp.Tool{}
-		promptSets     = map[string][]string{}
-		resourceSets   = map[string][]string{}
-		templateSets   = map[string][]string{}
+		prefixes  = map[string]string{}
+		tools     = newCollisionSet("tool", toolEqual)
+		prompts   = newCollisionSet("prompt", promptEqual)
+		resources = newCollisionSet("resource", resourceEqual)
+		templates = newCollisionSet("resource template", resourceTemplateEqual)
 	)
 	for _, lt := range listedItems {
 		u := lt.u
-		byName := make(map[string]*mcp.Tool, len(lt.tools))
-		for _, t := range lt.tools {
-			if !u.allowed(t.Name) {
-				continue
-			}
-			toolSets[u.cfg.Name] = append(toolSets[u.cfg.Name], t.Name)
-			byName[t.Name] = t
-		}
-		toolByUpstream[u.cfg.Name] = byName
-		for _, p := range lt.prompts {
-			promptSets[u.cfg.Name] = append(promptSets[u.cfg.Name], p.Name)
-		}
-		for _, r := range lt.resources {
-			resourceSets[u.cfg.Name] = append(resourceSets[u.cfg.Name], r.URI)
-		}
-		for _, t := range lt.templates {
-			templateSets[u.cfg.Name] = append(templateSets[u.cfg.Name], t.URITemplate)
-		}
+		tools.add(u.cfg.Name, lt.tools, func(t *mcp.Tool) string { return t.Name }, func(t *mcp.Tool) bool { return u.allowed(t.Name) })
+		prompts.add(u.cfg.Name, lt.prompts, func(p *mcp.Prompt) string { return p.Name }, nil)
+		resources.add(u.cfg.Name, lt.resources, func(r *mcp.Resource) string { return r.URI }, nil)
+		templates.add(u.cfg.Name, lt.templates, func(t *mcp.ResourceTemplate) string { return t.URITemplate }, nil)
 		prefixes[u.cfg.Name] = u.cfg.Tools.Prefix
 	}
 
-	if err := DetectCollisions(prefixes, toolSets); err != nil {
-		var ce *CollisionsError
-		if !errors.As(err, &ce) {
-			_ = g.Close(ctx)
-			return err
-		}
-		if hard := g.dropIdenticalToolCollisions(ce, toolByUpstream); hard != nil {
-			_ = g.Close(ctx)
-			return errors.Wrap(hard, "tool name collisions")
-		}
-	}
-	if err := DetectCollisions(prefixes, promptSets); err != nil {
+	if err := tools.check(g.logger, prefixes); err != nil {
 		_ = g.Close(ctx)
 		return err
 	}
-	if err := DetectCollisions(map[string]string{}, resourceSets); err != nil {
+	if err := prompts.check(g.logger, prefixes); err != nil {
 		_ = g.Close(ctx)
 		return err
 	}
-	if err := DetectCollisions(map[string]string{}, templateSets); err != nil {
+	if err := resources.check(g.logger, map[string]string{}); err != nil {
+		_ = g.Close(ctx)
+		return err
+	}
+	if err := templates.check(g.logger, map[string]string{}); err != nil {
 		_ = g.Close(ctx)
 		return err
 	}

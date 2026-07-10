@@ -528,16 +528,18 @@ func TestGateway_Build_RegistersResourceTemplate(t *testing.T) {
 }
 
 func TestGateway_Build_ResourceCollisionIgnoresPrefix(t *testing.T) {
+	// Same URI, different content -> genuine conflict; tools.prefix does not
+	// namespace resources, so this must still fail Build.
 	up1ServerTr, up1ClientTr := mcp.NewInMemoryTransports()
 	srv1 := mcp.NewServer(&mcp.Implementation{Name: "up1", Version: "0"}, nil)
-	srv1.AddResource(&mcp.Resource{URI: "file:///shared.txt", Name: "shared"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	srv1.AddResource(&mcp.Resource{URI: "file:///shared.txt", Name: "shared-1"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{}, nil
 	})
 	go func() { _ = srv1.Run(t.Context(), up1ServerTr) }()
 
 	up2ServerTr, up2ClientTr := mcp.NewInMemoryTransports()
 	srv2 := mcp.NewServer(&mcp.Implementation{Name: "up2", Version: "0"}, nil)
-	srv2.AddResource(&mcp.Resource{URI: "file:///shared.txt", Name: "shared"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+	srv2.AddResource(&mcp.Resource{URI: "file:///shared.txt", Name: "shared-2"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{}, nil
 	})
 	go func() { _ = srv2.Run(t.Context(), up2ServerTr) }()
@@ -569,6 +571,54 @@ func TestGateway_Build_ResourceCollisionIgnoresPrefix(t *testing.T) {
 	require.Error(t, err)
 	var ce *CollisionsError
 	require.ErrorAs(t, err, &ce)
+}
+
+func TestGateway_Build_IdenticalResourceCollisionWarnsAndAccepts(t *testing.T) {
+	// Two upstreams expose the same URI with byte-identical content (e.g.
+	// vendored docs baked into multiple copies of the same image) -> Build
+	// should succeed instead of failing, since resources are never
+	// namespaced by tools.prefix.
+	up1ServerTr, up1ClientTr := mcp.NewInMemoryTransports()
+	srv1 := mcp.NewServer(&mcp.Implementation{Name: "up1", Version: "0"}, nil)
+	srv1.AddResource(&mcp.Resource{URI: "docs:///shared.md", Name: "shared", Description: "same"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	go func() { _ = srv1.Run(t.Context(), up1ServerTr) }()
+
+	up2ServerTr, up2ClientTr := mcp.NewInMemoryTransports()
+	srv2 := mcp.NewServer(&mcp.Implementation{Name: "up2", Version: "0"}, nil)
+	srv2.AddResource(&mcp.Resource{URI: "docs:///shared.md", Name: "shared", Description: "same"}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+		return &mcp.ReadResourceResult{}, nil
+	})
+	go func() { _ = srv2.Run(t.Context(), up2ServerTr) }()
+
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{
+			{Name: "u1", Kind: "stdio", Command: []string{"ignored"}},
+			{Name: "u2", Kind: "stdio", Command: []string{"ignored"}},
+		},
+	}
+
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+
+	u1 := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], up1ClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
+	u2 := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[1], up2ClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
+	g.upstreams = []*Upstream{u1, u2}
+
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	require.NoError(t, err)
+	u1.session = s1
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	require.NoError(t, err)
+	u2.session = s2
+
+	require.NoError(t, g.Build(t.Context()))
+	t.Cleanup(func() { _ = g.Close(t.Context()) })
+
+	owner := g.RegisteredResources()["docs:///shared.md"]
+	require.Contains(t, []string{"u1", "u2"}, owner)
 }
 
 func TestGateway_ReSync_Prompts(t *testing.T) {

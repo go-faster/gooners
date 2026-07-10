@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/go-faster/errors"
+	"go.uber.org/zap"
 )
 
 // Collision records one name collision after prefix application.
@@ -16,12 +17,15 @@ type Collision struct {
 	ResultName string
 }
 
-// CollisionsError is returned by DetectCollisions when final tool names overlap.
+// CollisionsError is returned by DetectCollisions when final names overlap.
 type CollisionsError struct {
+	// Kind labels what kind of item collided (e.g. "tool", "prompt",
+	// "resource", "resource template"), for error message wording.
+	Kind      string
 	Conflicts []Collision
-	// ToolCounts maps upstream name to the number of tools it returned
+	// Counts maps upstream name to the number of items it returned
 	// (only populated for upstreams involved in a collision).
-	ToolCounts map[string]int
+	Counts map[string]int
 }
 
 // maxCollisionExamples caps how many colliding names are rendered in Error()
@@ -29,8 +33,12 @@ type CollisionsError struct {
 const maxCollisionExamples = 5
 
 func (e *CollisionsError) Error() string {
+	kind := e.Kind
+	if kind == "" {
+		kind = "tool"
+	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%d tool name collisions after prefixing", len(e.Conflicts))
+	fmt.Fprintf(&sb, "%d %s name collisions", len(e.Conflicts), kind)
 
 	var (
 		resultNames []string
@@ -54,7 +62,7 @@ func (e *CollisionsError) Error() string {
 		slices.Sort(names)
 		fmt.Fprintf(&sb, " across upstreams:")
 		for _, up := range names {
-			fmt.Fprintf(&sb, " %s (%d tools)", up, e.ToolCounts[up])
+			fmt.Fprintf(&sb, " %s (%d %ss)", up, e.Counts[up], kind)
 		}
 	}
 
@@ -85,7 +93,8 @@ func NamespaceName(prefix, toolName string) string {
 }
 
 // DetectCollisions returns an error if any resulting names collide across upstreams.
-func DetectCollisions(prefixes map[string]string, toolSets map[string][]string) error {
+// kind labels the item type for the resulting error message (e.g. "tool", "resource").
+func DetectCollisions(kind string, prefixes map[string]string, toolSets map[string][]string) error {
 	names := make([]string, 0, len(toolSets))
 	for up := range toolSets {
 		names = append(names, up)
@@ -129,7 +138,124 @@ func DetectCollisions(prefixes map[string]string, toolSets map[string][]string) 
 				}
 			}
 		}
-		return errors.Wrap(&CollisionsError{Conflicts: conflicts, ToolCounts: counts}, "tool name collisions")
+		return errors.Wrap(&CollisionsError{Kind: kind, Conflicts: conflicts, Counts: counts}, kind+" name collisions")
 	}
 	return nil
+}
+
+// collisionSet accumulates named items per upstream for one item kind (tool,
+// prompt, resource, resource template) across Build's listing pass, then
+// checks them for collisions once all upstreams have been added. It keeps
+// the raw item alongside its name so identical duplicates (see check) can be
+// distinguished from genuine conflicts.
+type collisionSet[T any] struct {
+	kind       string
+	equal      func(a, b T) bool
+	sets       map[string][]string
+	byUpstream map[string]map[string]T
+}
+
+func newCollisionSet[T any](kind string, equal func(a, b T) bool) *collisionSet[T] {
+	return &collisionSet[T]{
+		kind:       kind,
+		equal:      equal,
+		sets:       map[string][]string{},
+		byUpstream: map[string]map[string]T{},
+	}
+}
+
+// add registers items for one upstream. name extracts the raw (unprefixed)
+// identifier for an item (tool/prompt name or resource URI); keep, if
+// non-nil, filters which items participate (used for tools.allow/deny).
+func (c *collisionSet[T]) add(upstream string, items []T, name func(T) string, keep func(T) bool) {
+	byName := make(map[string]T, len(items))
+	for _, it := range items {
+		if keep != nil && !keep(it) {
+			continue
+		}
+		n := name(it)
+		c.sets[upstream] = append(c.sets[upstream], n)
+		byName[n] = it
+	}
+	c.byUpstream[upstream] = byName
+}
+
+// check runs DetectCollisions and, if it fails, drops any collision groups
+// whose items are byte-identical across all owners before deciding whether
+// to return an error.
+func (c *collisionSet[T]) check(logger *zap.Logger, prefixes map[string]string) error {
+	err := DetectCollisions(c.kind, prefixes, c.sets)
+	if err == nil {
+		return nil
+	}
+	var ce *CollisionsError
+	if !errors.As(err, &ce) {
+		return err
+	}
+	if hard := c.dropIdentical(logger, ce); hard != nil {
+		return errors.Wrap(hard, c.kind+" name collisions")
+	}
+	return nil
+}
+
+// dropIdentical removes collision groups where every owner's item is
+// byte-identical: such overlaps are harmless (the same item exposed
+// redundantly by more than one upstream, e.g. vendored docs baked into
+// multiple copies of the same image) and are logged as a warning rather
+// than failing the build. It returns nil if no hard (non-identical)
+// collisions remain, or a new CollisionsError containing only the genuine
+// conflicts.
+func (c *collisionSet[T]) dropIdentical(logger *zap.Logger, ce *CollisionsError) *CollisionsError {
+	var hard []Collision
+	for i := 0; i < len(ce.Conflicts); {
+		j := i
+		for j < len(ce.Conflicts) && ce.Conflicts[j].ResultName == ce.Conflicts[i].ResultName {
+			j++
+		}
+		group := ce.Conflicts[i:j]
+		if c.identicalGroup(group) {
+			owners := make([]string, 0, len(group))
+			for _, cf := range group {
+				owners = append(owners, cf.Upstream+":"+cf.Tool)
+			}
+			logger.Warn(c.kind+" collision ignored: identical definitions",
+				zap.String("result_name", group[0].ResultName),
+				zap.Strings("owners", owners),
+			)
+		} else {
+			hard = append(hard, group...)
+		}
+		i = j
+	}
+	if len(hard) == 0 {
+		return nil
+	}
+	counts := make(map[string]int, len(hard))
+	for _, cf := range hard {
+		if _, ok := counts[cf.Upstream]; !ok {
+			counts[cf.Upstream] = len(c.byUpstream[cf.Upstream])
+		}
+	}
+	return &CollisionsError{Kind: c.kind, Conflicts: hard, Counts: counts}
+}
+
+func (c *collisionSet[T]) identicalGroup(group []Collision) bool {
+	var (
+		first     T
+		haveFirst bool
+	)
+	for _, cf := range group {
+		item, ok := c.byUpstream[cf.Upstream][cf.Tool]
+		if !ok {
+			return false
+		}
+		if !haveFirst {
+			first, haveFirst = item, true
+			continue
+		}
+		if !c.equal(first, item) {
+			return false
+		}
+	}
+	return true
 }

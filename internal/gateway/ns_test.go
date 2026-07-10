@@ -13,12 +13,12 @@ func TestNamespaceName(t *testing.T) {
 }
 
 func TestDetectCollisions_NoPrefix(t *testing.T) {
-	err := DetectCollisions(nil, map[string][]string{"a": {"x"}, "b": {"y"}})
+	err := DetectCollisions("tool", nil, map[string][]string{"a": {"x"}, "b": {"y"}})
 	require.NoError(t, err)
 }
 
 func TestDetectCollisions_Collide(t *testing.T) {
-	err := DetectCollisions(map[string]string{"a": "", "b": ""}, map[string][]string{"a": {"x"}, "b": {"x"}})
+	err := DetectCollisions("tool", map[string]string{"a": "", "b": ""}, map[string][]string{"a": {"x"}, "b": {"x"}})
 	require.Error(t, err)
 	var ce *CollisionsError
 	require.ErrorAs(t, err, &ce)
@@ -26,16 +26,16 @@ func TestDetectCollisions_Collide(t *testing.T) {
 }
 
 func TestDetectCollisions_DistinctPrefix(t *testing.T) {
-	err := DetectCollisions(map[string]string{"a": "a.", "b": "b."}, map[string][]string{"a": {"x"}, "b": {"x"}})
+	err := DetectCollisions("tool", map[string]string{"a": "a.", "b": "b."}, map[string][]string{"a": {"x"}, "b": {"x"}})
 	require.NoError(t, err)
 }
 
 func TestDetectCollisions_Prompts(t *testing.T) {
 	// Prompts use DetectCollisions with empty prefix map (namespaced via NamespaceName before calling).
-	err := DetectCollisions(map[string]string{}, map[string][]string{"a": {"p1"}, "b": {"p2"}})
+	err := DetectCollisions("tool", map[string]string{}, map[string][]string{"a": {"p1"}, "b": {"p2"}})
 	require.NoError(t, err)
 
-	err = DetectCollisions(map[string]string{}, map[string][]string{"a": {"p"}, "b": {"p"}})
+	err = DetectCollisions("tool", map[string]string{}, map[string][]string{"a": {"p"}, "b": {"p"}})
 	require.Error(t, err)
 	var ce *CollisionsError
 	require.ErrorAs(t, err, &ce)
@@ -43,7 +43,7 @@ func TestDetectCollisions_Prompts(t *testing.T) {
 }
 
 func TestDetectCollisions_ThreeWay(t *testing.T) {
-	err := DetectCollisions(map[string]string{"a": "", "b": "", "c": ""}, map[string][]string{"a": {"x"}, "b": {"x"}, "c": {"x"}})
+	err := DetectCollisions("tool", map[string]string{"a": "", "b": "", "c": ""}, map[string][]string{"a": {"x"}, "b": {"x"}, "c": {"x"}})
 	require.Error(t, err)
 	var ce *CollisionsError
 	require.ErrorAs(t, err, &ce)
@@ -62,7 +62,7 @@ func TestDetectCollisions_Deterministic(t *testing.T) {
 	toolSets := map[string][]string{"d": {"tool2"}, "a": {"tool1"}, "c": {"tool1"}, "b": {"tool2"}}
 	var want []Collision
 	for i := range 20 {
-		err := DetectCollisions(prefixes, toolSets)
+		err := DetectCollisions("tool", prefixes, toolSets)
 		require.Error(t, err)
 		var ce *CollisionsError
 		require.ErrorAs(t, err, &ce)
