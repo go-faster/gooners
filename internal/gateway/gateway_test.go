@@ -299,6 +299,102 @@ func TestGateway_ReSync_CollisionSkipped(t *testing.T) {
 	require.Equal(t, "u1", gx.RegisteredTools()["foo"])
 }
 
+func TestGateway_Build_IdenticalToolCollisionWarnsAndAccepts(t *testing.T) {
+	// Two upstreams both expose "foo" with byte-identical definitions (no
+	// prefix) -> Build should succeed, keeping one owner, instead of failing.
+	up1ServerTr, up1ClientTr := mcp.NewInMemoryTransports()
+	srv1 := mcp.NewServer(&mcp.Implementation{Name: "up1", Version: "0"}, nil)
+	srv1.AddTool(&mcp.Tool{Name: "foo", Description: "same", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "1"}}}, nil
+	})
+	go func() { _ = srv1.Run(t.Context(), up1ServerTr) }()
+
+	up2ServerTr, up2ClientTr := mcp.NewInMemoryTransports()
+	srv2 := mcp.NewServer(&mcp.Implementation{Name: "up2", Version: "0"}, nil)
+	srv2.AddTool(&mcp.Tool{Name: "foo", Description: "same", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "2"}}}, nil
+	})
+	go func() { _ = srv2.Run(t.Context(), up2ServerTr) }()
+
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{
+			{Name: "u1", Kind: "stdio", Command: []string{"ignored"}},
+			{Name: "u2", Kind: "stdio", Command: []string{"ignored"}},
+		},
+	}
+
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+
+	u1 := newUpstreamWithInMemoryClient(cfg.Upstreams[0], up1ClientTr, g.onToolListChanged)
+	u2 := newUpstreamWithInMemoryClient(cfg.Upstreams[1], up2ClientTr, g.onToolListChanged)
+	g.upstreams = []*Upstream{u1, u2}
+
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	require.NoError(t, err)
+	u1.session = s1
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	require.NoError(t, err)
+	u2.session = s2
+
+	require.NoError(t, g.Build(t.Context()))
+	t.Cleanup(func() { _ = g.Close(t.Context()) })
+
+	owner := g.RegisteredTools()["foo"]
+	require.Contains(t, []string{"u1", "u2"}, owner)
+}
+
+func TestGateway_Build_AllowFilterAvoidsFalseCollision(t *testing.T) {
+	// Two upstreams both expose "foo", but u2 denies it via tools.allow.
+	// Build must not report a collision, since the raw tool name never
+	// actually gets registered under a conflicting final name.
+	up1ServerTr, up1ClientTr := mcp.NewInMemoryTransports()
+	srv1 := mcp.NewServer(&mcp.Implementation{Name: "up1", Version: "0"}, nil)
+	srv1.AddTool(&mcp.Tool{Name: "foo", Description: "f1", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "1"}}}, nil
+	})
+	go func() { _ = srv1.Run(t.Context(), up1ServerTr) }()
+
+	up2ServerTr, up2ClientTr := mcp.NewInMemoryTransports()
+	srv2 := mcp.NewServer(&mcp.Implementation{Name: "up2", Version: "0"}, nil)
+	srv2.AddTool(&mcp.Tool{Name: "foo", Description: "f2", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "2"}}}, nil
+	})
+	srv2.AddTool(&mcp.Tool{Name: "bar", Description: "b2", InputSchema: map[string]any{"type": "object"}}, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "2"}}}, nil
+	})
+	go func() { _ = srv2.Run(t.Context(), up2ServerTr) }()
+
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw"},
+		Upstreams: []UpstreamConfig{
+			{Name: "u1", Kind: "stdio", Command: []string{"ignored"}},
+			{Name: "u2", Kind: "stdio", Command: []string{"ignored"}, Tools: ToolsConfig{Allow: []string{"bar"}}},
+		},
+	}
+
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+
+	u1 := newUpstreamWithInMemoryClient(cfg.Upstreams[0], up1ClientTr, g.onToolListChanged)
+	u2 := newUpstreamWithInMemoryClient(cfg.Upstreams[1], up2ClientTr, g.onToolListChanged)
+	g.upstreams = []*Upstream{u1, u2}
+
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	require.NoError(t, err)
+	u1.session = s1
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	require.NoError(t, err)
+	u2.session = s2
+
+	require.NoError(t, g.Build(t.Context()))
+	t.Cleanup(func() { _ = g.Close(t.Context()) })
+
+	require.Equal(t, "u1", g.RegisteredTools()["foo"])
+	require.Equal(t, "u2", g.RegisteredTools()["bar"])
+}
+
 func TestGateway_Build_RegistersPrompt(t *testing.T) {
 	upServerTr, upClientTr := mcp.NewInMemoryTransports()
 	srv := mcp.NewServer(&mcp.Implementation{Name: "up", Version: "0"}, nil)
