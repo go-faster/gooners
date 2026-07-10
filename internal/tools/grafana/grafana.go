@@ -515,6 +515,8 @@ func getStringSlice(m map[string]any, k string) []string {
 // Tool implementation.
 
 func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
+	registerResources(s, sm)
+
 	// 3.1 Construction Tools
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "add_dashboard",
@@ -736,15 +738,19 @@ func listSessionsHandler(sm *SessionManager) mcp.ToolHandlerFor[struct{}, ListSe
 			Sessions: make([]SessionInfo, len(sessions)),
 		}
 		for i, s := range sessions {
-			res.Sessions[i] = SessionInfo{
-				DashboardID: s.DashboardID,
-				Title:       s.Title,
-				Version:     cmp.Or(s.Version, dashboardVersionV1),
-				Model:       s.Model,
-				TouchedAt:   s.TouchedAt,
-			}
+			res.Sessions[i] = sessionInfo(s)
 		}
 		return nil, res, nil
+	}
+}
+
+func sessionInfo(s *DashboardSession) SessionInfo {
+	return SessionInfo{
+		DashboardID: s.DashboardID,
+		Title:       s.Title,
+		Version:     cmp.Or(s.Version, dashboardVersionV1),
+		Model:       s.Model,
+		TouchedAt:   s.TouchedAt,
 	}
 }
 

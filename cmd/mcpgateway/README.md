@@ -60,11 +60,9 @@ Example HTTPS gateway with routed upstreams:
   -tls-cert-file server.crt -tls-key-file server.key
 ```
 
-## Limitations (scaffold)
+## Limitations
 
-- tools/listChanged notifications are received but only logged ("re-sync not implemented")
 - Telemetry middleware is a no-op span stub; exporter wiring is minimal
-- No resource/prompt proxying yet
 - Collision detection happens at Build time; duplicate final names after prefixing are fatal
 
 ## Secrets

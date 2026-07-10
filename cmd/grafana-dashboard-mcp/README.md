@@ -94,3 +94,13 @@ For a complete local sandbox environment containing both a Grafana instance and 
 - `lookup_label_values` — fetches available values for a label.
 - `lookup_metric_metadata` — returns metric type and help string.
 - `discover_telemetry_registry` — parses Weaver/OpenTelemetry semantic convention YAML files under the working directory to discover metrics, instruments, units, and attributes.
+
+## Resources
+
+The server also exposes read-only MCP resources for dashboard builder state:
+
+| Resource | Description |
+|----------|-------------|
+| `grafana-dashboard://sessions` | Lists active dashboard builder sessions with IDs, titles, versions, models, and touch times |
+| `grafana-dashboard://sessions/{dashboard_id}/state` | Returns the editable dashboard session state and computed layout |
+| `grafana-dashboard://sessions/{dashboard_id}/export{?version}` | Returns compiled Grafana dashboard JSON. Optional `version` may be `v1` or `v2`; default is the session version |

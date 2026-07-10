@@ -55,6 +55,39 @@ func TestSessionManager(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestGrafanaDashboardResources(t *testing.T) {
+	tempDir := t.TempDir()
+	sm := NewSessionManager(tempDir)
+	sm.Add(&DashboardSession{
+		DashboardID: "dash-resource",
+		Title:       "Resource Dashboard",
+		Version:     dashboardVersionV1,
+		CreatedAt:   time.Unix(100, 0),
+		TouchedAt:   time.Unix(200, 0),
+	})
+
+	sessionsText, err := readGrafanaResource(sm, "grafana-dashboard://sessions")
+	require.NoError(t, err)
+	var sessions ListSessionsRes
+	require.NoError(t, json.Unmarshal([]byte(sessionsText), &sessions))
+	require.Len(t, sessions.Sessions, 1)
+	require.Equal(t, "dash-resource", sessions.Sessions[0].DashboardID)
+
+	stateText, err := readGrafanaResource(sm, "grafana-dashboard://sessions/dash-resource/state")
+	require.NoError(t, err)
+	var state DashboardStateRes
+	require.NoError(t, json.Unmarshal([]byte(stateText), &state))
+	require.Equal(t, "Resource Dashboard", state.Title)
+	require.NotEmpty(t, state.Layout)
+
+	exportText, err := readGrafanaResource(sm, "grafana-dashboard://sessions/dash-resource/export?version=v1")
+	require.NoError(t, err)
+	require.Contains(t, exportText, `"title": "Resource Dashboard"`)
+
+	_, err = readGrafanaResource(sm, "grafana-dashboard://sessions/dash-resource/unknown")
+	require.Error(t, err)
+}
+
 func TestQueryRefID(t *testing.T) {
 	assert.Equal(t, "A", queryRefID(0))
 	assert.Equal(t, "Z", queryRefID(25))

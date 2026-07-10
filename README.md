@@ -21,6 +21,16 @@ The MCP servers expose predefined prompts that can be invoked by AI agents:
 | `ssh-mcp` | `troubleshoot-ssh` | Provides instructions on how to use SSH tools to debug a remote machine |
 | `grafana-dashboard-mcp` | `design-dashboard` | Guides the agent through metric discovery, RED/USE dashboard design, query verification, and export |
 
+## Resources
+
+The MCP servers expose read-only resources for state that is useful to inspect without invoking a mutating tool:
+
+| Server | Resource | Description |
+|--------|----------|-------------|
+| `grafana-dashboard-mcp` | `grafana-dashboard://sessions` | Lists active dashboard builder sessions |
+| `grafana-dashboard-mcp` | `grafana-dashboard://sessions/{dashboard_id}/state` | Returns editable session state plus computed layout |
+| `grafana-dashboard-mcp` | `grafana-dashboard://sessions/{dashboard_id}/export{?version}` | Returns compiled dashboard JSON; optional `version` is `v1` or `v2` |
+
 ## Skills
 
 Agent skills (slash commands) that can be installed into AI coding assistants.
