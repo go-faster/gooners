@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -238,11 +236,12 @@ func (p *Pool) handleClose(st *poolState, r CloseRequest) {
 		}
 
 		for _, path := range s.spools {
-			_ = os.Remove(path)
+			_ = p.spoolFS.Remove(path)
 		}
 		closeAll(s.forwards)
-		sessionDir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", r.ID)
-		_ = os.RemoveAll(sessionDir)
+		// The session's whole spool directory, so an unregistered spool file
+		// cannot outlive the session either.
+		_ = p.spoolFS.RemoveAll(r.ID)
 
 		_ = s.client.Close()
 		delete(st.sessions, r.ID)
@@ -283,12 +282,19 @@ func (p *Pool) handleUpload(st *poolState, r UploadRequest) {
 		r.resp <- UploadResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
 		return
 	}
+	// The upload itself goes through p.localFS and would refuse a disallowed
+	// path anyway; rejecting it here only turns an async job failure into an
+	// immediate, legible error.
+	if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
+		r.resp <- UploadResponse{Err: err}
+		return
+	}
 	evict(st.uploads, p.jobRetention, time.Now())
 
 	uploadID := fmt.Sprintf("upload-%d", time.Now().UnixNano())
 	job, uCtx := newTransferJob(s.ctx, uploadID, r.SessionID, r.LocalPath, r.RemotePath)
 	st.uploads[uploadID] = job
-	go runUpload(uCtx, s.client, job)
+	go runUpload(uCtx, s.client, p.localFS, job)
 	r.resp <- UploadResponse{UploadID: uploadID}
 }
 
@@ -474,12 +480,18 @@ func (p *Pool) handleDownload(st *poolState, r DownloadRequest) {
 		r.resp <- DownloadResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
 		return
 	}
+	// See handleUpload: p.localFS gates the write regardless; this just fails
+	// fast on a destination it would refuse.
+	if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
+		r.resp <- DownloadResponse{Err: err}
+		return
+	}
 	evict(st.downloads, p.jobRetention, time.Now())
 
 	downloadID := fmt.Sprintf("download-%d", time.Now().UnixNano())
 	job, dCtx := newTransferJob(s.ctx, downloadID, r.SessionID, r.LocalPath, r.RemotePath)
 	st.downloads[downloadID] = job
-	go runDownload(dCtx, s.client, job)
+	go runDownload(dCtx, s.client, p.localFS, job)
 	r.resp <- DownloadResponse{DownloadID: downloadID}
 }
 
@@ -593,7 +605,7 @@ func (p *Pool) handleDeleteSpool(st *poolState, r DeleteSpoolRequest) {
 		r.resp <- fmt.Errorf("spool ID not found: %s", r.SpoolID)
 		return
 	}
-	_ = os.Remove(path)
+	_ = p.spoolFS.Remove(path)
 	delete(s.spools, r.SpoolID)
 	r.resp <- nil
 }

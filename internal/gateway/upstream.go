@@ -27,7 +27,15 @@ func defaultTransportBuilder(ctx context.Context, cfg UpstreamConfig, r SecretRe
 	interp := func(s string) (string, error) {
 		return Interpolate(ctx, s, r)
 	}
-	return gwtransport.Build(ctx, cfg.Kind, cfg.Command, cfg.URL, cfg.Env, cfg.Headers, cfg.StripHeaders, interp)
+	return gwtransport.Build(ctx, gwtransport.Options{
+		Kind:         cfg.Kind,
+		Command:      cfg.Command,
+		URL:          cfg.URL,
+		Env:          cfg.Env,
+		Headers:      cfg.Headers,
+		StripHeaders: cfg.StripHeaders,
+		Interpolate:  interp,
+	})
 }
 
 // Upstream represents one configured upstream MCP server (not yet connected).

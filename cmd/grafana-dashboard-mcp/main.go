@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/common/model"
 
 	"github.com/go-faster/gooners/internal/cmdutil"
+	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/grafana"
 )
@@ -64,10 +65,24 @@ func main() {
 		}
 	}
 
+	// import_dashboard's file_path and export_dashboard's output_path come from
+	// the agent, so they are confined to the working directory the server was
+	// started in — the same model ssh-mcp uses for its local file tools.
+	workDir, err := os.Getwd()
+	if err != nil {
+		slog.Error("getting working directory", "err", err)
+		os.Exit(1)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	gc := grafana.NewGrafanaClient(*grafanaURL, *grafanaToken, *grafanaUser, *grafanaPassword)
+	gc := grafana.NewGrafanaClient(grafana.GrafanaClientOptions{
+		URL:      *grafanaURL,
+		Token:    *grafanaToken,
+		User:     *grafanaUser,
+		Password: *grafanaPassword,
+	})
 	s := mcputil.NewServer(mcputil.ServerConfig{
 		Name:         "grafana-dashboard-mcp",
 		Instructions: "You are connected to grafana-dashboard-mcp. Use these tools to incrementally build and deploy Grafana dashboards.",
@@ -101,7 +116,7 @@ func main() {
 		mcputil.BroadcastWarning(s, "grafana-mcp", fmt.Sprintf("Dashboard session %q evicted due to inactivity", id))
 	}
 	go sm.StartCleanupLoop(ctx, time.Duration(sessionTTL))
-	grafana.Register(s, sm, gc)
+	grafana.Register(s, sm, gc, grafana.RegisterOptions{LocalFS: effect.Root(workDir)})
 
 	if err := transport.Run(ctx, cmdutil.RunOptions{
 		Name:   "grafana-dashboard-mcp",

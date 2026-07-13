@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/go-faster/gooners/internal/effect"
+
 	"github.com/grafana/grafana-foundation-sdk/go/dashboard"
 )
 
@@ -495,7 +497,7 @@ func TestParseDashboardRoundtrip(t *testing.T) {
 	sm.Add(s)
 
 	outPath := filepath.Join(tempDir, "out-roundtrip.json")
-	handler := exportDashboardHandler(sm, nil)
+	handler := exportDashboardHandler(sm, nil, effect.Root(tempDir))
 	_, res, err := handler(context.Background(), nil, ExportDashboardReq{
 		DashboardID: "dash-roundtrip",
 		Save:        false,
@@ -573,7 +575,7 @@ func TestImportDashboardHandler(t *testing.T) {
 	filePath := filepath.Join(tempDir, "dash.json")
 	require.NoError(t, os.WriteFile(filePath, []byte(dashboardJSON), 0o600))
 
-	handler := importDashboardHandler(sm, nil)
+	handler := importDashboardHandler(sm, nil, effect.Root(tempDir))
 
 	// Test file path import
 	_, res, err := handler(context.Background(), nil, ImportDashboardReq{
@@ -696,7 +698,7 @@ func TestGrafanaClient(t *testing.T) {
 	})
 	t.Cleanup(server.Close)
 
-	c := NewGrafanaClient(server.URL+"/", "token", "", "")
+	c := NewGrafanaClient(GrafanaClientOptions{URL: server.URL + "/", Token: "token"})
 	ds, err := c.GetDatasourceByUID(ctx, "prom")
 	require.NoError(t, err)
 	assert.Equal(t, &DatasourceInfo{UID: "prom", Type: "prometheus", Name: "Prometheus"}, ds)
@@ -757,7 +759,7 @@ func TestGrafanaClient(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, strings.HasPrefix(seenAuth, "Basic "))
 
-	_, err = NewGrafanaClient("", "", "", "").GetDatasourceByUID(ctx, "prom")
+	_, err = NewGrafanaClient(GrafanaClientOptions{}).GetDatasourceByUID(ctx, "prom")
 	require.ErrorContains(t, err, "base URL")
 	err = c.getJSON(ctx, "/error", &DatasourceInfo{})
 	require.ErrorContains(t, err, "HTTP error 502")
@@ -784,7 +786,7 @@ func TestGrafanaClientVerifyQuery(t *testing.T) {
 		"/api/datasources/proxy/uid/loki/loki/api/v1/query_range": {Response: lokiStreams},
 	})
 	t.Cleanup(server.Close)
-	c := NewGrafanaClient(server.URL, "", "", "")
+	c := NewGrafanaClient(GrafanaClientOptions{URL: server.URL})
 
 	prom, err := c.VerifyQuery(ctx, "prom", "up", "range")
 	require.NoError(t, err)
@@ -941,7 +943,7 @@ func TestDiscoveryHandlers(t *testing.T) {
 		},
 	})
 	t.Cleanup(server.Close)
-	gc := NewGrafanaClient(server.URL, "", "", "")
+	gc := NewGrafanaClient(GrafanaClientOptions{URL: server.URL})
 
 	_, ds, err := resolveDatasourceHandler(gc)(ctx, nil, ResolveDatasourceReq{Name: "Prometheus"})
 	require.NoError(t, err)
@@ -1489,7 +1491,7 @@ func TestBuildPanel_VisualFields_Roundtrip(t *testing.T) {
 	sm.Add(s)
 
 	outPath := filepath.Join(tempDir, "vis.json")
-	_, res, err := exportDashboardHandler(sm, nil)(context.Background(), nil, ExportDashboardReq{
+	_, res, err := exportDashboardHandler(sm, nil, effect.Root(tempDir))(context.Background(), nil, ExportDashboardReq{
 		DashboardID: "dash-vis", OutputPath: outPath,
 	})
 	require.NoError(t, err)

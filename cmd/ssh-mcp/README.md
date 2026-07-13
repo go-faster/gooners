@@ -5,7 +5,7 @@ An MCP server that exposes SSH and SFTP operations as tools for AI agents. Desig
 ## Security notes
 
 - **Known hosts**: host key verification is enforced against `~/.ssh/known_hosts` by default. Populate it before connecting or pass an explicit `known_hosts` path via `ssh_open_cfg`. Passing `"insecure"` disables verification entirely — avoid this.
-- **Working directory guard**: `upload_file`, `download_file`, and `stdin_file` for exec tools only access files within the directory where the server process was started. Paths outside that directory are rejected.
+- **Working directory guard**: every tool that touches a local file — `upload_file`, `download_file`, `ssh_save_output`, and `stdin_file` on the exec tools — reaches only files within the directory where the server process was started. Paths outside it are rejected, including paths that would leave it by following a symlink out of the directory. The guard is a confined filesystem provider held by the session pool (`internal/effect`), not a check each tool performs, so it cannot be bypassed by a tool that forgets to look.
 - **Ambient credentials**: `ssh_open` and `ssh_once_exec` use your SSH agent and `~/.ssh` key files automatically — the same keys your shell would use.
 - **Execution**: `ssh_exec` and `ssh_sudo_exec` run arbitrary shell commands with the privileges of the SSH user. Only connect to hosts you trust.
 

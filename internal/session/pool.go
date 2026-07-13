@@ -16,6 +16,7 @@ import (
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/sshutil"
 )
 
@@ -87,6 +88,17 @@ type Pool struct {
 	keepaliveTimeout  time.Duration
 	jobRetention      time.Duration
 
+	// localFS is every host file the pool may touch on a tool's behalf: upload
+	// sources, download targets, saved spool output. It is the gate. A tool
+	// hands the pool whatever path the agent asked for and this refuses the
+	// ones outside its root, so confinement cannot be lost by a tool forgetting
+	// to check.
+	localFS effect.FS
+	// spoolFS holds the pool's own overflow output. It is separate from
+	// localFS so that spooling keeps working in a process where tools are
+	// denied host file access entirely.
+	spoolFS effect.FS
+
 	logger *slog.Logger
 }
 
@@ -110,6 +122,16 @@ type PoolOptions struct {
 	// JobRetention is how long a finished transfer job stays queryable after its
 	// session goes away. Defaults to 1h.
 	JobRetention time.Duration
+	// LocalFS confines every host file the pool touches for a tool: upload
+	// sources, download targets, saved spool output. Use [effect.Root] to
+	// confine it to one directory.
+	//
+	// It defaults to denying everything, so a process that never configures it
+	// cannot reach the host filesystem even if it registers a tool that asks to.
+	LocalFS effect.FS
+	// SpoolFS stores output too large to hold in memory. Defaults to a
+	// per-process directory under [os.TempDir].
+	SpoolFS effect.FS
 }
 
 func (opts *PoolOptions) setDefaults() {
@@ -131,6 +153,12 @@ func (opts *PoolOptions) setDefaults() {
 	if opts.JobRetention <= 0 {
 		opts.JobRetention = time.Hour
 	}
+	if opts.LocalFS == nil {
+		opts.LocalFS = effect.Deny("host file access is not configured for this server")
+	}
+	if opts.SpoolFS == nil {
+		opts.SpoolFS = effect.Root(filepath.Join(os.TempDir(), "ssh-mcp", "sessions"))
+	}
 }
 
 func NewPool(opts PoolOptions) *Pool {
@@ -145,10 +173,17 @@ func NewPool(opts PoolOptions) *Pool {
 		keepaliveInterval: opts.KeepaliveInterval,
 		keepaliveTimeout:  opts.KeepaliveTimeout,
 		jobRetention:      opts.JobRetention,
+		localFS:           opts.LocalFS,
+		spoolFS:           opts.SpoolFS,
 
 		logger: opts.Logger,
 	}
 }
+
+// LocalFS is the host filesystem the pool may touch for a tool. Tools that
+// must read a local file themselves (ssh_exec's stdin_file) go through it, so
+// they inherit the same confinement as upload and download.
+func (p *Pool) LocalFS() effect.FS { return p.localFS }
 
 func (p *Pool) CommandTimeout() time.Duration {
 	return p.commandTimeout
@@ -240,11 +275,10 @@ func (p *Pool) RunLoop(ctx context.Context) {
 			for _, s := range st.sessions {
 				s.cancel(ErrSessionClosed)
 				for _, path := range s.spools {
-					_ = os.Remove(path)
+					_ = p.spoolFS.Remove(path)
 				}
 				closeAll(s.forwards)
-				sessionDir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", s.ID)
-				_ = os.RemoveAll(sessionDir)
+				_ = p.spoolFS.RemoveAll(s.ID)
 
 				_ = s.client.Close()
 				p.logger.Debug("ssh session closed (shutdown)", "id", s.ID, "machine", s.Machine)
@@ -313,13 +347,64 @@ func (p *Pool) RunWithOptions(ctx context.Context, sessionID, cmd string, opts s
 	return sshutil.Run(ctx, client, cmd, opts)
 }
 
-func (p *Pool) GetSpool(ctx context.Context, sessionID, spoolID string) (string, error) {
+// spoolPath returns the spool file's name within [Pool.spoolFS]. It is
+// deliberately unexported: a host path handed to a tool is a host path a tool
+// can be tricked into writing to, so spool content leaves the pool only
+// through [Pool.OpenSpool] and [Pool.SaveSpool].
+func (p *Pool) spoolPath(ctx context.Context, sessionID, spoolID string) (string, error) {
 	respCh := make(chan GetSpoolResponse, 1)
 	resp, ok := send(ctx, p.reqCh, GetSpoolRequest{SessionID: sessionID, SpoolID: spoolID, resp: respCh}, respCh)
 	if !ok {
 		return "", ctx.Err()
 	}
 	return resp.Path, resp.Err
+}
+
+// OpenSpool opens a session's spooled output for reading. The caller closes it.
+func (p *Pool) OpenSpool(ctx context.Context, sessionID, spoolID string) (effect.File, error) {
+	path, err := p.spoolPath(ctx, sessionID, spoolID)
+	if err != nil {
+		return nil, err
+	}
+	return p.spoolFS.Open(path)
+}
+
+// SaveSpool copies a session's spooled output to localPath and drops the
+// spool. localPath is whatever the agent asked for, and [Pool.localFS] is what
+// decides whether it is allowed — the caller neither can nor needs to check.
+func (p *Pool) SaveSpool(ctx context.Context, sessionID, spoolID, localPath string) error {
+	if _, err := p.localFS.Resolve(localPath); err != nil {
+		return err
+	}
+	path, err := p.spoolPath(ctx, sessionID, spoolID)
+	if err != nil {
+		return err
+	}
+
+	src, err := p.spoolFS.Open(path)
+	if err != nil {
+		return fmt.Errorf("open spool: %w", err)
+	}
+	defer func() { _ = src.Close() }()
+
+	if dir := filepath.Dir(localPath); dir != "." {
+		if err := p.localFS.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create destination directory: %w", err)
+		}
+	}
+	dst, err := p.localFS.Create(localPath)
+	if err != nil {
+		return fmt.Errorf("create destination: %w", err)
+	}
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = dst.Close()
+		return fmt.Errorf("write destination: %w", err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("close destination: %w", err)
+	}
+
+	return p.DeleteSpool(ctx, sessionID, spoolID)
 }
 
 func (p *Pool) DeleteSpool(ctx context.Context, sessionID, spoolID string) error {
@@ -412,8 +497,8 @@ func (p *Pool) executeCommand(ctx context.Context, client *ssh.Client, r ExecReq
 		sess = res.sess
 	}
 
-	stdout := NewSpoolingBuffer(r.SessionID, p.maxOutputBytes)
-	stderr := NewSpoolingBuffer(r.SessionID, p.maxOutputBytes)
+	stdout := NewSpoolingBuffer(p.spoolFS, r.SessionID, p.maxOutputBytes)
+	stderr := NewSpoolingBuffer(p.spoolFS, r.SessionID, p.maxOutputBytes)
 	sess.Stdout = stdout
 	sess.Stderr = stderr
 	if r.Sudo && r.SudoPassword != "" {

@@ -5,15 +5,18 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/go-faster/gooners/internal/effect"
 )
 
 // SpoolingBuffer is a buffer that spools to disk when it exceeds a certain threshold.
 type SpoolingBuffer struct {
 	// mu protects the buffer and its state.
 	mu sync.Mutex
+	// fs is where the spool file is written. All paths below are relative to it.
+	fs effect.FS
 	// sessionID is the ID of the session this buffer belongs to.
 	sessionID string
 	// spoolID is the unique ID of the spool file.
@@ -23,8 +26,8 @@ type SpoolingBuffer struct {
 	// buf is the in-memory buffer.
 	buf bytes.Buffer
 	// file is the file to which the buffer has been spilled, if any.
-	file *os.File
-	// filePath is the path to the spool file, if any.
+	file effect.File
+	// filePath is the spool file's path within fs, if any.
 	filePath string
 	// size is the current size of the buffer, in bytes.
 	size int64
@@ -34,9 +37,11 @@ type SpoolingBuffer struct {
 	err error
 }
 
-// NewSpoolingBuffer creates a new SpoolingBuffer with the given session ID and threshold.
-func NewSpoolingBuffer(sessionID string, threshold int64) *SpoolingBuffer {
+// NewSpoolingBuffer creates a new SpoolingBuffer that spills into fsys once it
+// exceeds threshold bytes.
+func NewSpoolingBuffer(fsys effect.FS, sessionID string, threshold int64) *SpoolingBuffer {
 	return &SpoolingBuffer{
+		fs:        fsys,
 		sessionID: sessionID,
 		spoolID:   generateSpoolID(),
 		threshold: threshold,
@@ -76,15 +81,13 @@ func (b *SpoolingBuffer) Write(p []byte) (n int, err error) {
 	}
 
 	if b.size > b.threshold {
-		dir := filepath.Join(os.TempDir(), "ssh-mcp", "sessions", b.sessionID)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := b.fs.MkdirAll(b.sessionID, 0o700); err != nil {
 			b.err = fmt.Errorf("creating session spool directory: %w", err)
 			return 0, b.err
 		}
 
-		path := filepath.Join(dir, b.spoolID+".out")
-		//nolint:gosec // path is dynamically generated securely
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+		path := filepath.Join(b.sessionID, b.spoolID+".out")
+		f, err := b.fs.Create(path)
 		if err != nil {
 			b.err = fmt.Errorf("creating spool file: %w", err)
 			return 0, b.err
@@ -155,7 +158,8 @@ func (b *SpoolingBuffer) SpoolID() string {
 	return b.spoolID
 }
 
-// FilePath returns the path to the spool file, if any.
+// FilePath returns the spool file's path within the buffer's [effect.FS], if
+// any. It is not a host path: only the pool's spool FS can resolve it.
 func (b *SpoolingBuffer) FilePath() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()

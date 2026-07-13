@@ -10,20 +10,74 @@ import (
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/go-faster/gooners/internal/effect"
 )
 
-// Build constructs a transport. interpolate is called for env/headers values (supports {secret:NAME}).
-func Build(_ context.Context, kind string, command []string, url string, env, headers map[string]string, stripHeaders []string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
-	switch kind {
-	case "stdio":
-		return buildStdio(command, env, interpolate)
-	case "http":
-		return buildHTTP(url, headers, stripHeaders, interpolate)
-	case "sse":
-		return buildSSE(url, headers, stripHeaders, interpolate)
-	default:
-		return nil, nil, errors.Errorf("unknown upstream kind %q", kind)
+// Options configures [Build].
+type Options struct {
+	// Kind is the upstream kind: "stdio", "http" or "sse".
+	Kind string
+	// Command is the stdio upstream's argv.
+	Command []string
+	// URL is the http/sse upstream's endpoint.
+	URL string
+	// Env overrides environment variables of a stdio upstream.
+	Env map[string]string
+	// Headers are injected into every http/sse request.
+	Headers map[string]string
+	// StripHeaders are removed from every http/sse request before Headers are
+	// applied.
+	StripHeaders []string
+	// Interpolate expands env and header values (supports {secret:NAME}).
+	Interpolate func(string) (string, error)
+	// HTTPClient is used by http/sse upstreams. If nil, it is an
+	// [effect.NewHTTPClient] allowing egress to URL's host alone: an upstream
+	// may only be reached at its own endpoint. It carries no timeout, because
+	// both transports stream.
+	HTTPClient *http.Client
+}
+
+func (o *Options) setDefaults() {
+	if o.HTTPClient == nil && (o.Kind == "http" || o.Kind == "sse") {
+		o.HTTPClient = effect.NewHTTPClient(effect.HTTPOptions{
+			Policy: effect.HTTPPolicy{AllowHosts: effect.AllowHostOf(o.URL)},
+		})
 	}
+}
+
+// Build constructs a transport and a cleanup to run after the session closes.
+func Build(_ context.Context, opts Options) (mcp.Transport, func() error, error) {
+	opts.setDefaults()
+	switch opts.Kind {
+	case "stdio":
+		return buildStdio(opts.Command, opts.Env, opts.Interpolate)
+	case "http":
+		cl := clientWithHeaders(opts.HTTPClient, opts.Headers, opts.StripHeaders, opts.Interpolate)
+		return &mcp.StreamableClientTransport{Endpoint: opts.URL, HTTPClient: cl}, noCleanup, nil
+	case "sse":
+		cl := clientWithHeaders(opts.HTTPClient, opts.Headers, opts.StripHeaders, opts.Interpolate)
+		return &mcp.SSEClientTransport{Endpoint: opts.URL, HTTPClient: cl}, noCleanup, nil
+	default:
+		return nil, nil, errors.Errorf("unknown upstream kind %q", opts.Kind)
+	}
+}
+
+func noCleanup() error { return nil }
+
+// clientWithHeaders returns a copy of cl whose transport injects and strips
+// headers on top of cl's own (policy-enforcing) transport.
+func clientWithHeaders(cl *http.Client, headers map[string]string, stripHeaders []string, interpolate func(string) (string, error)) *http.Client {
+	if len(headers) == 0 && len(stripHeaders) == 0 {
+		return cl
+	}
+	base := cl.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	out := *cl
+	out.Transport = &headerRT{base: base, headers: headers, stripHeaders: stripHeaders, interpolate: interpolate}
+	return &out
 }
 
 func buildStdio(command []string, env map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
@@ -74,22 +128,6 @@ func buildStdio(command []string, env map[string]string, interpolate func(string
 		return nil
 	}
 	return &mcp.CommandTransport{Command: cmd}, cleanup, nil
-}
-
-func buildHTTP(url string, headers map[string]string, stripHeaders []string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
-	cl := &http.Client{}
-	if len(headers) > 0 || len(stripHeaders) > 0 {
-		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, stripHeaders: stripHeaders, interpolate: interpolate}
-	}
-	return &mcp.StreamableClientTransport{Endpoint: url, HTTPClient: cl}, func() error { return nil }, nil
-}
-
-func buildSSE(url string, headers map[string]string, stripHeaders []string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
-	cl := &http.Client{}
-	if len(headers) > 0 || len(stripHeaders) > 0 {
-		cl.Transport = &headerRT{base: http.DefaultTransport, headers: headers, stripHeaders: stripHeaders, interpolate: interpolate}
-	}
-	return &mcp.SSEClientTransport{Endpoint: url, HTTPClient: cl}, func() error { return nil }, nil
 }
 
 type headerRT struct {

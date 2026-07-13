@@ -41,8 +41,16 @@ cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
 cmd/grafana-dashboard-mcp/ ← MCP server binary (go build ./cmd/grafana-dashboard-mcp)
 cmd/alertmanager-mcp/ ← MCP server binary (go build ./cmd/alertmanager-mcp)
 internal/
+  effect/             ← The fs/HTTP effect providers every agent-reachable side effect goes through.
+                        effect.Root(dir) is a filesystem confined to dir, backed by os.Root (so a symlink
+                        planted inside dir cannot lead out of it); effect.Deny(reason) refuses everything;
+                        effect.OS() is unconfined and belongs only where paths are the operator's or a
+                        test's. effect.NewHTTPClient(HTTPOptions) applies an egress HTTPPolicy on the
+                        request, on redirects, and on the post-DNS resolved IP. See "effect providers" below.
   mcputil/            ← Standardized MCP server config, prompts, and log streaming
-  session/            ← SSH session pool & async upload tracking
+  session/            ← SSH session pool & async upload tracking. PoolOptions.LocalFS is the one gate on
+                        host files a tool can reach; PoolOptions.SpoolFS holds overflow output.
+                        Pool.OpenSpool/SaveSpool move spool content without ever handing a tool a host path.
   sshutil/            ← SSH config / known-hosts helpers
   tools/              ← MCP tool registrations
     core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec, ssh_ping, ssh_read_output, ssh_save_output
@@ -56,6 +64,25 @@ skills/jx/            ← Agent skill for github.com/go-faster/jx
 ```
 
 The `ssh-mcp` file in the repo root is a **compiled binary** (not a source directory) — ignore it when navigating source.
+
+### Effect providers (issue #22)
+
+Filesystem and HTTP side effects go through a provider from `internal/effect`, and the provider — not the
+call site — enforces policy. This is a security invariant, not a style preference.
+
+- **Never call `os.Open`/`os.Create`/`os.WriteFile`/… in a tool handler or in `internal/session`.** Take an
+  `effect.FS` and call it. The one place a raw `os.*` call is still correct is operator-controlled startup
+  paths (gateway TOML, known_hosts, SSH keys, CA bundles, log file), which no agent can influence.
+- **Never construct an `http.Client` inline.** Take an `effect.Doer`, or build one with
+  `effect.NewHTTPClient`, whose `HTTPPolicy` allowlist is derived from the configured upstream
+  (`effect.AllowHostOf`). The zero-value policy allows nothing, so an unconfigured client fails closed.
+- **Do not add a path check to a tool handler.** A handler passes the agent's path straight to the pool;
+  `session.PoolOptions.LocalFS` decides whether it is reachable. A per-handler check is how the
+  `ssh_save_output` arbitrary-write bug happened: `upload_file`/`download_file` remembered to call the old
+  lexical `fs.WithinDir` helper and `ssh_save_output` did not. `WithinDir` is gone; do not reintroduce it.
+  `effect.FS.Resolve` exists only to fail fast with a legible error and is explicitly *not* the gate.
+- A binary declares what it may touch by what it passes to `session.NewPool`. `ssh-mcp` passes
+  `LocalFS: effect.Root(cwd)`.
 
 ## Key Dependencies
 

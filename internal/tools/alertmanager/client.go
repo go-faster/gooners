@@ -18,6 +18,8 @@ import (
 	amclient "github.com/prometheus/alertmanager/api/v2/client"
 	promapi "github.com/prometheus/client_golang/api"
 	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+
+	"github.com/go-faster/gooners/internal/effect"
 )
 
 const (
@@ -49,6 +51,13 @@ type Config struct {
 	TLSCertFile           string
 	TLSKeyFile            string
 	TLSInsecureSkipVerify bool
+
+	// HTTPClient performs every Alertmanager and Prometheus request. If nil, it
+	// is an [effect.NewHTTPClient] whose egress allowlist is exactly the two
+	// configured upstreams, so neither API client can reach anything else.
+	//
+	// It exists as a seam for tests; production code leaves it nil.
+	HTTPClient *http.Client
 }
 
 func (c *Config) setDefaults() {
@@ -95,9 +104,13 @@ func NewClient(cfg Config) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	httpClient := &http.Client{
-		Timeout:   cfg.Timeout,
-		Transport: newTransport(tlsConfig),
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = effect.NewHTTPClient(effect.HTTPOptions{
+			Policy:          effect.HTTPPolicy{AllowHosts: cfg.allowHosts()},
+			Timeout:         cfg.Timeout,
+			TLSClientConfig: tlsConfig,
+		})
 	}
 	rt := httptransport.NewWithClient(u.Host, basePath+"/", []string{u.Scheme}, httpClient)
 	switch {
@@ -115,7 +128,7 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.PrometheusURL != "" {
 		promClient, err := promapi.NewClient(promapi.Config{
 			Address:      cfg.PrometheusURL,
-			RoundTripper: promRoundTripper(cfg, tlsConfig),
+			RoundTripper: promRoundTripper(cfg, httpClient.Transport),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("create prometheus client: %w", err)
@@ -156,14 +169,20 @@ func (c Config) tlsConfig() (*tls.Config, error) {
 	return cfg, nil
 }
 
-func newTransport(tlsConfig *tls.Config) *http.Transport {
-	base := http.DefaultTransport.(*http.Transport).Clone()
-	base.TLSClientConfig = tlsConfig
-	return base
+// allowHosts is the egress allowlist: the two upstreams this client is
+// configured for, and nothing else. An unset PrometheusURL contributes no
+// entry.
+func (c Config) allowHosts() []string {
+	return append(effect.AllowHostOf(c.AlertmanagerURL), effect.AllowHostOf(c.PrometheusURL)...)
 }
 
-func promRoundTripper(cfg Config, tlsConfig *tls.Config) http.RoundTripper {
-	base := newTransport(tlsConfig)
+// promRoundTripper adds Prometheus auth on top of base, which is the policed
+// transport of the shared HTTP client: the Prometheus API client is subject to
+// the same egress allowlist as the Alertmanager one.
+func promRoundTripper(cfg Config, base http.RoundTripper) http.RoundTripper {
+	if base == nil {
+		base = http.DefaultTransport
+	}
 	switch {
 	case cfg.PrometheusToken != "":
 		return &bearerAuthTransport{token: cfg.PrometheusToken, base: base}
