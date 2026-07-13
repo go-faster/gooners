@@ -31,7 +31,7 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: stable
-          cache: false
+          cache: true
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
