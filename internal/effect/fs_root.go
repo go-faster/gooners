@@ -97,6 +97,7 @@ func (r *rootFS) resolve(name string) (*os.Root, string, error) {
 	}
 	rel, err := r.rel(name)
 	if err != nil {
+		_ = root.Close()
 		return nil, "", err
 	}
 	return root, rel, nil
