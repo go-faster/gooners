@@ -45,8 +45,11 @@ type GetResponse struct {
 
 // CloseRequest is a request to close an existing SSH session.
 type CloseRequest struct {
-	ID   string
-	resp chan<- error
+	ID string
+	// Cause is reported as the error of any transfer still running on the session.
+	// Defaults to [ErrSessionClosed].
+	Cause error
+	resp  chan<- error
 }
 
 func (CloseRequest) isRequest() {}
@@ -122,6 +125,7 @@ type UploadStatusResponse struct {
 	DurationSeconds float64
 	ETASeconds      float64
 	Done            bool
+	Status          TransferStatus
 	Err             error
 }
 
@@ -181,6 +185,7 @@ type DownloadStatusResponse struct {
 	DurationSeconds float64
 	ETASeconds      float64
 	Done            bool
+	Status          TransferStatus
 	Err             error
 }
 

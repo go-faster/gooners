@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"os"
-	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -18,164 +17,101 @@ func (p *Pool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {
 	return sftp.NewClient(client)
 }
 
-type poolProgressReader struct {
-	r   io.Reader
-	ctx context.Context
-	job *UploadJob
+func runUpload(ctx context.Context, client *ssh.Client, job *TransferJob) {
+	job.finish(ctx, upload(ctx, client, job))
 }
 
-func (pr *poolProgressReader) Read(p []byte) (int, error) {
-	if err := pr.ctx.Err(); err != nil {
-		return 0, err
+func upload(ctx context.Context, client *ssh.Client, job *TransferJob) error {
+	src, err := os.Open(job.LocalPath)
+	if err != nil {
+		return err
 	}
-	n, err := pr.r.Read(p)
-	pr.job.mu.Lock()
-	pr.job.BytesUploaded += int64(n)
-	pr.job.mu.Unlock()
-	return n, err
-}
-
-func runUpload(ctx context.Context, client *ssh.Client, job *UploadJob) {
 	defer func() {
-		job.mu.Lock()
-		job.FinishedAt = time.Now()
-		job.Done = true
-		job.mu.Unlock()
-		close(job.done)
+		_ = src.Close()
 	}()
 
-	if err := func() error {
-		src, err := os.Open(job.LocalPath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = src.Close()
-		}()
-
-		stat, err := src.Stat()
-		if err != nil {
-			return err
-		}
-
-		job.mu.Lock()
-		job.TotalBytes = stat.Size()
-		job.mu.Unlock()
-
-		sftpClient, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = sftpClient.Close()
-		}()
-
-		dst, err := sftpClient.Create(job.RemotePath)
-		if err != nil {
-			return err
-		}
-
-		pr := &poolProgressReader{r: src, ctx: ctx, job: job}
-		if _, err := io.Copy(dst, pr); err != nil {
-			_ = dst.Close()
-			_ = sftpClient.Remove(job.RemotePath)
-			return err
-		}
-		if err := dst.Close(); err != nil {
-			_ = sftpClient.Remove(job.RemotePath)
-			return err
-		}
-
-		return nil
-	}(); err != nil {
-		job.mu.Lock()
-		job.Err = err
-		job.mu.Unlock()
-		return
+	stat, err := src.Stat()
+	if err != nil {
+		return err
 	}
-}
+	job.setTotal(stat.Size())
 
-type poolDownloadProgressReader struct {
-	r   io.Reader
-	ctx context.Context
-	job *DownloadJob
-}
-
-func (pr *poolDownloadProgressReader) Read(p []byte) (int, error) {
-	if err := pr.ctx.Err(); err != nil {
-		return 0, err
+	sftpClient, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
+	if err != nil {
+		return err
 	}
-	n, err := pr.r.Read(p)
-	pr.job.mu.Lock()
-	pr.job.BytesDownloaded += int64(n)
-	pr.job.mu.Unlock()
-	return n, err
-}
-
-func runDownload(ctx context.Context, client *ssh.Client, job *DownloadJob) {
 	defer func() {
-		job.mu.Lock()
-		job.FinishedAt = time.Now()
-		job.Done = true
-		job.mu.Unlock()
-		close(job.done)
+		_ = sftpClient.Close()
+	}()
+	if !job.setCloser(sftpClient) {
+		return context.Cause(ctx)
+	}
+
+	dst, err := sftpClient.Create(job.RemotePath)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(dst, &progressReader{r: src, ctx: ctx, job: job}); err != nil {
+		_ = dst.Close()
+		_ = sftpClient.Remove(job.RemotePath)
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		_ = sftpClient.Remove(job.RemotePath)
+		return err
+	}
+
+	return nil
+}
+
+func runDownload(ctx context.Context, client *ssh.Client, job *TransferJob) {
+	job.finish(ctx, download(ctx, client, job))
+}
+
+func download(ctx context.Context, client *ssh.Client, job *TransferJob) error {
+	sftpClient, err := sftp.NewClient(client)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = sftpClient.Close()
+	}()
+	if !job.setCloser(sftpClient) {
+		return context.Cause(ctx)
+	}
+
+	src, err := sftpClient.Open(job.RemotePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = src.Close()
 	}()
 
-	if err := func() error {
-		sftpClient, err := sftp.NewClient(client)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = sftpClient.Close()
-		}()
-
-		src, err := sftpClient.Open(job.RemotePath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = src.Close()
-		}()
-
-		stat, err := src.Stat()
-		if err != nil {
-			return err
-		}
-
-		job.mu.Lock()
-		job.TotalBytes = stat.Size()
-		job.mu.Unlock()
-
-		tmpPath := job.LocalPath + ".tmp"
-		//nolint:gosec // LocalPath is validated to be within the allowed directory by withinDir
-		dst, err := os.Create(tmpPath)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			_ = dst.Close()
-			_ = os.Remove(tmpPath) // cleans up partial file if not renamed
-		}()
-
-		pr := &poolDownloadProgressReader{r: src, ctx: ctx, job: job}
-		if _, err := io.Copy(dst, pr); err != nil {
-			return err
-		}
-
-		if err := dst.Close(); err != nil {
-			return err
-		}
-
-		if err := os.Rename(tmpPath, job.LocalPath); err != nil {
-			return err
-		}
-
-		return nil
-	}(); err != nil {
-		job.mu.Lock()
-		job.Err = err
-		job.mu.Unlock()
-		return
+	stat, err := src.Stat()
+	if err != nil {
+		return err
 	}
+	job.setTotal(stat.Size())
+
+	tmpPath := job.LocalPath + ".tmp"
+	//nolint:gosec // LocalPath is validated to be within the allowed directory by withinDir
+	dst, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = dst.Close()
+		_ = os.Remove(tmpPath) // cleans up partial file if not renamed
+	}()
+
+	if _, err := io.Copy(dst, &progressReader{r: src, ctx: ctx, job: job}); err != nil {
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tmpPath, job.LocalPath)
 }

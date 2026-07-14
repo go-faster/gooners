@@ -100,16 +100,16 @@ func TestTransferSampleUpdateInterval(t *testing.T) {
 	startedAt := time.Unix(100, 0)
 	now := startedAt.Add(time.Second)
 
-	job := &UploadJob{
-		BytesUploaded: 100,
-		StartedAt:     startedAt,
-		LastStatusAt:  now.Add(-100 * time.Millisecond),
-		LastStatus:    50,
+	job := &TransferJob{
+		Bytes:        100,
+		StartedAt:    startedAt,
+		LastStatusAt: now.Add(-100 * time.Millisecond),
+		LastStatus:   50,
 	}
 
 	if job.LastStatusAt.IsZero() || now.Sub(job.LastStatusAt) >= minTransferSampleInterval {
 		job.LastStatusAt = now
-		job.LastStatus = job.BytesUploaded
+		job.LastStatus = job.Bytes
 	}
 
 	if job.LastStatus != 50 {

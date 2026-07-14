@@ -199,6 +199,14 @@ The server's **working directory at launch** becomes the upload root for `upload
 | `download_wait` | Wait for a download to complete |
 | `download_cancel` | Cancel a download |
 
+Every status and wait result carries a `status` of `running`, `completed`, `failed`, or
+`canceled`, plus an `error` when it is not `completed`.
+
+A transfer outlives the session it ran on. If the connection drops mid-upload, the job
+ends as `failed` with the disconnect as its error, and `upload_status` keeps reporting
+that instead of `session not found` — so a poller always learns how the transfer ended.
+Finished jobs stay queryable for an hour.
+
 ## Known hosts setup
 
 If `~/.ssh/known_hosts` does not already contain your target hosts, connect to them once via plain SSH first:

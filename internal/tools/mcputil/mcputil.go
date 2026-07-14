@@ -120,7 +120,9 @@ type UploadStatusResult struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 	ETASeconds      float64 `json:"eta_seconds"`
 	Done            bool    `json:"done"`
-	Error           string  `json:"error,omitempty"`
+	// Status is one of running, completed, failed, canceled.
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 // DownloadResult for download start.
@@ -141,7 +143,9 @@ type DownloadStatusResult struct {
 	DurationSeconds float64 `json:"duration_seconds"`
 	ETASeconds      float64 `json:"eta_seconds"`
 	Done            bool    `json:"done"`
-	Error           string  `json:"error,omitempty"`
+	// Status is one of running, completed, failed, canceled.
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 // PingResult for ssh_ping.
