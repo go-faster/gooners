@@ -119,6 +119,7 @@ type UploadStatusResponse struct {
 	Percent         float64
 	InstantSpeedBPS float64
 	AverageSpeedBPS float64
+	DurationSeconds float64
 	ETASeconds      float64
 	Done            bool
 	Err             error
@@ -177,6 +178,7 @@ type DownloadStatusResponse struct {
 	Percent         float64
 	InstantSpeedBPS float64
 	AverageSpeedBPS float64
+	DurationSeconds float64
 	ETASeconds      float64
 	Done            bool
 	Err             error

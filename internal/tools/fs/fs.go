@@ -543,6 +543,7 @@ func uploadStatusResult(status session.UploadStatusResponse) mcputil.UploadStatu
 		Percent:         status.Percent,
 		InstantSpeedBPS: status.InstantSpeedBPS,
 		AverageSpeedBPS: status.AverageSpeedBPS,
+		DurationSeconds: status.DurationSeconds,
 		ETASeconds:      status.ETASeconds,
 		Done:            status.Done,
 	}
@@ -653,6 +654,7 @@ func downloadStatusResult(status session.DownloadStatusResponse) mcputil.Downloa
 		Percent:         status.Percent,
 		InstantSpeedBPS: status.InstantSpeedBPS,
 		AverageSpeedBPS: status.AverageSpeedBPS,
+		DurationSeconds: status.DurationSeconds,
 		ETASeconds:      status.ETASeconds,
 		Done:            status.Done,
 	}

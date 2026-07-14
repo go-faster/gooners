@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"time"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
@@ -37,6 +38,7 @@ func (pr *poolProgressReader) Read(p []byte) (int, error) {
 func runUpload(ctx context.Context, client *ssh.Client, job *UploadJob) {
 	defer func() {
 		job.mu.Lock()
+		job.FinishedAt = time.Now()
 		job.Done = true
 		job.mu.Unlock()
 		close(job.done)
@@ -113,6 +115,7 @@ func (pr *poolDownloadProgressReader) Read(p []byte) (int, error) {
 func runDownload(ctx context.Context, client *ssh.Client, job *DownloadJob) {
 	defer func() {
 		job.mu.Lock()
+		job.FinishedAt = time.Now()
 		job.Done = true
 		job.mu.Unlock()
 		close(job.done)

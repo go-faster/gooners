@@ -117,6 +117,7 @@ type UploadStatusResult struct {
 	Percent         float64 `json:"percent"`
 	InstantSpeedBPS float64 `json:"instant_speed_bps"`
 	AverageSpeedBPS float64 `json:"average_speed_bps"`
+	DurationSeconds float64 `json:"duration_seconds"`
 	ETASeconds      float64 `json:"eta_seconds"`
 	Done            bool    `json:"done"`
 	Error           string  `json:"error,omitempty"`
@@ -137,6 +138,7 @@ type DownloadStatusResult struct {
 	Percent         float64 `json:"percent"`
 	InstantSpeedBPS float64 `json:"instant_speed_bps"`
 	AverageSpeedBPS float64 `json:"average_speed_bps"`
+	DurationSeconds float64 `json:"duration_seconds"`
 	ETASeconds      float64 `json:"eta_seconds"`
 	Done            bool    `json:"done"`
 	Error           string  `json:"error,omitempty"`

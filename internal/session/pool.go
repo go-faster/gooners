@@ -47,6 +47,7 @@ type UploadJob struct {
 	TotalBytes    int64
 	BytesUploaded int64
 	StartedAt     time.Time
+	FinishedAt    time.Time
 	LastStatusAt  time.Time
 	LastStatus    int64
 	Done          bool
@@ -63,6 +64,7 @@ type DownloadJob struct {
 	TotalBytes      int64
 	BytesDownloaded int64
 	StartedAt       time.Time
+	FinishedAt      time.Time
 	LastStatusAt    time.Time
 	LastStatus      int64
 	Done            bool

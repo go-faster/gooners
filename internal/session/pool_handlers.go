@@ -250,16 +250,17 @@ func uploadStatus(job *UploadJob) UploadStatusResponse {
 	} else if job.Done {
 		percent = 100
 	}
-	instantSpeedBPS, averageSpeedBPS, etaSeconds := transferStats(
+	instantSpeedBPS, averageSpeedBPS, durationSeconds, etaSeconds := transferStats(
 		now,
 		job.StartedAt,
+		job.FinishedAt,
 		job.LastStatusAt,
 		job.LastStatus,
 		job.BytesUploaded,
 		job.TotalBytes,
 		job.Done,
 	)
-	if job.LastStatusAt.IsZero() || now.Sub(job.LastStatusAt) >= minTransferSampleInterval {
+	if !job.Done && (job.LastStatusAt.IsZero() || now.Sub(job.LastStatusAt) >= minTransferSampleInterval) {
 		job.LastStatusAt = now
 		job.LastStatus = job.BytesUploaded
 	}
@@ -270,6 +271,7 @@ func uploadStatus(job *UploadJob) UploadStatusResponse {
 		Percent:         percent,
 		InstantSpeedBPS: instantSpeedBPS,
 		AverageSpeedBPS: averageSpeedBPS,
+		DurationSeconds: durationSeconds,
 		ETASeconds:      etaSeconds,
 		Done:            job.Done,
 		Err:             job.Err,
@@ -329,18 +331,28 @@ func findUploadJob(sessions map[string]*Session, sessionID, uploadID string) (*U
 func transferStats(
 	now time.Time,
 	startedAt time.Time,
+	finishedAt time.Time,
 	lastStatusAt time.Time,
 	lastStatus int64,
 	current int64,
 	total int64,
 	done bool,
-) (instantSpeedBPS, averageSpeedBPS, etaSeconds float64) {
-	if elapsed := now.Sub(startedAt).Seconds(); !done && !startedAt.IsZero() && elapsed > 0 {
+) (instantSpeedBPS, averageSpeedBPS, durationSeconds, etaSeconds float64) {
+	endAt := now
+	if done && !finishedAt.IsZero() {
+		endAt = finishedAt
+	}
+
+	if elapsed := endAt.Sub(startedAt).Seconds(); !startedAt.IsZero() && elapsed > 0 {
+		durationSeconds = elapsed
 		averageSpeedBPS = float64(current) / elapsed
 	}
 
-	if elapsed := now.Sub(lastStatusAt).Seconds(); !done && !lastStatusAt.IsZero() && elapsed > 0 {
+	if elapsed := endAt.Sub(lastStatusAt).Seconds(); !lastStatusAt.IsZero() && elapsed > 0 {
 		instantSpeedBPS = float64(current-lastStatus) / elapsed
+	}
+	if done && instantSpeedBPS == 0 {
+		instantSpeedBPS = averageSpeedBPS
 	}
 
 	remaining := total - current
@@ -348,7 +360,7 @@ func transferStats(
 		etaSeconds = float64(remaining) / averageSpeedBPS
 	}
 
-	return instantSpeedBPS, averageSpeedBPS, etaSeconds
+	return instantSpeedBPS, averageSpeedBPS, durationSeconds, etaSeconds
 }
 
 func (p *Pool) handleDownload(sessions map[string]*Session, r DownloadRequest) {
@@ -396,16 +408,17 @@ func downloadStatus(job *DownloadJob) DownloadStatusResponse {
 	} else if job.Done {
 		percent = 100
 	}
-	instantSpeedBPS, averageSpeedBPS, etaSeconds := transferStats(
+	instantSpeedBPS, averageSpeedBPS, durationSeconds, etaSeconds := transferStats(
 		now,
 		job.StartedAt,
+		job.FinishedAt,
 		job.LastStatusAt,
 		job.LastStatus,
 		job.BytesDownloaded,
 		job.TotalBytes,
 		job.Done,
 	)
-	if job.LastStatusAt.IsZero() || now.Sub(job.LastStatusAt) >= minTransferSampleInterval {
+	if !job.Done && (job.LastStatusAt.IsZero() || now.Sub(job.LastStatusAt) >= minTransferSampleInterval) {
 		job.LastStatusAt = now
 		job.LastStatus = job.BytesDownloaded
 	}
@@ -416,6 +429,7 @@ func downloadStatus(job *DownloadJob) DownloadStatusResponse {
 		Percent:         percent,
 		InstantSpeedBPS: instantSpeedBPS,
 		AverageSpeedBPS: averageSpeedBPS,
+		DurationSeconds: durationSeconds,
 		ETASeconds:      etaSeconds,
 		Done:            job.Done,
 		Err:             job.Err,
