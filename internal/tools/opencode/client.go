@@ -41,7 +41,7 @@ func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 	newHTTPClient := func(t time.Duration) *http.Client {
 		c := &http.Client{Timeout: t}
 		var base http.RoundTripper
-		base = http.DefaultTransport
+		base = http.DefaultTransport.(*http.Transport).Clone()
 		if cfg.Username != "" || cfg.Password != "" {
 			base = &basicAuthTransport{
 				username: cfg.Username,
@@ -52,9 +52,7 @@ func NewClient(cfg Config, timeout time.Duration) (*Client, error) {
 		if cfg.APILogger != nil {
 			base = &loggingTransport{base: base, logger: cfg.APILogger}
 		}
-		if base != http.DefaultTransport {
-			c.Transport = base
-		}
+		c.Transport = base
 		return c
 	}
 
