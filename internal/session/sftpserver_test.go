@@ -30,6 +30,13 @@ type controlConn struct {
 	read   int64
 	base   int64 // read count at the last mark
 	onRead func(c *controlConn, sinceMark int64)
+
+	// hold, while non-nil, withholds everything the server sends.
+	// See [sftpTestServer.holdResponsesBetween].
+	hold     chan struct{}
+	holdFrom int64
+	holdTo   int64
+	holdDone bool
 }
 
 // mark rebases the read counter, so a test can trigger on payload bytes rather than on
@@ -67,6 +74,18 @@ func (c *controlConn) Read(b []byte) (int, error) {
 		c.mu.Lock()
 		c.read += int64(n)
 		since, hook := c.read-c.base, c.onRead
+		if c.holdTo > 0 && !c.holdDone {
+			switch {
+			case since >= c.holdTo:
+				if c.hold != nil {
+					close(c.hold)
+					c.hold = nil
+				}
+				c.holdDone = true
+			case since >= c.holdFrom && c.hold == nil:
+				c.hold = make(chan struct{})
+			}
+		}
 		c.mu.Unlock()
 		if hook != nil {
 			hook(c, since)
@@ -78,6 +97,12 @@ func (c *controlConn) Read(b []byte) (int, error) {
 func (c *controlConn) Write(b []byte) (int, error) {
 	if err := c.gate(); err != nil {
 		return 0, err
+	}
+	c.mu.Lock()
+	hold := c.hold
+	c.mu.Unlock()
+	if hold != nil {
+		<-hold
 	}
 	return c.Conn.Write(b)
 }
@@ -114,9 +139,29 @@ type sftpTestServer struct {
 	// root is the directory transfers land in. Remote paths are absolute.
 	root string
 
-	mu     sync.Mutex
-	conns  []*controlConn
-	onRead func(c *controlConn, total int64)
+	mu       sync.Mutex
+	conns    []*controlConn
+	onRead   func(c *controlConn, sinceMark int64)
+	holdFrom int64
+	holdTo   int64
+}
+
+// holdResponsesBetween makes the server withhold everything it sends — every write
+// acknowledgement included — from the moment it has read `from` payload bytes until it has
+// read `to`.
+//
+// A client that waits for each write to be acknowledged before issuing the next one never
+// gets past its first request, so it wedges and the session dies on the keepalive. A
+// client that pipelines its writes sails straight through. That makes this a check on
+// pipelining that cannot be faked by merely being fast, and needs no timing threshold.
+//
+// `from` must land inside the first write request: the SFTP handshake and file open have
+// to be answered or the transfer never starts at all. `to` must land beyond one write
+// request but within what the SSH channel window lets the client send unacknowledged.
+func (s *sftpTestServer) holdResponsesBetween(from, to int64) {
+	s.mu.Lock()
+	s.holdFrom, s.holdTo = from, to
+	s.mu.Unlock()
 }
 
 func newSFTPTestServer(t *testing.T) *sftpTestServer {
@@ -176,7 +221,7 @@ func (s *sftpTestServer) serve(ln net.Listener, cfg *ssh.ServerConfig) {
 		}
 		c := &controlConn{Conn: conn}
 		s.mu.Lock()
-		c.onRead = s.onRead
+		c.onRead, c.holdFrom, c.holdTo = s.onRead, s.holdFrom, s.holdTo
 		s.conns = append(s.conns, c)
 		s.mu.Unlock()
 		go handleSFTPConn(c, cfg)

@@ -244,6 +244,48 @@ func TestUploadProgressCountsAcknowledgedBytes(t *testing.T) {
 	require.Zero(t, st.Percent)
 }
 
+// TestUploadPipelinesWrites is the throughput guard.
+//
+// sftp only writes concurrently when it can size the source up front, via Len, Size, Stat
+// or io.LimitedReader. Wrap the source in anything that hides those — a progress reader,
+// say — and it quietly drops to one 32KiB request per round trip, which caps an upload at
+// maxPacket/RTT no matter how much bandwidth is available. That is invisible on a fast
+// link and ruinous on a slow one, and no correctness test would catch it.
+//
+// So: the server withholds every acknowledgement until it has read more than one request
+// off the wire. Only a client with several writes in flight can get there.
+func TestUploadPipelinesWrites(t *testing.T) {
+	skipUnsupported(t)
+
+	const size = 4 << 20
+
+	srv := newSFTPTestServer(t)
+	// Start withholding inside the first write request, and release only past it. A serial
+	// client stops at that one request and never gets there.
+	srv.holdResponsesBetween(uploadChunkSize/4, uploadChunkSize+uploadChunkSize/4)
+
+	dl := newDisconnectLog()
+	p, sessionID := startTransferPool(t, srv, dl)
+
+	local := newSparseFile(t, size)
+	remote := filepath.Join(srv.root, "out.bin")
+
+	uploadID, err := p.Upload(t.Context(), sessionID, local, remote)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), waitBudget)
+	defer cancel()
+
+	st, err := p.UploadWait(ctx, sessionID, uploadID)
+	require.NoError(t, err, "upload must keep several writes in flight, not wait for each acknowledgement")
+	require.Equal(t, TransferCompleted, st.Status)
+	require.Equal(t, int64(size), st.BytesUploaded)
+
+	uploaded, err := os.Stat(remote)
+	require.NoError(t, err)
+	require.Equal(t, int64(size), uploaded.Size())
+}
+
 // TestUploadCompletedThenConnectionKilled covers a transfer that finishes and only then
 // loses its connection. The success must survive the session it was made on.
 func TestUploadCompletedThenConnectionKilled(t *testing.T) {
