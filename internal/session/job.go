@@ -168,21 +168,3 @@ func (j *TransferJob) finishedAt() time.Time {
 	}
 	return j.FinishedAt
 }
-
-// progressReader counts bytes pulled from the source and aborts the read when the job's
-// context is canceled. It only covers the read side; see [TransferJob.abort] for the
-// write side.
-type progressReader struct {
-	r   io.Reader
-	ctx context.Context
-	job *TransferJob
-}
-
-func (pr *progressReader) Read(p []byte) (int, error) {
-	if err := pr.ctx.Err(); err != nil {
-		return 0, context.Cause(pr.ctx)
-	}
-	n, err := pr.r.Read(p)
-	pr.job.add(int64(n))
-	return n, err
-}

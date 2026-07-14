@@ -36,7 +36,7 @@ func upload(ctx context.Context, client *ssh.Client, job *TransferJob) error {
 	}
 	job.setTotal(stat.Size())
 
-	sftpClient, err := sftp.NewClient(client, sftp.UseConcurrentWrites(true))
+	sftpClient, err := sftp.NewClient(client, sftp.MaxPacket(uploadChunkSize))
 	if err != nil {
 		return err
 	}
@@ -52,7 +52,7 @@ func upload(ctx context.Context, client *ssh.Client, job *TransferJob) error {
 		return err
 	}
 
-	if _, err := io.Copy(dst, &progressReader{r: src, ctx: ctx, job: job}); err != nil {
+	if err := copyToRemote(ctx, dst, src, job); err != nil {
 		_ = dst.Close()
 		_ = sftpClient.Remove(job.RemotePath)
 		return err
@@ -106,7 +106,10 @@ func download(ctx context.Context, client *ssh.Client, job *TransferJob) error {
 		_ = os.Remove(tmpPath) // cleans up partial file if not renamed
 	}()
 
-	if _, err := io.Copy(dst, &progressReader{r: src, ctx: ctx, job: job}); err != nil {
+	// Copy from the remote file directly, so io.Copy takes its WriteTo path and reads
+	// concurrently. Wrapping src in a reader instead would hide WriteTo and serialize the
+	// whole download.
+	if _, err := io.Copy(&progressWriter{w: dst, ctx: ctx, job: job}, src); err != nil {
 		return err
 	}
 	if err := dst.Close(); err != nil {

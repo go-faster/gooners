@@ -28,7 +28,16 @@ type controlConn struct {
 	stall  chan struct{} // non-nil while stalled; closed on kill
 	killed bool
 	read   int64
-	onRead func(c *controlConn, total int64)
+	base   int64 // read count at the last mark
+	onRead func(c *controlConn, sinceMark int64)
+}
+
+// mark rebases the read counter, so a test can trigger on payload bytes rather than on
+// whatever the SSH and SFTP handshakes happen to cost.
+func (c *controlConn) mark() {
+	c.mu.Lock()
+	c.base = c.read
+	c.mu.Unlock()
 }
 
 // gate blocks while the connection is stalled and fails once it is killed.
@@ -57,10 +66,10 @@ func (c *controlConn) Read(b []byte) (int, error) {
 	if n > 0 {
 		c.mu.Lock()
 		c.read += int64(n)
-		total, hook := c.read, c.onRead
+		since, hook := c.read-c.base, c.onRead
 		c.mu.Unlock()
 		if hook != nil {
-			hook(c, total)
+			hook(c, since)
 		}
 	}
 	return n, err
@@ -134,14 +143,15 @@ func newSFTPTestServer(t *testing.T) *sftpTestServer {
 	return s
 }
 
-// afterBytes runs fn once the server has read n bytes from a client, which for a
-// transfer in progress means "partway through". It must be set before connecting.
+// afterBytes runs fn once the server has read n payload bytes — counted from the moment
+// the SFTP subsystem starts, so n is transfer data rather than handshake. For a transfer
+// in progress that means "partway through". It must be set before connecting.
 func (s *sftpTestServer) afterBytes(n int64, fn func(c *controlConn)) {
 	var once sync.Once
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.onRead = func(c *controlConn, total int64) {
-		if total >= n {
+	s.onRead = func(c *controlConn, sinceMark int64) {
+		if sinceMark >= n {
 			once.Do(func() { fn(c) })
 		}
 	}
@@ -173,7 +183,7 @@ func (s *sftpTestServer) serve(ln net.Listener, cfg *ssh.ServerConfig) {
 	}
 }
 
-func handleSFTPConn(conn net.Conn, cfg *ssh.ServerConfig) {
+func handleSFTPConn(conn *controlConn, cfg *ssh.ServerConfig) {
 	sc, chans, reqs, err := ssh.NewServerConn(conn, cfg)
 	if err != nil {
 		return
@@ -190,11 +200,11 @@ func handleSFTPConn(conn net.Conn, cfg *ssh.ServerConfig) {
 		if err != nil {
 			continue
 		}
-		go serveSFTPSubsystem(ch, chReqs)
+		go serveSFTPSubsystem(conn, ch, chReqs)
 	}
 }
 
-func serveSFTPSubsystem(ch ssh.Channel, reqs <-chan *ssh.Request) {
+func serveSFTPSubsystem(conn *controlConn, ch ssh.Channel, reqs <-chan *ssh.Request) {
 	defer func() { _ = ch.Close() }()
 
 	for req := range reqs {
@@ -204,6 +214,7 @@ func serveSFTPSubsystem(ch ssh.Channel, reqs <-chan *ssh.Request) {
 			continue
 		}
 		_ = req.Reply(true, nil)
+		conn.mark() // everything from here on is SFTP traffic
 
 		srv, err := sftp.NewServer(ch)
 		if err != nil {

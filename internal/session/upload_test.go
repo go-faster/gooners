@@ -208,6 +208,42 @@ func TestUploadCancelWhileStalled(t *testing.T) {
 	require.ErrorIs(t, err, ErrTransferCanceled)
 }
 
+// TestUploadProgressCountsAcknowledgedBytes pins progress to bytes the server confirmed.
+//
+// The file is one write request, small enough to sit entirely in the connection's window,
+// and the server stalls partway into that request so it never acknowledges any of it. A
+// count taken on the read side sees the whole file leave the local disk and reports 100%
+// for an upload that landed nothing.
+func TestUploadProgressCountsAcknowledgedBytes(t *testing.T) {
+	skipUnsupported(t)
+
+	const size = uploadChunkSize
+
+	srv := newSFTPTestServer(t)
+	srv.afterBytes(size/8, (*controlConn).Stall)
+
+	dl := newDisconnectLog()
+	p, sessionID := startTransferPool(t, srv, dl)
+
+	local := newSparseFile(t, size)
+	remote := filepath.Join(srv.root, "out.bin")
+
+	uploadID, err := p.Upload(t.Context(), sessionID, local, remote)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(t.Context(), waitBudget)
+	defer cancel()
+
+	st, err := p.UploadWait(ctx, sessionID, uploadID)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, context.DeadlineExceeded)
+	require.Equal(t, TransferFailed, st.Status)
+
+	require.Equal(t, int64(size), st.TotalBytes)
+	require.Zero(t, st.BytesUploaded, "no write was acknowledged, so no progress may be claimed")
+	require.Zero(t, st.Percent)
+}
+
 // TestUploadCompletedThenConnectionKilled covers a transfer that finishes and only then
 // loses its connection. The success must survive the session it was made on.
 func TestUploadCompletedThenConnectionKilled(t *testing.T) {
