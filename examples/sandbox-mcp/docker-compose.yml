@@ -1,0 +1,23 @@
+services:
+  sandbox-mcp:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: sandbox-mcp
+    entrypoint: ["sandbox-mcp"]
+    command: ["-transport", "streamable-http", "-addr", ":8083"]
+    ports:
+      - "8083:8083"
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      # Docker socket: sandbox-mcp itself needs this to create/destroy
+      # sandbox containers on the host's daemon. NEVER mount this socket
+      # into a *sandbox* container - only into sandbox-mcp.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Per-architecture sandbox-agent binaries, laid out as
+      # <dir>/<arch>/sandbox-agent. Build them first, e.g.:
+      #   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+      #     go build -o agent-bin/amd64/sandbox-agent ../../cmd/sandbox-agent
+      - ./agent-bin:/usr/local/libexec/gooners/sandbox-agent:ro
+    restart: unless-stopped

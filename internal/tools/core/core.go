@@ -54,64 +54,127 @@ func (opts *RegisterOptions) logger() *slog.Logger {
 	return opts.Logger
 }
 
+// Register bundles every core tool onto s. ssh-mcp uses this directly; other
+// binaries (e.g. sandbox-mcp) that must expose only a subset compose the
+// RegisterXxx functions below instead — see the package-level doc comment for
+// which tools are safe to omit and why.
 func Register(s *mcp.Server, p *session.Pool, opts RegisterOptions) {
+	logger := opts.logger()
+
+	RegisterOpen(s, p, opts.Passwords, logger)
+	RegisterOpenCfg(s, p, logger)
+	RegisterClose(s, p)
+	RegisterList(s, p)
+	RegisterListMachines(s)
+	RegisterExec(s, p, logger)
+	if !opts.DisableSudo {
+		RegisterSudoExec(s, p, opts.Passwords, logger)
+	}
+	RegisterOnceExec(s, p)
+	RegisterPing(s, p)
+	RegisterReadOutput(s, p)
+	RegisterSaveOutput(s, p)
+}
+
+// RegisterOpen registers ssh_open. It lets an agent connect to any host
+// reachable from the server process; omit it when that must not be possible
+// (e.g. from inside a sandbox).
+func RegisterOpen(s *mcp.Server, p *session.Pool, passwords PasswordProvider, logger *slog.Logger) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_open",
 		Description: "Open SSH connection using defaults from ~/.ssh/config and keys. Falls back to a server-level password source if configured.",
-	}, openHandler(p, opts.Passwords, opts.logger()))
+	}, openHandler(p, passwords, logger))
+}
 
+// RegisterOpenCfg registers ssh_open_cfg. See [RegisterOpen] for why it may
+// need to be omitted.
+func RegisterOpenCfg(s *mcp.Server, p *session.Pool, logger *slog.Logger) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_open_cfg",
 		Description: "Open SSH connection with explicit parameters.",
-	}, openCfgHandler(p, opts.logger()))
+	}, openCfgHandler(p, logger))
+}
 
+// RegisterClose registers ssh_close.
+func RegisterClose(s *mcp.Server, p *session.Pool) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_close",
 		Description: "Close an open SSH session.",
 		Flags:       mcputil.Destructive,
 	}, closeHandler(p))
+}
 
+// RegisterList registers ssh_list. It returns every session in the process
+// to every caller; omit it wherever callers must not see each other's
+// sessions (e.g. capability-token isolation behind a shared upstream).
+func RegisterList(s *mcp.Server, p *session.Pool) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_list",
 		Description: "List all currently open SSH sessions.",
 		Flags:       mcputil.ReadOnly,
 	}, listHandler(p))
+}
 
+// RegisterListMachines registers ssh_list_machines.
+func RegisterListMachines(s *mcp.Server) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_list_machines",
 		Description: "List known machines from ~/.ssh/config (and Includes). Returns only connection name and username.",
 		Flags:       mcputil.ReadOnly,
 	}, listMachinesHandler())
+}
 
+// RegisterExec registers ssh_exec.
+func RegisterExec(s *mcp.Server, p *session.Pool, logger *slog.Logger) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_exec",
 		Description: "Execute a command on an open SSH session. Prefer specialized tools (cat, grep, find, ls, stat, du, proc_list, etc.) over this when they cover the task.",
-	}, execHandler(p, false, nil, opts.logger()))
+	}, execHandler(p, false, nil, logger))
+}
 
-	if !opts.DisableSudo {
-		mcputil.Register(s, mcputil.ToolDef{
-			Name:        "ssh_sudo_exec",
-			Description: "Execute a command with sudo on an open SSH session. Prefer specialized tools when they cover the task; use this only when elevated privileges are required. If sudo requires a password, pass it via sudo_password or configure a server-level source (-password-file/-env/-config/-cmd). Otherwise uses sudo -n.",
-		}, execHandler(p, true, opts.Passwords, opts.logger()))
-	}
+// RegisterSudoExec registers ssh_sudo_exec.
+func RegisterSudoExec(s *mcp.Server, p *session.Pool, passwords PasswordProvider, logger *slog.Logger) {
+	mcputil.Register(s, mcputil.ToolDef{
+		Name:        "ssh_sudo_exec",
+		Description: "Execute a command with sudo on an open SSH session. Prefer specialized tools when they cover the task; use this only when elevated privileges are required. If sudo requires a password, pass it via sudo_password or configure a server-level source (-password-file/-env/-config/-cmd). Otherwise uses sudo -n.",
+	}, execHandler(p, true, passwords, logger))
+}
 
+// RegisterOnceExec registers ssh_once_exec. See [RegisterOpen] for why it may
+// need to be omitted.
+func RegisterOnceExec(s *mcp.Server, p *session.Pool) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_once_exec",
 		Description: "Open a temporary SSH session, run one command, then close it. Prefer specialized tools (cat, grep, find, ls, stat, du, proc_list, etc.) over this when they cover the task.",
 	}, onceHandler(p))
+}
 
+// RegisterPing registers ssh_ping.
+func RegisterPing(s *mcp.Server, p *session.Pool) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_ping",
 		Description: "Check if an SSH session is alive by sending a keepalive ping.",
 		Flags:       mcputil.ReadOnly,
 	}, pingHandler(p))
+}
 
+// RegisterReadOutput registers ssh_read_output.
+func RegisterReadOutput(s *mcp.Server, p *session.Pool) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_read_output",
 		Description: "Read the content of a truncated execution output spool file.",
 		Flags:       mcputil.ReadOnly,
 	}, readOutputHandler(p))
+}
 
+// RegisterSaveOutput registers ssh_save_output.
+//
+// The destination is confined by the pool's [session.PoolOptions.LocalFS], not
+// by anything this function is passed. That is the point: the tool used to take
+// its own confinement root, and shipped with it unset, so a caller could write
+// spool content to any host path (~/.ssh/authorized_keys). A root a caller can
+// forget to pass is not a boundary.
+func RegisterSaveOutput(s *mcp.Server, p *session.Pool) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "ssh_save_output",
 		Description: "Move/save a truncated execution output spool file to a persistent local file path. Note: this consumes and invalidates the spool ID.",
@@ -158,7 +221,7 @@ func openHandler(p corePool, passwords PasswordProvider, logger *slog.Logger) mc
 			return nil, mcputil.SessionResult{}, err
 		}
 		logger.Info("opened SSH session", "machine", args.Machine, "session_id", res.ID)
-		return nil, mcputil.SessionResult{SessionID: res.ID, UserAgent: res.UserAgent, Banner: res.Banner, Platform: res.Platform}, nil
+		return nil, mcputil.SessionResult{SessionID: res.ID, Label: res.Label, UserAgent: res.UserAgent, Banner: res.Banner, Platform: res.Platform}, nil
 	}
 }
 
@@ -205,6 +268,7 @@ func openCfgHandler(p corePool, logger *slog.Logger) mcp.ToolHandlerFor[openCfgP
 
 		result := mcputil.SessionResult{
 			SessionID: res.ID,
+			Label:     res.Label,
 			UserAgent: res.UserAgent,
 			Banner:    res.Banner,
 			Platform:  res.Platform,
@@ -222,7 +286,9 @@ func closeHandler(p corePool) mcp.ToolHandlerFor[closeParams, mcputil.SuccessRes
 		if args.SessionID == "" {
 			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id is required")
 		}
-		_ = p.Close(ctx, args.SessionID)
+		if err := p.Close(ctx, args.SessionID); err != nil {
+			return nil, mcputil.SuccessResult{}, err
+		}
 		return nil, mcputil.SuccessResult{OK: true}, nil
 	}
 }

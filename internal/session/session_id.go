@@ -2,21 +2,48 @@ package session
 
 import (
 	"crypto/rand"
+	"encoding/base32"
 	"fmt"
 	"math/big"
 	"strings"
 	"time"
 )
 
+// generateSessionID returns an opaque session ID: a display slug plus 64 bits
+// of crypto/rand. It doubles as a capability token (the isolation boundary
+// for sandboxes), so unlike [generateSessionLabel] it must be hard to guess.
+// The signature (and the sessions map argument) is kept stable so callers
+// don't need to change: the map is only consulted to retry on the
+// astronomically unlikely event of a collision.
 func generateSessionID(machine string, sessions map[string]*Session) string {
 	slug := machineSlug(machine)
 	for range 100 {
-		id := fmt.Sprintf("%s-%s-%s", slug, randomAdjective(), randomSurname())
+		id := slug + "-" + randomToken()
 		if _, ok := sessions[id]; !ok {
 			return id
 		}
 	}
-	return fmt.Sprintf("%s-%d", slug, time.Now().UnixNano())
+	// Unreachable outside an astronomically unlikely run of collisions. The
+	// fallback must still be an unguessable token, never a predictable value
+	// like a timestamp, since the ID is a capability token.
+	return slug + "-" + randomToken() + randomToken()
+}
+
+// generateSessionLabel returns a friendly, display-only name for machine.
+// Unlike the session ID, it is not a capability token: it is not unique and
+// must never be used to authorize access to a session.
+func generateSessionLabel(machine string) string {
+	return fmt.Sprintf("%s-%s-%s", machineSlug(machine), randomAdjective(), randomSurname())
+}
+
+var tokenEncoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+// randomToken returns 64 bits of crypto/rand encoded as lowercase, unpadded base32.
+func randomToken() string {
+	var b [8]byte
+	// crypto/rand.Read never returns an error on supported platforms.
+	_, _ = rand.Read(b[:])
+	return strings.ToLower(tokenEncoding.EncodeToString(b[:]))
 }
 
 var adjectives = []string{

@@ -1,0 +1,114 @@
+{
+  "Config": {
+    "Hostname": "",
+    "Domainname": "",
+    "User": "1000:1000",
+    "AttachStdin": false,
+    "AttachStdout": false,
+    "AttachStderr": false,
+    "Tty": false,
+    "OpenStdin": false,
+    "StdinOnce": false,
+    "Env": [
+      "A_VAR=1",
+      "B_VAR=2"
+    ],
+    "Cmd": [
+      "sh",
+      "-c",
+      "while true; do sleep 3600; done"
+    ],
+    "Image": "python:3.12-slim",
+    "Volumes": null,
+    "WorkingDir": "/work",
+    "Entrypoint": [],
+    "Labels": {
+      "dev.gooners.deployment": "test-deployment",
+      "dev.gooners.instance": "instance-1",
+      "dev.gooners.sandbox": "true",
+      "dev.gooners.session": "session-1"
+    }
+  },
+  "HostConfig": {
+    "Binds": null,
+    "ContainerIDFile": "",
+    "LogConfig": {
+      "Type": "",
+      "Config": null
+    },
+    "NetworkMode": "bridge",
+    "PortBindings": null,
+    "RestartPolicy": {
+      "Name": "",
+      "MaximumRetryCount": 0
+    },
+    "AutoRemove": true,
+    "VolumeDriver": "",
+    "VolumesFrom": null,
+    "ConsoleSize": [
+      0,
+      0
+    ],
+    "CapAdd": null,
+    "CapDrop": [
+      "ALL"
+    ],
+    "CgroupnsMode": "",
+    "Dns": null,
+    "DnsOptions": null,
+    "DnsSearch": null,
+    "ExtraHosts": null,
+    "GroupAdd": null,
+    "IpcMode": "",
+    "Cgroup": "",
+    "Links": null,
+    "OomScoreAdj": 0,
+    "PidMode": "",
+    "Privileged": false,
+    "PublishAllPorts": false,
+    "ReadonlyRootfs": false,
+    "SecurityOpt": [
+      "no-new-privileges:true"
+    ],
+    "UTSMode": "",
+    "UsernsMode": "",
+    "ShmSize": 0,
+    "Runtime": "runsc",
+    "Isolation": "",
+    "CpuShares": 0,
+    "Memory": 1073741824,
+    "NanoCpus": 2000000000,
+    "CgroupParent": "",
+    "BlkioWeight": 0,
+    "BlkioWeightDevice": null,
+    "BlkioDeviceReadBps": null,
+    "BlkioDeviceWriteBps": null,
+    "BlkioDeviceReadIOps": null,
+    "BlkioDeviceWriteIOps": null,
+    "CpuPeriod": 0,
+    "CpuQuota": 0,
+    "CpuRealtimePeriod": 0,
+    "CpuRealtimeRuntime": 0,
+    "CpusetCpus": "",
+    "CpusetMems": "",
+    "Devices": null,
+    "DeviceCgroupRules": null,
+    "DeviceRequests": null,
+    "MemoryReservation": 0,
+    "MemorySwap": 0,
+    "MemorySwappiness": null,
+    "OomKillDisable": null,
+    "PidsLimit": 512,
+    "Ulimits": null,
+    "CpuCount": 0,
+    "CpuPercent": 0,
+    "IOMaximumIOps": 0,
+    "IOMaximumBandwidth": 0,
+    "MaskedPaths": null,
+    "ReadonlyPaths": null
+  },
+  "NetworkingConfig": null,
+  "Platform": null,
+  "Name": "",
+  "Image": ""
+}

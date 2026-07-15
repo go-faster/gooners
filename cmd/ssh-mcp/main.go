@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/effect"
@@ -117,8 +118,6 @@ func main() {
 			mcputil.BroadcastWarning(s, "ssh-mcp", fmt.Sprintf("SSH session to %s disconnected: %v", machine, err))
 		},
 	})
-	go pool.RunLoop(ctx)
-
 	logger.Debug("registering MCP tools")
 	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
 	if *disableSpecializedTools {
@@ -132,11 +131,19 @@ func main() {
 	}
 	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "disable_specialized_tools", *disableSpecializedTools, "upload_root", uploadRoot)
 
-	if err := transport.Run(ctx, cmdutil.RunOptions{
-		Name:   "ssh-mcp",
-		Server: s,
-		Logger: logger.With("component", "transport"),
-	}); err != nil {
+	// Run the pool's background loop and the transport together so shutdown
+	// waits for the pool to actually finish tearing down instead of letting
+	// main exit while it is still mid-teardown.
+	g, gCtx := errgroup.WithContext(ctx)
+	g.Go(func() error { pool.RunLoop(gCtx); return nil })
+	g.Go(func() error {
+		return transport.Run(gCtx, cmdutil.RunOptions{
+			Name:   "ssh-mcp",
+			Server: s,
+			Logger: logger.With("component", "transport"),
+		})
+	})
+	if err := g.Wait(); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}

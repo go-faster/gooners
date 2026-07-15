@@ -29,7 +29,7 @@ func newSpoolPool(t *testing.T, localFS effect.FS, content string) (pool *Pool, 
 	go p.RunLoop(ctx)
 
 	srv := newTestServer(t)
-	res, err := p.OpenCfg(ctx, dialInsecure(t, srv.addr))
+	res, err := p.Adopt(ctx, AdoptRequest{Machine: "test", Client: dialTestClient(t, srv.addr)})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = p.Close(context.Background(), res.ID) })
 

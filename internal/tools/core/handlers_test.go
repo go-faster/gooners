@@ -231,6 +231,40 @@ func TestOnceHandler_ClosesSession(t *testing.T) {
 	require.True(t, closed)
 }
 
+func TestOpenHandler_Label(t *testing.T) {
+	p := mockCorePool{open: func(_ context.Context, machine string) (session.OpenResult, error) {
+		require.Equal(t, "host", machine)
+		return session.OpenResult{ID: "session-1", Label: "host-brave-hopper"}, nil
+	}}
+
+	_, out, err := openHandler(p, nil, slog.Default())(context.Background(), &mcp.CallToolRequest{}, openParams{Machine: "host"})
+	require.NoError(t, err)
+	require.Equal(t, "session-1", out.SessionID)
+	require.Equal(t, "host-brave-hopper", out.Label)
+}
+
+func TestCloseHandler_ReturnsError(t *testing.T) {
+	p := mockCorePool{close: func(_ context.Context, id string) error {
+		require.Equal(t, "session-1", id)
+		return fmt.Errorf("boom")
+	}}
+
+	_, out, err := closeHandler(p)(context.Background(), &mcp.CallToolRequest{}, closeParams{SessionID: "session-1"})
+	require.ErrorContains(t, err, "boom")
+	require.False(t, out.OK)
+}
+
+func TestCloseHandler_Success(t *testing.T) {
+	p := mockCorePool{close: func(_ context.Context, id string) error {
+		require.Equal(t, "session-1", id)
+		return nil
+	}}
+
+	_, out, err := closeHandler(p)(context.Background(), &mcp.CallToolRequest{}, closeParams{SessionID: "session-1"})
+	require.NoError(t, err)
+	require.True(t, out.OK)
+}
+
 func TestPingHandler(t *testing.T) {
 	p := mockCorePool{ping: func(_ context.Context, id string) (time.Duration, error) {
 		require.Equal(t, "session-1", id)

@@ -209,7 +209,6 @@ func (c Config) dial() (client *ssh.Client, userAgent, banner string, err error)
 				c.logger().Debug("ssh tcp dial timeout/error", "machine", c.Machine, "addr", tcpAddr, "timeout", cc.Timeout, "err", err)
 				return nil, "", "", err
 			}
-			enableTCPKeepalive(conn)
 			var (
 				ncc   ssh.Conn
 				chans <-chan ssh.NewChannel
@@ -355,9 +354,8 @@ func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, ho
 		close(done)
 	}()
 
-	interval := time.Duration(secs) * time.Second
 	go func() {
-		t := time.NewTicker(interval)
+		t := time.NewTicker(time.Duration(secs) * time.Second)
 		defer t.Stop()
 		fails := 0
 		for {
@@ -365,9 +363,7 @@ func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, ho
 			case <-done:
 				return
 			case <-t.C:
-				// Bounded: SendRequest never returns on a stalled connection, and an
-				// unbounded probe would keep this loop from ever noticing the failure.
-				err := sendKeepalive(client, interval)
+				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
 				if err != nil {
 					fails++
 					logger.Debug("ssh keepalive failed", "alias", alias, "fails", fails, "max", maxCount, "err", err)
@@ -382,38 +378,6 @@ func startKeepalive(client *ssh.Client, cfg *gosshconfig.UserSettings, alias, ho
 			}
 		}
 	}()
-}
-
-// enableTCPKeepalive asks the OS to probe the peer, so a link that dies without a FIN
-// or RST eventually surfaces as a read error instead of hanging a transfer forever.
-func enableTCPKeepalive(conn net.Conn) {
-	tcp, ok := conn.(*net.TCPConn)
-	if !ok {
-		return
-	}
-	_ = tcp.SetKeepAliveConfig(net.KeepAliveConfig{
-		Enable:   true,
-		Idle:     30 * time.Second,
-		Interval: 10 * time.Second,
-		Count:    3,
-	})
-}
-
-// sendKeepalive sends an OpenSSH keepalive request, failing after timeout.
-func sendKeepalive(client *ssh.Client, timeout time.Duration) error {
-	errCh := make(chan error, 1)
-	go func() {
-		_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
-		errCh <- err
-	}()
-	t := time.NewTimer(timeout)
-	defer t.Stop()
-	select {
-	case err := <-errCh:
-		return err
-	case <-t.C:
-		return fmt.Errorf("keepalive timed out after %s", timeout)
-	}
 }
 
 // dialProxyCommand executes command (with %h/%p/%r/%% tokens expanded) and
