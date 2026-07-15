@@ -11,6 +11,8 @@ import (
 	"github.com/grafana/grafana-foundation-sdk/go/dashboard"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/go-faster/gooners/internal/effect"
 )
 
 func TestBuildPanel(t *testing.T) {
@@ -105,7 +107,7 @@ func TestExportDashboard(t *testing.T) {
 	sm.Add(s)
 
 	outPath := filepath.Join(tempDir, "out.json")
-	handler := exportDashboardHandler(sm, nil)
+	handler := exportDashboardHandler(sm, nil, effect.Root(tempDir))
 	_, res, err := handler(context.Background(), nil, ExportDashboardReq{
 		DashboardID: "dash-123",
 		Save:        false,

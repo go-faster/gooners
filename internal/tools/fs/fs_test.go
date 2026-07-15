@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/go-faster/gooners/internal/tools/mcputil"
@@ -22,6 +22,17 @@ import (
 type dummyPool struct {
 	client  *ssh.Client
 	sftpErr error
+	// localFS mirrors the real pool: local paths from a tool call are read and
+	// written through it, so it — not the handler — decides what is reachable.
+	// Nil denies everything, as a pool with no LocalFS configured does.
+	localFS effect.FS
+}
+
+func (p *dummyPool) fs() effect.FS {
+	if p.localFS == nil {
+		return effect.Deny("host file access is not configured for this server")
+	}
+	return p.localFS
 }
 
 func (p *dummyPool) Get(ctx context.Context, id string) (*ssh.Client, error) {
@@ -47,9 +58,14 @@ func (p *dummyPool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {
 }
 
 func (p *dummyPool) Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error) {
-	data, err := os.ReadFile(localPath)
-	if err == nil {
-		_ = os.WriteFile(remotePath, data, 0o644)
+	data, err := p.fs().ReadFile(localPath)
+	if err != nil {
+		return "", err
+	}
+	// remotePath stands in for the far side of the SSH connection, which the
+	// local filesystem provider has no say over.
+	if err := os.WriteFile(remotePath, data, 0o600); err != nil {
+		return "", err
 	}
 	return "upload-123", nil
 }
@@ -73,9 +89,12 @@ func (p *dummyPool) UploadCancel(ctx context.Context, sessionID, uploadID string
 }
 
 func (p *dummyPool) Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error) {
-	data, err := os.ReadFile(remotePath)
-	if err == nil {
-		_ = os.WriteFile(localPath, data, 0o644)
+	data, err := os.ReadFile(remotePath) // the "remote" side; see Upload.
+	if err != nil {
+		return "", err
+	}
+	if err := p.fs().WriteFile(localPath, data, 0o600); err != nil {
+		return "", err
 	}
 	return "download-123", nil
 }
@@ -359,7 +378,7 @@ func TestUploadFileHandler_Security(t *testing.T) {
 	defer cleanup()
 
 	tmpRoot := t.TempDir()
-	handler := uploadFileHandler(&dummyPool{client: client}, tmpRoot)
+	handler := uploadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)})
 
 	// Create a file OUTSIDE the allowed root
 	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
@@ -383,61 +402,6 @@ func TestUploadFileHandler_Security(t *testing.T) {
 	})
 	require.Error(t, err, "expected error due to relative path traversal")
 	require.Nil(t, res)
-}
-
-// Retain TestWithinDir at the bottom
-func TestWithinDir(t *testing.T) {
-	root, err := filepath.Abs(filepath.Join(os.TempDir(), "gooners_test_root"))
-	require.NoError(t, err)
-
-	tests := []struct {
-		name    string
-		path    string
-		wantErr bool
-	}{
-		{
-			name:    "normal inside",
-			path:    filepath.Join(root, "foo.txt"),
-			wantErr: false,
-		},
-		{
-			name:    "nested inside",
-			path:    filepath.Join(root, "dir", "foo.txt"),
-			wantErr: false,
-		},
-		{
-			name:    "directory traversal outside",
-			path:    filepath.Join(root, "..", "foo.txt"),
-			wantErr: true,
-		},
-		{
-			name:    "directory traversal with tricky name",
-			path:    filepath.Join(root, "dir", "..", "..", "foo.txt"),
-			wantErr: true,
-		},
-		{
-			name:    "absolute outside",
-			path:    "/etc/passwd",
-			wantErr: true,
-		},
-		{
-			name:    "just root",
-			path:    root,
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := WithinDir(root, tt.path)
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			require.True(t, strings.HasPrefix(got, root), "withinDir() got = %v, must be within %v", got, root)
-		})
-	}
 }
 
 func TestUploadStatusHandler(t *testing.T) {
@@ -475,7 +439,7 @@ func TestDownloadFileHandler(t *testing.T) {
 	defer cleanup()
 
 	tmpRoot := t.TempDir()
-	handler := downloadFileHandler(&dummyPool{client: client}, tmpRoot)
+	handler := downloadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)})
 
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
 	require.NoError(t, os.WriteFile(remotePath, []byte("remote content"), 0o644))
@@ -506,7 +470,7 @@ func TestDownloadFileHandler_Security(t *testing.T) {
 	defer cleanup()
 
 	tmpRoot := t.TempDir()
-	handler := downloadFileHandler(&dummyPool{client: client}, tmpRoot)
+	handler := downloadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)})
 
 	// Try to download OUTSIDE the allowed root
 	outsideFile := filepath.Join(t.TempDir(), "outside.txt")

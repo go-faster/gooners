@@ -25,26 +25,6 @@ const (
 	maxGrepLines = 10_000
 )
 
-// WithinDir resolves p to an absolute path and verifies it is inside root.
-func WithinDir(root, p string) (string, error) {
-	root, err := filepath.Abs(root)
-	if err != nil {
-		return "", fmt.Errorf("resolving root: %w", err)
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return "", fmt.Errorf("resolving path: %w", err)
-	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil {
-		return "", fmt.Errorf("resolving relative path: %w", err)
-	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("path %q is outside allowed upload directory %q", p, root)
-	}
-	return abs, nil
-}
-
 type SessionProvider interface {
 	Get(ctx context.Context, id string) (*ssh.Client, error)
 	SFTP(ctx context.Context, id string) (*sftp.Client, error)
@@ -60,7 +40,7 @@ type SessionProvider interface {
 	RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
 }
 
-func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
+func Register(s *mcp.Server, p SessionProvider) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "ls", Description: "List directory contents on remote machine using SFTP (returns JSON) with shell fallback.", Flags: mcputil.ReadOnly}, lsHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "cat", Description: "Read file contents (truncated) from remote using SFTP with shell fallback.", Flags: mcputil.ReadOnly}, catHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "grep", Description: "Search file contents on remote.", Flags: mcputil.ReadOnly}, grepHandler(p))
@@ -69,15 +49,20 @@ func Register(s *mcp.Server, p SessionProvider, uploadRoot string) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "du", Description: "Get directory or file size (disk usage).", Flags: mcputil.ReadOnly}, duHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "truncate", Description: "Truncate file to given size on remote via SFTP.", Flags: mcputil.Destructive}, truncateHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP.", Flags: mcputil.Destructive}, writeFileHandler(p))
-	RegisterFileTransfer(s, p, uploadRoot)
+	RegisterFileTransfer(s, p)
 }
 
-func RegisterFileTransfer(s *mcp.Server, p SessionProvider, uploadRoot string) {
-	mcputil.Register(s, mcputil.ToolDef{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Local path must be within the server's working directory. Returns an upload_id."}, uploadFileHandler(p, uploadRoot))
+// RegisterFileTransfer registers upload_file/download_file and their status
+// tools. Which local paths they may touch is the pool's
+// [session.PoolOptions.LocalFS], not an argument here — a server that grants no
+// host file access gets tools that fail closed rather than tools that need a
+// root passed correctly.
+func RegisterFileTransfer(s *mcp.Server, p SessionProvider) {
+	mcputil.Register(s, mcputil.ToolDef{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Local path must be within the server's working directory. Returns an upload_id."}, uploadFileHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_status", Description: "Check the status of an asynchronous file upload.", Flags: mcputil.ReadOnly}, uploadStatusHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_wait", Description: "Wait for an asynchronous file upload to complete and return its final status.", Flags: mcputil.ReadOnly}, uploadWaitHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_cancel", Description: "Cancel an asynchronous file upload and return its final status.", Flags: mcputil.Destructive}, uploadCancelHandler(p))
-	mcputil.Register(s, mcputil.ToolDef{Name: "download_file", Description: "Download a remote file asynchronously to local path via SFTP. Local path must be within the server's working directory. Returns a download_id."}, downloadFileHandler(p, uploadRoot))
+	mcputil.Register(s, mcputil.ToolDef{Name: "download_file", Description: "Download a remote file asynchronously to local path via SFTP. Local path must be within the server's working directory. Returns a download_id."}, downloadFileHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_status", Description: "Check the status of an asynchronous file download.", Flags: mcputil.ReadOnly}, downloadStatusHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_wait", Description: "Wait for an asynchronous file download to complete and return its final status.", Flags: mcputil.ReadOnly}, downloadWaitHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_cancel", Description: "Cancel an asynchronous file download and return its final status.", Flags: mcputil.Destructive}, downloadCancelHandler(p))
@@ -455,7 +440,10 @@ type uploadFileParams struct {
 	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds for queuing the request"`
 }
 
-func uploadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[uploadFileParams, mcputil.UploadResult] {
+// uploadFileHandler passes local_path to the pool unvalidated, by design: the
+// pool reads it through a confined filesystem that refuses anything outside its
+// root. See [session.PoolOptions.LocalFS].
+func uploadFileHandler(p SessionProvider) mcp.ToolHandlerFor[uploadFileParams, mcputil.UploadResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadFileParams) (*mcp.CallToolResult, mcputil.UploadResult, error) {
 		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
 			return nil, mcputil.UploadResult{}, fmt.Errorf("session_id, local_path and remote_path are required")
@@ -466,11 +454,7 @@ func uploadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[upl
 		}
 		uploadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		safePath, err := WithinDir(workDir, args.LocalPath)
-		if err != nil {
-			return nil, mcputil.UploadResult{}, err
-		}
-		uploadID, err := p.Upload(uploadCtx, args.SessionID, safePath, args.RemotePath)
+		uploadID, err := p.Upload(uploadCtx, args.SessionID, args.LocalPath, args.RemotePath)
 		if err != nil {
 			return nil, mcputil.UploadResult{}, err
 		}
@@ -567,7 +551,9 @@ type downloadFileParams struct {
 	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds for queuing the request"`
 }
 
-func downloadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[downloadFileParams, mcputil.DownloadResult] {
+// downloadFileHandler passes local_path to the pool unvalidated. See
+// [uploadFileHandler].
+func downloadFileHandler(p SessionProvider) mcp.ToolHandlerFor[downloadFileParams, mcputil.DownloadResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadFileParams) (*mcp.CallToolResult, mcputil.DownloadResult, error) {
 		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
 			return nil, mcputil.DownloadResult{}, fmt.Errorf("session_id, local_path and remote_path are required")
@@ -578,11 +564,7 @@ func downloadFileHandler(p SessionProvider, workDir string) mcp.ToolHandlerFor[d
 		}
 		downloadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		safePath, err := WithinDir(workDir, args.LocalPath)
-		if err != nil {
-			return nil, mcputil.DownloadResult{}, err
-		}
-		downloadID, err := p.Download(downloadCtx, args.SessionID, args.RemotePath, safePath)
+		downloadID, err := p.Download(downloadCtx, args.SessionID, args.RemotePath, args.LocalPath)
 		if err != nil {
 			return nil, mcputil.DownloadResult{}, err
 		}

@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/go-faster/gooners/internal/e2e"
+	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/session"
 
 	// Tool registrations for full server
@@ -91,7 +92,12 @@ func getSharedEnv(t *testing.T) *testEnv {
 			return
 		}
 
-		p := session.NewPool(session.PoolOptions{CommandTimeout: 0, HomeDir: homeDir})
+		p := session.NewPool(session.PoolOptions{
+			CommandTimeout: 0,
+			HomeDir:        homeDir,
+			// As ssh-mcp does: host file effects confined to the upload root.
+			LocalFS: effect.Root(sharedUploadRoot),
+		})
 		go p.RunLoop(ctx)
 
 		// Small delay so the pool goroutine is scheduled before first open.
@@ -102,7 +108,7 @@ func getSharedEnv(t *testing.T) *testEnv {
 		s := mcp.NewServer(&mcp.Implementation{Name: "ssh-mcp-e2e", Version: "test"}, nil)
 		uploadRoot := sharedUploadRoot
 		core.Register(s, p, core.RegisterOptions{})
-		fs.Register(s, p, uploadRoot)
+		fs.Register(s, p)
 		sysinfo.Register(s, p)
 		proc.Register(s, p)
 		disk.Register(s, p)

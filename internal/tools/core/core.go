@@ -10,14 +10,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/session"
-	toolfs "github.com/go-faster/gooners/internal/tools/fs"
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
@@ -30,8 +28,13 @@ type corePool interface {
 	Exec(ctx context.Context, r session.ExecRequest) session.ExecResponse
 	CommandTimeout() time.Duration
 	Ping(ctx context.Context, id string) (time.Duration, error)
-	GetSpool(ctx context.Context, sessionID, spoolID string) (string, error)
-	DeleteSpool(ctx context.Context, sessionID, spoolID string) error
+	// OpenSpool and SaveSpool replace a GetSpool that handed back a host path:
+	// spool content now moves without a tool ever naming a path on disk.
+	OpenSpool(ctx context.Context, sessionID, spoolID string) (effect.File, error)
+	SaveSpool(ctx context.Context, sessionID, spoolID, localPath string) error
+	// LocalFS is the confined host filesystem for tools that must read a local
+	// file themselves (stdin_file).
+	LocalFS() effect.FS
 }
 
 type RegisterOptions struct {
@@ -260,7 +263,7 @@ func execHandler(p corePool, sudo bool, passwords PasswordProvider, logger *slog
 		if len(args.Command) > 50000 {
 			return nil, mcputil.ExecResult{}, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
 		}
-		stdin, err := loadStdin(args.Stdin, args.StdinFile)
+		stdin, err := loadStdin(p.LocalFS(), args.Stdin, args.StdinFile)
 		if err != nil {
 			return nil, mcputil.ExecResult{}, err
 		}
@@ -327,7 +330,7 @@ func onceHandler(p corePool) mcp.ToolHandlerFor[onceParams, mcputil.ExecResult] 
 		if len(args.Command) > 50000 {
 			return nil, mcputil.ExecResult{}, fmt.Errorf("command exceeds maximum allowed length of 50000 characters")
 		}
-		stdin, err := loadStdin(args.Stdin, args.StdinFile)
+		stdin, err := loadStdin(p.LocalFS(), args.Stdin, args.StdinFile)
 		if err != nil {
 			return nil, mcputil.ExecResult{}, err
 		}
@@ -358,7 +361,11 @@ func onceHandler(p corePool) mcp.ToolHandlerFor[onceParams, mcputil.ExecResult] 
 
 const maxStdinBytes = 10 * 1024 * 1024
 
-func loadStdin(stdin, stdinFile string) (string, error) {
+// loadStdin resolves the command's stdin, reading stdin_file through fsys.
+// fsys is the pool's confined filesystem, so stdin_file reaches exactly the
+// files upload_file can and no others — including none at all, in a server
+// that configured no host file access.
+func loadStdin(fsys effect.FS, stdin, stdinFile string) (string, error) {
 	if stdin != "" && stdinFile != "" {
 		return "", fmt.Errorf("stdin and stdin_file are mutually exclusive")
 	}
@@ -368,15 +375,7 @@ func loadStdin(stdin, stdinFile string) (string, error) {
 	if stdinFile == "" {
 		return stdin, nil
 	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("get working directory: %w", err)
-	}
-	stdinFile, err = toolfs.WithinDir(cwd, stdinFile)
-	if err != nil {
-		return "", fmt.Errorf("stdin_file must be within working directory: %w", err)
-	}
-	info, err := os.Stat(stdinFile)
+	info, err := fsys.Stat(stdinFile)
 	if err != nil {
 		return "", fmt.Errorf("stat stdin_file: %w", err)
 	}
@@ -386,7 +385,7 @@ func loadStdin(stdin, stdinFile string) (string, error) {
 	if info.Size() > maxStdinBytes {
 		return "", fmt.Errorf("stdin_file exceeds maximum allowed size of %d bytes", maxStdinBytes)
 	}
-	data, err := os.ReadFile(stdinFile) //nolint:gosec // operator-provided local input file for SSH command stdin
+	data, err := fsys.ReadFile(stdinFile)
 	if err != nil {
 		return "", fmt.Errorf("read stdin_file: %w", err)
 	}
@@ -467,16 +466,17 @@ func readOutputHandler(p corePool) mcp.ToolHandlerFor[readOutputParams, mcputil.
 			lines = 500
 		}
 
-		path, err := p.GetSpool(ctx, args.SessionID, args.SpoolID)
+		f, err := p.OpenSpool(ctx, args.SessionID, args.SpoolID)
 		if err != nil {
 			return nil, mcputil.CommandResult{}, err
 		}
+		defer func() { _ = f.Close() }()
 
 		var content string
 		if args.FromEnd {
-			content, err = readTail(path, lines, 16384)
+			content, err = readTail(f, lines, 16384)
 		} else {
-			content, err = readHead(path, lines, 16384)
+			content, err = readHead(f, lines, 16384)
 		}
 		if err != nil {
 			return nil, mcputil.CommandResult{}, fmt.Errorf("reading spool output: %w", err)
@@ -492,35 +492,25 @@ type saveOutputParams struct {
 	LocalPath string `json:"local_path" jsonschema:"The destination local file path to save the spool output to"`
 }
 
+// saveOutputHandler hands local_path straight to the pool. It does not check
+// it, and must not: the pool's confined filesystem is the one gate, and a
+// second one here is how the two drift apart. This tool used to write to any
+// host path precisely because it had its own gate and forgot to close it.
 func saveOutputHandler(p corePool) mcp.ToolHandlerFor[saveOutputParams, mcputil.SuccessResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args saveOutputParams) (*mcp.CallToolResult, mcputil.SuccessResult, error) {
 		if args.SessionID == "" || args.SpoolID == "" || args.LocalPath == "" {
 			return nil, mcputil.SuccessResult{}, fmt.Errorf("session_id, spool_id, and local_path are required")
 		}
 
-		path, err := p.GetSpool(ctx, args.SessionID, args.SpoolID)
-		if err != nil {
-			return nil, mcputil.SuccessResult{}, err
-		}
-
-		if err := renameOrCopy(path, args.LocalPath); err != nil {
+		if err := p.SaveSpool(ctx, args.SessionID, args.SpoolID, args.LocalPath); err != nil {
 			return nil, mcputil.SuccessResult{}, fmt.Errorf("saving spool output: %w", err)
 		}
-
-		_ = p.DeleteSpool(ctx, args.SessionID, args.SpoolID)
 
 		return nil, mcputil.SuccessResult{OK: true}, nil
 	}
 }
 
-func readHead(path string, maxLines int, maxBytes int64) (string, error) {
-	//nolint:gosec // path is validated by spool registry
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-
+func readHead(f effect.File, maxLines int, maxBytes int64) (string, error) {
 	var buf bytes.Buffer
 	reader := io.LimitReader(f, maxBytes)
 	r := bufio.NewReader(reader)
@@ -563,14 +553,7 @@ func readHead(path string, maxLines int, maxBytes int64) (string, error) {
 	return out, nil
 }
 
-func readTail(path string, maxLines int, maxBytes int64) (string, error) {
-	//nolint:gosec // path is validated by spool registry
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = f.Close() }()
-
+func readTail(f effect.File, maxLines int, maxBytes int64) (string, error) {
 	stat, err := f.Stat()
 	if err != nil {
 		return "", err
@@ -612,37 +595,4 @@ func readTail(path string, maxLines int, maxBytes int64) (string, error) {
 		out = "... [Output truncated due to size/line limit] ...\n" + out
 	}
 	return out, nil
-}
-
-func renameOrCopy(src, dst string) error {
-	dir := filepath.Dir(dst)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-
-	err := os.Rename(src, dst)
-	if err == nil {
-		return nil
-	}
-
-	//nolint:gosec // src is validated by spool registry
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-
-	//nolint:gosec // user destination path
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = out.Close() }()
-
-	if _, err = io.Copy(out, in); err != nil {
-		return err
-	}
-
-	_ = in.Close()
-	return os.Remove(src)
 }

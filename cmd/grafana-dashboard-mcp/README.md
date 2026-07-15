@@ -10,6 +10,11 @@ Once construction is completed, the agent can call `export_dashboard` to finalis
 
 For dashboard exports, prefer this MCP server's `export_dashboard` tool with `output_path` whenever possible. It avoids loading full dashboard JSON into the model context. For raw exports from an existing Grafana instance, direct Grafana HTTP/API access such as `curl` is usually better than a generic Grafana MCP read that returns the whole dashboard payload.
 
+## Security notes
+
+- **Working directory guard**: `export_dashboard`'s `output_path` and `import_dashboard`'s `file_path` reach only files within the directory where the server process was started. Paths outside it are rejected, including paths that leave it by following a symlink. The guard is a confined filesystem provider (`internal/effect`), not a check in each tool.
+- **Egress allowlist**: the Grafana HTTP client can only reach the host configured via `-grafana-url` / `GRAFANA_URL`, on redirects too, and never the cloud instance-metadata address.
+
 ## Environment Variables
 
 For discovery tools (like validating Prometheus/Loki queries, searching metrics, or saving dashboards to Grafana), configure the following environment variables:

@@ -12,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/cmdutil"
+	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/tools/core"
@@ -108,6 +109,10 @@ func main() {
 	pool := session.NewPool(session.PoolOptions{
 		CommandTimeout: *commandTimeout,
 		Logger:         logger,
+		// Every host file the tools may touch — upload sources, download
+		// targets, saved output, stdin_file — confined to the working
+		// directory, in one place rather than per tool.
+		LocalFS: effect.Root(uploadRoot),
 		OnDisconnect: func(machine string, err error) {
 			mcputil.BroadcastWarning(s, "ssh-mcp", fmt.Sprintf("SSH session to %s disconnected: %v", machine, err))
 		},
@@ -117,9 +122,9 @@ func main() {
 	logger.Debug("registering MCP tools")
 	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
 	if *disableSpecializedTools {
-		fs.RegisterFileTransfer(s, pool, uploadRoot)
+		fs.RegisterFileTransfer(s, pool)
 	} else {
-		fs.Register(s, pool, uploadRoot)
+		fs.Register(s, pool)
 		systemd.Register(s, pool)
 		sysinfo.Register(s, pool)
 		proc.Register(s, pool)

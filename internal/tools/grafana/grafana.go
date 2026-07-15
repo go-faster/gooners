@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
 	"slices"
 	"strings"
 	"time"
@@ -18,6 +17,7 @@ import (
 	"github.com/grafana/grafana-foundation-sdk/go/common"
 	"github.com/grafana/grafana-foundation-sdk/go/dashboard"
 
+	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
@@ -514,7 +514,25 @@ func getStringSlice(m map[string]any, k string) []string {
 
 // Tool implementation.
 
-func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
+// RegisterOptions configures [Register].
+type RegisterOptions struct {
+	// LocalFS is the host filesystem import_dashboard's file_path and
+	// export_dashboard's output_path reach. Both paths come from the agent, so
+	// this — not the handlers — is what decides which files they may touch.
+	//
+	// It defaults to denying everything: a server that grants no local file
+	// access refuses both rather than reading or writing an arbitrary host path.
+	LocalFS effect.FS
+}
+
+func (o *RegisterOptions) setDefaults() {
+	if o.LocalFS == nil {
+		o.LocalFS = effect.Deny("local dashboard file access is not configured for this server")
+	}
+}
+
+func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient, opts RegisterOptions) {
+	opts.setDefaults()
 	registerResources(s, sm)
 
 	// 3.1 Construction Tools
@@ -533,7 +551,7 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 		Name:        "import_dashboard",
 		Description: "Fetches an existing dashboard by UID from Grafana, or from a local file path, and starts a new editable session from it. Works for dashboards created with this tool (roundtrippable). Provide exactly one of uid or file_path.",
 		Flags:       mcputil.ReadOnly,
-	}, importDashboardHandler(sm, gc))
+	}, importDashboardHandler(sm, gc, opts.LocalFS))
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "add_param",
@@ -627,7 +645,7 @@ func Register(s *mcp.Server, sm *SessionManager, gc *GrafanaClient) {
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "export_dashboard",
 		Description: "Finalizes and compiles the dashboard using the session's schema version. By default, this only validates the dashboard can be built. Use 'save' to push v1 dashboards directly to Grafana, or 'output_path' to write v1/v2 JSON to a local file.",
-	}, exportDashboardHandler(sm, gc))
+	}, exportDashboardHandler(sm, gc, opts.LocalFS))
 
 	// 3.2 Discovery & Verification Tools
 	mcputil.Register(s, mcputil.ToolDef{
@@ -764,13 +782,15 @@ type ImportDashboardRes struct {
 	Title       string `json:"title,omitempty"`
 }
 
-func importDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandlerFor[ImportDashboardReq, ImportDashboardRes] {
+// importDashboardHandler reads file_path through fsys, which is what confines
+// it. The handler performs no path check of its own; see [RegisterOptions].
+func importDashboardHandler(sm *SessionManager, gc *GrafanaClient, fsys effect.FS) mcp.ToolHandlerFor[ImportDashboardReq, ImportDashboardRes] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args ImportDashboardReq) (*mcp.CallToolResult, ImportDashboardRes, error) {
 		var raw []byte
 		var err error
 		switch {
 		case args.FilePath != "":
-			raw, err = os.ReadFile(args.FilePath)
+			raw, err = fsys.ReadFile(args.FilePath)
 			if err != nil {
 				return nil, ImportDashboardRes{}, fmt.Errorf("reading dashboard file: %w", err)
 			}
@@ -953,7 +973,9 @@ type ExportDashboardRes struct {
 	OutputPath string `json:"output_path,omitempty"`
 }
 
-func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandlerFor[ExportDashboardReq, ExportDashboardRes] {
+// exportDashboardHandler writes output_path through fsys. As in
+// [importDashboardHandler], fsys is the gate.
+func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient, fsys effect.FS) mcp.ToolHandlerFor[ExportDashboardReq, ExportDashboardRes] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args ExportDashboardReq) (*mcp.CallToolResult, ExportDashboardRes, error) {
 		s, err := sm.Get(args.DashboardID)
 		if err != nil {
@@ -977,7 +999,7 @@ func exportDashboardHandler(sm *SessionManager, gc *GrafanaClient) mcp.ToolHandl
 		}
 
 		if args.OutputPath != "" {
-			if err := os.WriteFile(args.OutputPath, dashboardJSON, 0o600); err != nil {
+			if err := fsys.WriteFile(args.OutputPath, dashboardJSON, 0o600); err != nil {
 				return nil, ExportDashboardRes{}, fmt.Errorf("writing dashboard to file: %w", err)
 			}
 			res.OutputPath = args.OutputPath

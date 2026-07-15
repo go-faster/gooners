@@ -10,26 +10,50 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/go-faster/gooners/internal/effect"
 )
 
 // GrafanaClient calls Grafana API endpoints.
 type GrafanaClient struct {
-	URL        string
-	Token      string
-	User       string
-	Password   string
-	httpClient *http.Client
+	URL      string
+	Token    string
+	User     string
+	Password string
+
+	http effect.Doer
 }
 
-func NewGrafanaClient(urlStr, token, user, password string) *GrafanaClient {
-	return &GrafanaClient{
-		URL:      urlStr,
-		Token:    token,
-		User:     user,
-		Password: password,
-		httpClient: &http.Client{
+// GrafanaClientOptions configures [NewGrafanaClient].
+type GrafanaClientOptions struct {
+	URL      string
+	Token    string
+	User     string
+	Password string
+
+	// HTTP performs the requests. If nil, it is an [effect.NewHTTPClient] whose
+	// egress allowlist is URL alone: a Grafana client can reach the Grafana it
+	// was configured with, and nothing else.
+	HTTP effect.Doer
+}
+
+func (o *GrafanaClientOptions) setDefaults() {
+	if o.HTTP == nil {
+		o.HTTP = effect.NewHTTPClient(effect.HTTPOptions{
+			Policy:  effect.HTTPPolicy{AllowHosts: effect.AllowHostOf(o.URL)},
 			Timeout: 15 * time.Second,
-		},
+		})
+	}
+}
+
+func NewGrafanaClient(opts GrafanaClientOptions) *GrafanaClient {
+	opts.setDefaults()
+	return &GrafanaClient{
+		URL:      opts.URL,
+		Token:    opts.Token,
+		User:     opts.User,
+		Password: opts.Password,
+		http:     opts.HTTP,
 	}
 }
 
@@ -49,7 +73,7 @@ func (c *GrafanaClient) doRequest(ctx context.Context, method, path string, body
 		req.SetBasicAuth(c.User, c.Password)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.httpClient.Do(req)
+	return c.http.Do(req)
 }
 
 func (c *GrafanaClient) getJSON(ctx context.Context, path string, out any) error {

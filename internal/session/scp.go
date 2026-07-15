@@ -3,10 +3,11 @@ package session
 import (
 	"context"
 	"io"
-	"os"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+
+	"github.com/go-faster/gooners/internal/effect"
 )
 
 func (p *Pool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {
@@ -17,12 +18,15 @@ func (p *Pool) SFTP(ctx context.Context, id string) (*sftp.Client, error) {
 	return sftp.NewClient(client)
 }
 
-func runUpload(ctx context.Context, client *ssh.Client, job *TransferJob) {
-	job.finish(ctx, upload(ctx, client, job))
+// runUpload streams job.LocalPath to the remote. localFS is what decides
+// whether job.LocalPath may be read at all; the path arrives from a tool call
+// unvalidated, by design.
+func runUpload(ctx context.Context, client *ssh.Client, localFS effect.FS, job *TransferJob) {
+	job.finish(ctx, upload(ctx, client, localFS, job))
 }
 
-func upload(ctx context.Context, client *ssh.Client, job *TransferJob) error {
-	src, err := os.Open(job.LocalPath)
+func upload(ctx context.Context, client *ssh.Client, localFS effect.FS, job *TransferJob) error {
+	src, err := localFS.Open(job.LocalPath)
 	if err != nil {
 		return err
 	}
@@ -65,11 +69,13 @@ func upload(ctx context.Context, client *ssh.Client, job *TransferJob) error {
 	return nil
 }
 
-func runDownload(ctx context.Context, client *ssh.Client, job *TransferJob) {
-	job.finish(ctx, download(ctx, client, job))
+// runDownload streams the remote file into job.LocalPath. As in [runUpload],
+// localFS is the gate: the destination is whatever the agent asked for.
+func runDownload(ctx context.Context, client *ssh.Client, localFS effect.FS, job *TransferJob) {
+	job.finish(ctx, download(ctx, client, localFS, job))
 }
 
-func download(ctx context.Context, client *ssh.Client, job *TransferJob) error {
+func download(ctx context.Context, client *ssh.Client, localFS effect.FS, job *TransferJob) error {
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
 		return err
@@ -96,14 +102,13 @@ func download(ctx context.Context, client *ssh.Client, job *TransferJob) error {
 	job.setTotal(stat.Size())
 
 	tmpPath := job.LocalPath + ".tmp"
-	//nolint:gosec // LocalPath is validated to be within the allowed directory by withinDir
-	dst, err := os.Create(tmpPath)
+	dst, err := localFS.Create(tmpPath)
 	if err != nil {
 		return err
 	}
 	defer func() {
 		_ = dst.Close()
-		_ = os.Remove(tmpPath) // cleans up partial file if not renamed
+		_ = localFS.Remove(tmpPath) // cleans up partial file if not renamed
 	}()
 
 	// Copy from the remote file directly, so io.Copy takes its WriteTo path and reads
@@ -116,5 +121,5 @@ func download(ctx context.Context, client *ssh.Client, job *TransferJob) error {
 		return err
 	}
 
-	return os.Rename(tmpPath, job.LocalPath)
+	return localFS.Rename(tmpPath, job.LocalPath)
 }

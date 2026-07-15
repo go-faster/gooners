@@ -12,19 +12,23 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/session"
 )
 
 type mockCorePool struct {
-	open        func(context.Context, string) (session.OpenResult, error)
-	openCfg     func(context.Context, session.Config) (session.OpenResult, error)
-	close       func(context.Context, string) error
-	list        func(context.Context) ([]session.SessionInfo, error)
-	machine     func(context.Context, string) (string, error)
-	exec        func(context.Context, session.ExecRequest) session.ExecResponse
-	ping        func(context.Context, string) (time.Duration, error)
-	getSpool    func(context.Context, string, string) (string, error)
-	deleteSpool func(context.Context, string, string) error
+	open      func(context.Context, string) (session.OpenResult, error)
+	openCfg   func(context.Context, session.Config) (session.OpenResult, error)
+	close     func(context.Context, string) error
+	list      func(context.Context) ([]session.SessionInfo, error)
+	machine   func(context.Context, string) (string, error)
+	exec      func(context.Context, session.ExecRequest) session.ExecResponse
+	ping      func(context.Context, string) (time.Duration, error)
+	openSpool func(context.Context, string, string) (effect.File, error)
+	saveSpool func(context.Context, string, string, string) error
+	// localFS is what the pool would let a tool touch. Nil means the zero
+	// value a production pool defaults to: no host file access at all.
+	localFS effect.FS
 }
 
 func (m mockCorePool) Open(ctx context.Context, machine string) (session.OpenResult, error) {
@@ -57,12 +61,19 @@ func (m mockCorePool) Ping(ctx context.Context, id string) (time.Duration, error
 	return m.ping(ctx, id)
 }
 
-func (m mockCorePool) GetSpool(ctx context.Context, sessionID, spoolID string) (string, error) {
-	return m.getSpool(ctx, sessionID, spoolID)
+func (m mockCorePool) OpenSpool(ctx context.Context, sessionID, spoolID string) (effect.File, error) {
+	return m.openSpool(ctx, sessionID, spoolID)
 }
 
-func (m mockCorePool) DeleteSpool(ctx context.Context, sessionID, spoolID string) error {
-	return m.deleteSpool(ctx, sessionID, spoolID)
+func (m mockCorePool) SaveSpool(ctx context.Context, sessionID, spoolID, localPath string) error {
+	return m.saveSpool(ctx, sessionID, spoolID, localPath)
+}
+
+func (m mockCorePool) LocalFS() effect.FS {
+	if m.localFS == nil {
+		return effect.Deny("host file access is not configured for this server")
+	}
+	return m.localFS
 }
 
 type mockPasswordProvider struct {
@@ -133,11 +144,10 @@ func TestExecHandler_SudoPasswordProvider(t *testing.T) {
 
 func TestExecHandler_StdinFile(t *testing.T) {
 	root := t.TempDir()
-	t.Chdir(root)
-	stdinPath := filepath.Join(root, "stdin.txt")
-	require.NoError(t, os.WriteFile(stdinPath, []byte("hello from file"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "stdin.txt"), []byte("hello from file"), 0o600))
 
 	p := mockCorePool{
+		localFS: effect.Root(root),
 		exec: func(_ context.Context, r session.ExecRequest) session.ExecResponse {
 			require.Equal(t, "session-1", r.SessionID)
 			require.Equal(t, "cat", r.Command)
@@ -147,21 +157,41 @@ func TestExecHandler_StdinFile(t *testing.T) {
 	}
 
 	_, out, err := execHandler(p, false, nil, slog.Default())(
-		context.Background(), &mcp.CallToolRequest{}, execParams{SessionID: "session-1", Command: "cat", StdinFile: stdinPath},
+		context.Background(), &mcp.CallToolRequest{},
+		execParams{SessionID: "session-1", Command: "cat", StdinFile: filepath.Join(root, "stdin.txt")},
 	)
 	require.NoError(t, err)
 	require.Equal(t, "hello from file", out.Stdout)
 }
 
-func TestExecHandler_StdinFileOutsideWorkingDirectory(t *testing.T) {
-	t.Chdir(t.TempDir())
+// TestExecHandler_StdinFileOutsideRoot: stdin_file reads through the pool's
+// confined filesystem, so it reaches exactly what upload_file can and nothing
+// else. The handler does no path check of its own.
+func TestExecHandler_StdinFileOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "secret.txt")
+	require.NoError(t, os.WriteFile(outside, []byte("secret"), 0o600))
+
+	p := mockCorePool{localFS: effect.Root(root)}
+	_, _, err := execHandler(p, false, nil, slog.Default())(
+		context.Background(), &mcp.CallToolRequest{},
+		execParams{SessionID: "session-1", Command: "cat", StdinFile: outside},
+	)
+	require.ErrorIs(t, err, effect.ErrOutsideRoot)
+}
+
+// TestExecHandler_StdinFileDeniedWithoutLocalFS: a server that grants no host
+// file access (sandbox-mcp) refuses stdin_file, without having to remember to
+// strip the parameter from the tool.
+func TestExecHandler_StdinFileDeniedWithoutLocalFS(t *testing.T) {
 	stdinPath := filepath.Join(t.TempDir(), "stdin.txt")
 	require.NoError(t, os.WriteFile(stdinPath, []byte("secret"), 0o600))
 
 	_, _, err := execHandler(mockCorePool{}, false, nil, slog.Default())(
-		context.Background(), &mcp.CallToolRequest{}, execParams{SessionID: "session-1", Command: "cat", StdinFile: stdinPath},
+		context.Background(), &mcp.CallToolRequest{},
+		execParams{SessionID: "session-1", Command: "cat", StdinFile: stdinPath},
 	)
-	require.ErrorContains(t, err, "within working directory")
+	require.ErrorIs(t, err, effect.ErrDenied)
 }
 
 func TestExecHandler_StdinMutuallyExclusive(t *testing.T) {
@@ -214,12 +244,10 @@ func TestPingHandler(t *testing.T) {
 }
 
 func TestReadOutputHandler(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "spool.txt")
-	require.NoError(t, os.WriteFile(path, []byte("a\nb\nc\n"), 0o600))
-	p := mockCorePool{getSpool: func(_ context.Context, sessionID, spoolID string) (string, error) {
+	p := mockCorePool{openSpool: func(_ context.Context, sessionID, spoolID string) (effect.File, error) {
 		require.Equal(t, "session-1", sessionID)
 		require.Equal(t, "stdout", spoolID)
-		return path, nil
+		return spoolFile(t, "a\nb\nc\n"), nil
 	}}
 
 	_, out, err := readOutputHandler(p)(context.Background(), &mcp.CallToolRequest{}, readOutputParams{
@@ -232,18 +260,17 @@ func TestReadOutputHandler(t *testing.T) {
 	require.Equal(t, "... [Output truncated due to size/line limit] ...\nb\nc", out.Text)
 }
 
-func TestSaveOutputHandler_DeletesSpool(t *testing.T) {
-	tmp := t.TempDir()
-	src := filepath.Join(tmp, "spool.txt")
-	dst := filepath.Join(tmp, "out", "saved.txt")
-	require.NoError(t, os.WriteFile(src, []byte("data"), 0o600))
-	deleted := false
+// TestSaveOutputHandler_Delegates: the handler hands local_path to the pool
+// untouched. Where that path may point is [session.Pool.SaveSpool]'s call, not
+// this handler's — see TestPoolSaveSpoolConfinesDestination.
+func TestSaveOutputHandler_Delegates(t *testing.T) {
+	saved := false
 	p := mockCorePool{
-		getSpool: func(_ context.Context, _, _ string) (string, error) { return src, nil },
-		deleteSpool: func(_ context.Context, sessionID, spoolID string) error {
+		saveSpool: func(_ context.Context, sessionID, spoolID, localPath string) error {
 			require.Equal(t, "session-1", sessionID)
 			require.Equal(t, "stdout", spoolID)
-			deleted = true
+			require.Equal(t, "out/saved.txt", localPath)
+			saved = true
 			return nil
 		},
 	}
@@ -251,14 +278,29 @@ func TestSaveOutputHandler_DeletesSpool(t *testing.T) {
 	_, out, err := saveOutputHandler(p)(context.Background(), &mcp.CallToolRequest{}, saveOutputParams{
 		SessionID: "session-1",
 		SpoolID:   "stdout",
-		LocalPath: dst,
+		LocalPath: "out/saved.txt",
 	})
 	require.NoError(t, err)
 	require.True(t, out.OK)
-	require.True(t, deleted)
-	data, err := os.ReadFile(dst)
-	require.NoError(t, err)
-	require.Equal(t, "data", string(data))
+	require.True(t, saved)
+}
+
+// TestSaveOutputHandler_PropagatesDenial: when the pool refuses the
+// destination, the tool call fails rather than reporting success.
+func TestSaveOutputHandler_PropagatesDenial(t *testing.T) {
+	p := mockCorePool{
+		saveSpool: func(context.Context, string, string, string) error {
+			return effect.ErrOutsideRoot
+		},
+	}
+
+	_, out, err := saveOutputHandler(p)(context.Background(), &mcp.CallToolRequest{}, saveOutputParams{
+		SessionID: "session-1",
+		SpoolID:   "stdout",
+		LocalPath: "../../escape.txt",
+	})
+	require.ErrorIs(t, err, effect.ErrOutsideRoot)
+	require.False(t, out.OK)
 }
 
 func TestExecHandler_Validation(t *testing.T) {

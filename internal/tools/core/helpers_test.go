@@ -3,139 +3,78 @@ package core
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/go-faster/gooners/internal/effect"
 )
 
+// spoolFile writes content to a temp file and opens it the way the pool hands
+// a spool to a tool: as an [effect.File], never as a path.
+func spoolFile(t *testing.T, content string) effect.File {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "spool.out")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	f, err := effect.OS().Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = f.Close() })
+	return f
+}
+
 func TestReadHead(t *testing.T) {
-	t.Run("empty file", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "empty.txt")
-		require.NoError(t, os.WriteFile(tmp, nil, 0o600))
-
-		res, err := readHead(tmp, 10, 100)
-		require.NoError(t, err)
-		require.Equal(t, "", res)
-	})
-
-	t.Run("no trailing newline", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "none.txt")
-		require.NoError(t, os.WriteFile(tmp, []byte("hello\nworld"), 0o600))
-
-		res, err := readHead(tmp, 10, 100)
-		require.NoError(t, err)
-		require.Equal(t, "hello\nworld", res)
-	})
-
-	t.Run("exactly threshold lines", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "exact.txt")
-		require.NoError(t, os.WriteFile(tmp, []byte("l1\nl2\nl3\n"), 0o600))
-
-		res, err := readHead(tmp, 3, 100)
-		require.NoError(t, err)
-		require.Equal(t, "l1\nl2\nl3\n", res)
-	})
-
-	t.Run("maxLines hit before EOF", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "max_lines.txt")
-		require.NoError(t, os.WriteFile(tmp, []byte("l1\nl2\nl3\nl4\n"), 0o600))
-
-		res, err := readHead(tmp, 2, 100)
-		require.NoError(t, err)
-		require.Equal(t, "l1\nl2\n\n... [Output truncated due to size/line limit] ...", res)
-	})
-
-	t.Run("maxBytes hit before EOF", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "max_bytes.txt")
-		require.NoError(t, os.WriteFile(tmp, []byte("l1\nl2\nl3\n"), 0o600))
-
-		res, err := readHead(tmp, 10, 4)
-		require.NoError(t, err)
-		require.Equal(t, "l1\nl\n... [Output truncated due to size/line limit] ...", res)
-	})
+	tests := []struct {
+		name     string
+		content  string
+		maxLines int
+		maxBytes int64
+		want     string
+	}{
+		{"empty file", "", 10, 100, ""},
+		{"no trailing newline", "hello\nworld", 10, 100, "hello\nworld"},
+		{"exactly threshold lines", "l1\nl2\nl3\n", 3, 100, "l1\nl2\nl3\n"},
+		{
+			name: "maxLines hit before EOF", content: "l1\nl2\nl3\nl4\n", maxLines: 2, maxBytes: 100,
+			want: "l1\nl2\n\n... [Output truncated due to size/line limit] ...",
+		},
+		{
+			name: "maxBytes hit before EOF", content: "l1\nl2\nl3\n", maxLines: 10, maxBytes: 4,
+			want: "l1\nl\n... [Output truncated due to size/line limit] ...",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := readHead(spoolFile(t, tt.content), tt.maxLines, tt.maxBytes)
+			require.NoError(t, err)
+			require.Equal(t, tt.want, res)
+		})
+	}
 }
 
 func TestReadTail(t *testing.T) {
-	t.Run("empty file", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "empty.txt")
-		require.NoError(t, os.WriteFile(tmp, nil, 0o600))
-
-		res, err := readTail(tmp, 10, 100)
-		require.NoError(t, err)
-		require.Equal(t, "", res)
-	})
-
-	t.Run("no trailing newline", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "none.txt")
-		require.NoError(t, os.WriteFile(tmp, []byte("hello\nworld"), 0o600))
-
-		res, err := readTail(tmp, 10, 100)
-		require.NoError(t, err)
-		require.Equal(t, "hello\nworld", res)
-	})
-
-	t.Run("maxLines hit before EOF", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "max_lines.txt")
-		require.NoError(t, os.WriteFile(tmp, []byte("l1\nl2\nl3\nl4\n"), 0o600))
-
-		res, err := readTail(tmp, 2, 100)
-		require.NoError(t, err)
-		require.Equal(t, "... [Output truncated due to size/line limit] ...\nl3\nl4", res)
-	})
-
-	t.Run("maxBytes hit before EOF", func(t *testing.T) {
-		tmp := filepath.Join(t.TempDir(), "max_bytes.txt")
-		require.NoError(t, os.WriteFile(tmp, []byte("l1\nl2\nl3\n"), 0o600))
-
-		res, err := readTail(tmp, 10, 4)
-		require.NoError(t, err)
-		require.Equal(t, "... [Output truncated due to size/line limit] ...\nl3", res)
-	})
-}
-
-func TestRenameOrCopy(t *testing.T) {
-	t.Run("same filesystem rename", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		src := filepath.Join(tmpDir, "src.txt")
-		dst := filepath.Join(tmpDir, "dst.txt")
-		require.NoError(t, os.WriteFile(src, []byte("hello"), 0o600))
-
-		require.NoError(t, renameOrCopy(src, dst))
-
-		_, err := os.Stat(src)
-		require.True(t, os.IsNotExist(err))
-
-		data, err := os.ReadFile(dst)
-		require.NoError(t, err)
-		require.Equal(t, "hello", string(data))
-
-		if runtime.GOOS != "windows" {
-			stat, err := os.Stat(dst)
+	tests := []struct {
+		name     string
+		content  string
+		maxLines int
+		maxBytes int64
+		want     string
+	}{
+		{"empty file", "", 10, 100, ""},
+		{"no trailing newline", "hello\nworld", 10, 100, "hello\nworld"},
+		{
+			name: "maxLines hit before EOF", content: "l1\nl2\nl3\nl4\n", maxLines: 2, maxBytes: 100,
+			want: "... [Output truncated due to size/line limit] ...\nl3\nl4",
+		},
+		{
+			name: "maxBytes hit before EOF", content: "l1\nl2\nl3\n", maxLines: 10, maxBytes: 4,
+			want: "... [Output truncated due to size/line limit] ...\nl3",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := readTail(spoolFile(t, tt.content), tt.maxLines, tt.maxBytes)
 			require.NoError(t, err)
-			require.Equal(t, os.FileMode(0o600), stat.Mode().Perm())
-		}
-	})
-
-	t.Run("copy fallback", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		src := filepath.Join(tmpDir, "src.txt")
-		dst := filepath.Join(tmpDir, "nested", "dst.txt")
-		require.NoError(t, os.WriteFile(src, []byte("hello fallback"), 0o600))
-
-		require.NoError(t, renameOrCopy(src, dst))
-
-		_, err := os.Stat(src)
-		require.True(t, os.IsNotExist(err))
-
-		data, err := os.ReadFile(dst)
-		require.NoError(t, err)
-		require.Equal(t, "hello fallback", string(data))
-
-		if runtime.GOOS != "windows" {
-			stat, err := os.Stat(dst)
-			require.NoError(t, err)
-			require.Equal(t, os.FileMode(0o600), stat.Mode().Perm())
-		}
-	})
+			require.Equal(t, tt.want, res)
+		})
+	}
 }

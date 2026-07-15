@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/go-faster/gooners/internal/effect"
 )
 
 const (
@@ -63,6 +65,7 @@ func startTransferPool(t *testing.T, srv *sftpTestServer, dl *disconnectLog) (po
 		KeepaliveInterval: 100 * time.Millisecond,
 		KeepaliveTimeout:  500 * time.Millisecond,
 		OnDisconnect:      dl.add,
+		LocalFS:           effect.OS(),
 	})
 	go p.RunLoop(t.Context())
 
