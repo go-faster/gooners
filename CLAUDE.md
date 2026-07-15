@@ -37,7 +37,12 @@ golangci-lint run ./...
 ## Architecture
 
 ```
-cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
+cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp): static SSH hosts, unchanged by sandbox-mcp
+cmd/sandbox-mcp/      ← MCP server binary (go build ./cmd/sandbox-mcp): a curated subset of ssh-mcp's tools
+                        (sandbox_open/sandbox_close, ssh_close/ssh_exec/ssh_sudo_exec/ssh_ping/ssh_read_output),
+                        each sandbox_open gets a fresh, isolated Docker container instead of a static host
+cmd/sandbox-agent/    ← ~40-line SSH+SFTP server injected into sandbox containers (go build ./cmd/sandbox-agent);
+                        driven over its own stdin/stdout via the container's exec/attach stream, not a listener
 cmd/grafana-dashboard-mcp/ ← MCP server binary (go build ./cmd/grafana-dashboard-mcp)
 cmd/alertmanager-mcp/ ← MCP server binary (go build ./cmd/alertmanager-mcp)
 internal/
@@ -48,22 +53,36 @@ internal/
                         test's. effect.NewHTTPClient(HTTPOptions) applies an egress HTTPPolicy on the
                         request, on redirects, and on the post-DNS resolved IP. See "effect providers" below.
   mcputil/            ← Standardized MCP server config, prompts, and log streaming
-  session/            ← SSH session pool & async upload tracking. PoolOptions.LocalFS is the one gate on
-                        host files a tool can reach; PoolOptions.SpoolFS holds overflow output.
-                        Pool.OpenSpool/SaveSpool move spool content without ever handing a tool a host path.
+  session/            ← SSH session pool & async upload tracking; Pool.Adopt registers an already-connected
+                        *ssh.Client (used by sandbox-mcp), with the same idle sweep/keepalive as Pool.Open.
+                        PoolOptions.LocalFS is the one gate on host files a tool can reach; PoolOptions.SpoolFS
+                        holds overflow output. Pool.OpenSpool/SaveSpool move spool content without ever
+                        handing a tool a host path.
   sshutil/            ← SSH config / known-hosts helpers
+  sandbox/            ← Backend-neutral sandbox lifecycle: Spec/Policy/Sandbox/Filter/Runner, Manager
+                        (Policy.Validate → Runner.Create → Runner.Dial → SSH handshake → Pool.Adopt)
+    agent/            ← The SSH+SFTP server run by cmd/sandbox-agent: goroutine-per-channel, stdin preamble
+                        (host key + one authorized client key), no TOFU
+    docker/           ← Runner implementation on the Docker Engine API: containerOptions (pure, golden-tested),
+                        agent injection via CopyToContainer, exec/attach stdio adapted to a net.Conn
+    streamconn/        ← Adapts a (reader, writer) stdio stream pair into a net.Conn; shared by the agent and
+                        any Runner backend (Docker now, Kubernetes later)
   tools/              ← MCP tool registrations
-    core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec, ssh_ping, ssh_read_output, ssh_save_output
+    core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec, ssh_ping, ssh_read_output, ssh_save_output;
+                        split into per-tool RegisterXxx funcs so sandbox-mcp can compose a safe subset
     disk/             ← disk_df, disk_lsblk, disk_mounts
     fs/               ← ls, cat, find, grep, stat, du, truncate, upload_file, write_file
     grafana/          ← add_dashboard, add_panel, add_query, export_dashboard, etc.
     proc/             ← proc_list, proc_info, proc_lsof, proc_kill
+    sandbox/          ← sandbox_open, sandbox_close (the only two tools sandbox-mcp adds on top of the small
+                        core subset it composes: ssh_close/ssh_exec/ssh_sudo_exec/ssh_ping/ssh_read_output;
+                        it deliberately does not compose fs/proc/disk/sysinfo, see the security boundary below)
     sysinfo/          ← sys_mem, sys_net_addrs, sys_os_info, sys_uptime
     systemd/          ← systemctl_* tools
 skills/jx/            ← Agent skill for github.com/go-faster/jx
 ```
 
-The `ssh-mcp` file in the repo root is a **compiled binary** (not a source directory) — ignore it when navigating source.
+The `ssh-mcp` file in the repo root is a **compiled binary** (not a source directory) — ignore it when navigating source. The same applies to any other top-level binary matching a `cmd/*` name (e.g. `sandbox-mcp`, `sandbox-agent`) if present.
 
 ### Effect providers (issue #22)
 
@@ -82,7 +101,27 @@ call site — enforces policy. This is a security invariant, not a style prefere
   lexical `fs.WithinDir` helper and `ssh_save_output` did not. `WithinDir` is gone; do not reintroduce it.
   `effect.FS.Resolve` exists only to fail fast with a legible error and is explicitly *not* the gate.
 - A binary declares what it may touch by what it passes to `session.NewPool`. `ssh-mcp` passes
-  `LocalFS: effect.Root(cwd)`.
+  `LocalFS: effect.Root(cwd)`; `sandbox-mcp` passes none, so host file access is denied by construction.
+
+### sandbox-mcp security boundary
+
+`cmd/sandbox-mcp/main.go` registers **only** a safe tool subset — this is a security boundary, not a
+preference. It must **never** register `core.RegisterOpen` / `RegisterOpenCfg` / `RegisterOnceExec` (would let
+the sandboxed agent SSH *out* to any host the process can reach — a sandbox escape) or `core.RegisterList`
+(`ssh_list` leaks every other conversation's capability token). It also must never register `fs.Register`'s
+`upload_file`/`download_file`: their "local path" is on the sandbox-mcp host process, not the container, and
+every sandbox would share one host directory — a covert channel between sandboxes meant to be isolated
+from each other. `fs`'s remaining SFTP-backed tools (`ls`/`cat`/`grep`/...), `proc`, `disk`, and `sysinfo` are
+not a security boundary but are deliberately not registered either: they're redundant with `ssh_exec` against
+a disposable, fully exec'able container. `core.RegisterSaveOutput` (`ssh_save_output`) is also dropped: it's
+redundant with `internal/session/pool_handlers.go`'s `closeSession`, which already deletes every spool file
+and the session's tempdir on every teardown path. `cmd/sandbox-mcp/main_test.go` asserts the registered tool
+list excludes the escape/leak/covert-channel tools; treat a regression there as a security bug, not a test
+flake.
+
+The tool list is the first line of defense; the effect providers are the second. sandbox-mcp passes no
+`LocalFS` to `session.NewPool`, so its host filesystem provider denies every read and write — a host-file
+tool registered here by mistake gets an error, not the host's filesystem. Keep both correct.
 
 ## Key Dependencies
 
@@ -97,6 +136,18 @@ go build ./cmd/ssh-mcp
 ./ssh-mcp
 # Or HTTP transport with debug logging:
 ./ssh-mcp -transport streamable-http -addr :8080 -log-file /tmp/ssh-mcp.log
+```
+
+## sandbox-mcp Build
+
+```bash
+go build ./cmd/sandbox-mcp
+go build ./cmd/sandbox-agent   # in-container SSH+SFTP agent sandbox-mcp injects
+# Requires a reachable Docker daemon (-docker-host or $DOCKER_HOST) and a
+# sandbox-agent binary at -sandbox-agent-path/<arch>/sandbox-agent:
+./sandbox-mcp -sandbox-agent-path /path/to/agent-dir
+# Or HTTP transport with debug logging:
+./sandbox-mcp -transport streamable-http -addr :8083 -log-file /tmp/sandbox-mcp.log
 ```
 
 ## grafana-dashboard-mcp Build

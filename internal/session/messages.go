@@ -20,14 +20,28 @@ type OpenRequest struct {
 
 func (OpenRequest) isRequest() {}
 
-// OpenResponse is the response to an [OpenRequest].
+// OpenResponse is the response to an [OpenRequest] or [AdoptRequest].
 type OpenResponse struct {
 	ID        string
+	Label     string
 	UserAgent string
 	Banner    string
 	Platform  string
 	Err       error
 }
+
+// AdoptRequest registers an already-connected SSH client with the pool. The
+// pool takes ownership of Client and closes it with the session.
+type AdoptRequest struct {
+	Machine string // display name, e.g. "sandbox/quiet-hopper"
+	Client  *ssh.Client
+	// OnClose runs in its own goroutine after the client is closed, for any
+	// reason: ssh_close, idle sweep, agent death, shutdown.
+	OnClose func()
+	resp    chan<- OpenResponse
+}
+
+func (AdoptRequest) isRequest() {}
 
 // GetRequest is a request to get an existing SSH session.
 type GetRequest struct {
@@ -45,11 +59,8 @@ type GetResponse struct {
 
 // CloseRequest is a request to close an existing SSH session.
 type CloseRequest struct {
-	ID string
-	// Cause is reported as the error of any transfer still running on the session.
-	// Defaults to [ErrSessionClosed].
-	Cause error
-	resp  chan<- error
+	ID   string
+	resp chan<- error
 }
 
 func (CloseRequest) isRequest() {}
@@ -122,10 +133,8 @@ type UploadStatusResponse struct {
 	Percent         float64
 	InstantSpeedBPS float64
 	AverageSpeedBPS float64
-	DurationSeconds float64
 	ETASeconds      float64
 	Done            bool
-	Status          TransferStatus
 	Err             error
 }
 
@@ -182,10 +191,8 @@ type DownloadStatusResponse struct {
 	Percent         float64
 	InstantSpeedBPS float64
 	AverageSpeedBPS float64
-	DurationSeconds float64
 	ETASeconds      float64
 	Done            bool
-	Status          TransferStatus
 	Err             error
 }
 

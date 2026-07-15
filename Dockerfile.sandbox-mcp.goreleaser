@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+#
+# sandbox-mcp gets its own Dockerfile (not the shared Dockerfile.goreleaser)
+# because its image also needs BOTH architectures' sandbox-agent binaries
+# baked in at internal/sandbox/docker.DefaultAgentDir, regardless of which
+# single platform this image itself targets. Goreleaser's dockers_v2 only
+# stages the current target platform's own binary (${TARGETPLATFORM}/${BINARY_NAME}),
+# so the agent is built here, from source, for both architectures.
+FROM golang:1.26-alpine AS agent-builder
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o /out/amd64/sandbox-agent ./cmd/sandbox-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o /out/arm64/sandbox-agent ./cmd/sandbox-agent
+
+FROM alpine:3.21
+
+ARG BINARY_NAME
+ARG TARGETPLATFORM
+
+RUN apk add --no-cache ca-certificates tzdata \
+    && addgroup -S mcp \
+    && adduser -S mcp -G mcp -h /home/mcp
+
+WORKDIR /home/mcp
+
+# Goreleaser dockers_v2 automatically places the artifacts for the target platform within $TARGETPLATFORM/
+COPY ${TARGETPLATFORM}/${BINARY_NAME} /usr/local/bin/${BINARY_NAME}
+
+# Both architectures' sandbox-agent, laid out as <dir>/<arch>/sandbox-agent -
+# exactly the layout internal/sandbox/docker.resolveAgentBinary expects.
+COPY --from=agent-builder /out /usr/local/libexec/gooners/sandbox-agent
+
+# Create a symlink so we can have a static ENTRYPOINT without needing shell expansion,
+# which allows signals to be handled gracefully by the Go binary.
+RUN ln -s /usr/local/bin/${BINARY_NAME} /usr/local/bin/mcp-server
+
+USER mcp
+
+ENTRYPOINT ["mcp-server"]

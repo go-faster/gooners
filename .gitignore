@@ -22,6 +22,8 @@ secret.yaml
 /opencode-handoff-mcp
 /mcpgateway
 /alertmanager-mcp
+/sandbox-agent
+/sandbox-mcp
 
 # goreleaser
 dist

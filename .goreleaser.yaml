@@ -72,6 +72,37 @@ builds:
       - amd64
       - arm64
 
+  - id: sandbox-mcp
+    main: ./cmd/sandbox-mcp
+    binary: sandbox-mcp
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+  # sandbox-agent is also built standalone (for anyone bind-mounting a custom
+  # -sandbox-agent-path instead of using the sandbox-mcp Docker image, which
+  # ships both architectures under Dockerfile.sandbox-mcp.goreleaser).
+  - id: sandbox-agent
+    main: ./cmd/sandbox-agent
+    binary: sandbox-agent
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
 dockers_v2:
   - id: ssh-mcp
     ids: [ssh-mcp]
@@ -128,6 +159,22 @@ dockers_v2:
       BINARY_NAME: alertmanager-mcp
     dockerfile: Dockerfile.goreleaser
 
+  # Uses a dedicated Dockerfile (not the shared Dockerfile.goreleaser): this
+  # image also needs both architectures' sandbox-agent binaries baked in at
+  # internal/sandbox/docker.DefaultAgentDir, which the shared Dockerfile
+  # (one platform's binary per image) has no way to express, and which the
+  # other five images have no need for.
+  - id: sandbox-mcp
+    ids: [sandbox-mcp]
+    images:
+      - "ghcr.io/go-faster/gooners/sandbox-mcp"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    build_args:
+      BINARY_NAME: sandbox-mcp
+    dockerfile: Dockerfile.sandbox-mcp.goreleaser
+
 archives:
   - formats: tar.gz
     name_template: >-
@@ -159,6 +206,7 @@ release:
     ghcr.io/go-faster/gooners/mcpgateway:v{{ .Version }}
     ghcr.io/go-faster/gooners/opencode-handoff-mcp:v{{ .Version }}
     ghcr.io/go-faster/gooners/alertmanager-mcp:v{{ .Version }}
+    ghcr.io/go-faster/gooners/sandbox-mcp:v{{ .Version }}
     ```
 
 signs:
@@ -242,6 +290,25 @@ nfpms:
       lintian_overrides:
         - statically-linked-binary
         - changelog-file-missing-in-native-package
+
+  - id: sandbox-mcp
+    package_name: sandbox-mcp
+    ids: [sandbox-mcp]
+    homepage: https://github.com/go-faster/gooners
+    maintainer: tdakkota <tdakkota@users.noreply.github.com>
+    description: MCP server that gives every session a fresh, isolated Docker container instead of a static SSH host.
+    license: Apache 2.0
+    formats: [apk, deb, rpm, archlinux]
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+
+  # sandbox-agent is not packaged as an nfpm/system package: it is an
+  # implementation detail injected into sandbox containers (via the
+  # sandbox-mcp Docker image or -sandbox-agent-path), never installed as a
+  # host service. Its archive (from the `archives:` block below) still
+  # covers anyone who wants the raw binary.
 
 checksum:
   name_template: 'checksums.txt'

@@ -7,6 +7,7 @@ MCP (Model Context Protocol) servers, AI tools, and agent skills built on go-fas
 | Tool | Description |
 |------|-------------|
 | [ssh-mcp](cmd/ssh-mcp) | MCP server exposing SSH, SFTP, and other operations as agent tools (Docker support included) |
+| [sandbox-mcp](cmd/sandbox-mcp) | MCP server that gives every session a fresh, isolated Docker container instead of a static SSH host, reusing ssh-mcp's session pool and tool surface |
 | [grafana-dashboard-mcp](cmd/grafana-dashboard-mcp) | MCP server for building, verifying, and exporting Grafana dashboards using the Grafana Foundation SDK (Docker support included) |
 | [alertmanager-mcp](cmd/alertmanager-mcp) | MCP server for Alertmanager alerts, silences, receivers, and cluster status, plus PromQL validate/evaluate tools (Docker support included) |
 | [opencode-handoff-mcp](cmd/opencode-handoff-mcp) | MCP server for delegating coding tasks to opencode agents and monitoring their sessions |

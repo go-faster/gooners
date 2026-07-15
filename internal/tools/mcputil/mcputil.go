@@ -64,6 +64,7 @@ func Register[In, Out any](s *mcp.Server, def ToolDef, handler mcp.ToolHandlerFo
 // SessionResult is returned by ssh_open, ssh_open_cfg etc.
 type SessionResult struct {
 	SessionID string `json:"session_id"`
+	Label     string `json:"label,omitempty" jsonschema:"Friendly display name (not a capability token)"`
 	UserAgent string `json:"user_agent,omitempty"`
 	Banner    string `json:"banner,omitempty"`
 	Platform  string `json:"platform,omitempty" jsonschema:"Detected OS platform (may be imprecise)"`
@@ -72,6 +73,18 @@ type SessionResult struct {
 // SuccessResult for close etc.
 type SuccessResult struct {
 	OK bool `json:"ok"`
+}
+
+// SandboxResult is returned by sandbox_open. Unlike SessionResult, it
+// reports the image and network tier a Policy actually assigned - not
+// necessarily what the caller requested - since session_id is the only
+// field a caller needs to then use every other SSH tool (ssh_exec, cat, ls,
+// upload_file, ...) against the new sandbox.
+type SandboxResult struct {
+	SessionID string `json:"session_id"`
+	Label     string `json:"label,omitempty" jsonschema:"Friendly display name (not a capability token)"`
+	Image     string `json:"image"`
+	Network   string `json:"network" jsonschema:"Network tier actually assigned: none, open, or egress-proxy"`
 }
 
 // SessionsResult for list.
@@ -117,12 +130,9 @@ type UploadStatusResult struct {
 	Percent         float64 `json:"percent"`
 	InstantSpeedBPS float64 `json:"instant_speed_bps"`
 	AverageSpeedBPS float64 `json:"average_speed_bps"`
-	DurationSeconds float64 `json:"duration_seconds"`
 	ETASeconds      float64 `json:"eta_seconds"`
 	Done            bool    `json:"done"`
-	// Status is one of running, completed, failed, canceled.
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	Error           string  `json:"error,omitempty"`
 }
 
 // DownloadResult for download start.
@@ -140,12 +150,9 @@ type DownloadStatusResult struct {
 	Percent         float64 `json:"percent"`
 	InstantSpeedBPS float64 `json:"instant_speed_bps"`
 	AverageSpeedBPS float64 `json:"average_speed_bps"`
-	DurationSeconds float64 `json:"duration_seconds"`
 	ETASeconds      float64 `json:"eta_seconds"`
 	Done            bool    `json:"done"`
-	// Status is one of running, completed, failed, canceled.
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
+	Error           string  `json:"error,omitempty"`
 }
 
 // PingResult for ssh_ping.

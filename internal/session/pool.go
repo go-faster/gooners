@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,22 +24,95 @@ import (
 type Session struct {
 	ID        string
 	Machine   string
+	Label     string // friendly, display-only name; never a capability token
 	CreatedAt time.Time
 	client    *ssh.Client
-	lastPing  atomic.Int64      // unix nanoseconds of last successful keepalive; 0 = no ping yet
+	lastPing  atomic.Int64 // unix nanoseconds of last successful keepalive; 0 = no ping yet
+	lastUsed  atomic.Int64 // unix nanoseconds of last tool activity; used by the idle sweep
+	// onClose runs in its own goroutine after client is closed, for any reason.
+	onClose func()
+	// TODO: completed jobs are never evicted from these maps, which is a known leak
+	uploads   map[string]*UploadJob
+	downloads map[string]*DownloadJob
 	spools    map[string]string // spoolID -> localFilePath
 	forwards  []io.Closer
 
 	ctx    context.Context
-	cancel context.CancelCauseFunc
+	cancel context.CancelFunc
 
 	userAgent string
 	banner    string
 	platform  string
 }
 
+// newSession builds a Session derived from parentCtx, with its maps
+// initialized and lastUsed set to now. It does not register the session in
+// the pool's sessions map or start [Pool.watchSession]; callers must do both.
+func newSession(
+	parentCtx context.Context,
+	id, machine, label string,
+	client *ssh.Client,
+	forwards []io.Closer,
+	userAgent, banner, platform string,
+	onClose func(),
+) *Session {
+	sCtx, sCancel := context.WithCancel(parentCtx)
+	s := &Session{
+		ID:        id,
+		Machine:   machine,
+		Label:     label,
+		CreatedAt: time.Now(),
+		client:    client,
+		onClose:   onClose,
+		uploads:   make(map[string]*UploadJob),
+		downloads: make(map[string]*DownloadJob),
+		spools:    make(map[string]string),
+		forwards:  forwards,
+		ctx:       sCtx,
+		cancel:    sCancel,
+		userAgent: userAgent,
+		banner:    banner,
+		platform:  platform,
+	}
+	s.lastUsed.Store(time.Now().UnixNano())
+	return s
+}
+
+type UploadJob struct {
+	ID            string
+	LocalPath     string
+	RemotePath    string
+	TotalBytes    int64
+	BytesUploaded int64
+	StartedAt     time.Time
+	LastStatusAt  time.Time
+	LastStatus    int64
+	Done          bool
+	Err           error
+	mu            sync.Mutex
+	cancel        context.CancelFunc
+	done          chan struct{}
+}
+
+type DownloadJob struct {
+	ID              string
+	LocalPath       string
+	RemotePath      string
+	TotalBytes      int64
+	BytesDownloaded int64
+	StartedAt       time.Time
+	LastStatusAt    time.Time
+	LastStatus      int64
+	Done            bool
+	Err             error
+	mu              sync.Mutex
+	cancel          context.CancelFunc
+	done            chan struct{}
+}
+
 type OpenResult struct {
 	ID        string
+	Label     string // friendly, display-only name; never a capability token
 	UserAgent string
 	Banner    string
 	Platform  string
@@ -46,6 +120,7 @@ type OpenResult struct {
 
 type SessionInfo struct {
 	ID        string    `json:"id"`
+	Label     string    `json:"label,omitempty" jsonschema:"Friendly display name (not a capability token)"`
 	Machine   string    `json:"machine"`
 	CreatedAt time.Time `json:"created_at"`
 	LastPing  time.Time `json:"last_ping,omitzero"`
@@ -81,12 +156,10 @@ type Pool struct {
 	reqCh        chan Request
 	onDisconnect func(machine string, err error)
 
-	commandTimeout    time.Duration
-	maxOutputBytes    int64
-	homeDir           string
-	keepaliveInterval time.Duration
-	keepaliveTimeout  time.Duration
-	jobRetention      time.Duration
+	commandTimeout time.Duration
+	maxOutputBytes int64
+	homeDir        string
+	idleTimeout    time.Duration
 
 	// localFS is every host file the pool may touch on a tool's behalf: upload
 	// sources, download targets, saved spool output. It is the gate. A tool
@@ -113,21 +186,16 @@ type PoolOptions struct {
 	HomeDir string
 	// OnDisconnect is invoked when a session is closed.
 	OnDisconnect func(machine string, err error)
-	// KeepaliveInterval is how often an open session is probed. Defaults to 15s.
-	KeepaliveInterval time.Duration
-	// KeepaliveTimeout bounds a single probe. A stalled connection never answers and
-	// never fails, so an unbounded probe would hide the disconnect forever.
-	// Defaults to 15s.
-	KeepaliveTimeout time.Duration
-	// JobRetention is how long a finished transfer job stays queryable after its
-	// session goes away. Defaults to 1h.
-	JobRetention time.Duration
+	// IdleTimeout closes sessions that have seen no tool activity for this
+	// long. Zero (the default) disables the idle sweep.
+	IdleTimeout time.Duration
 	// LocalFS confines every host file the pool touches for a tool: upload
 	// sources, download targets, saved spool output. Use [effect.Root] to
 	// confine it to one directory.
 	//
 	// It defaults to denying everything, so a process that never configures it
-	// cannot reach the host filesystem even if it registers a tool that asks to.
+	// (sandbox-mcp) cannot reach the host filesystem even if it registers a
+	// tool that asks to.
 	LocalFS effect.FS
 	// SpoolFS stores output too large to hold in memory. Defaults to a
 	// per-process directory under [os.TempDir].
@@ -144,15 +212,6 @@ func (opts *PoolOptions) setDefaults() {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	if opts.KeepaliveInterval <= 0 {
-		opts.KeepaliveInterval = 15 * time.Second
-	}
-	if opts.KeepaliveTimeout <= 0 {
-		opts.KeepaliveTimeout = 15 * time.Second
-	}
-	if opts.JobRetention <= 0 {
-		opts.JobRetention = time.Hour
-	}
 	if opts.LocalFS == nil {
 		opts.LocalFS = effect.Deny("host file access is not configured for this server")
 	}
@@ -167,14 +226,12 @@ func NewPool(opts PoolOptions) *Pool {
 		reqCh:        make(chan Request),
 		onDisconnect: opts.OnDisconnect,
 
-		commandTimeout:    opts.CommandTimeout,
-		maxOutputBytes:    opts.MaxOutputBytes,
-		homeDir:           opts.HomeDir,
-		keepaliveInterval: opts.KeepaliveInterval,
-		keepaliveTimeout:  opts.KeepaliveTimeout,
-		jobRetention:      opts.JobRetention,
-		localFS:           opts.LocalFS,
-		spoolFS:           opts.SpoolFS,
+		commandTimeout: opts.CommandTimeout,
+		maxOutputBytes: opts.MaxOutputBytes,
+		homeDir:        opts.HomeDir,
+		idleTimeout:    opts.IdleTimeout,
+		localFS:        opts.LocalFS,
+		spoolFS:        opts.SpoolFS,
 
 		logger: opts.Logger,
 	}
@@ -217,7 +274,9 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 	case err := <-errCh:
 		lg.DebugContext(ctx, "ssh ping: keepalive response received", "err", err)
 		if err != nil {
-			p.dropSession(ctx, id, fmt.Errorf("keepalive failed: %w", err))
+			machine := p.disconnectMachine(ctx, id)
+			_ = p.Close(ctx, id)
+			p.notifyDisconnect(machine, fmt.Errorf("keepalive failed: %w", err))
 			return 0, err
 		}
 		took := time.Since(start)
@@ -225,15 +284,6 @@ func (p *Pool) Ping(ctx context.Context, id string) (time.Duration, error) {
 		p.touchLastPing(ctx, id)
 		return took, nil
 	}
-}
-
-// dropSession tears down a session whose connection is gone and tells the caller why.
-// Any transfer still running on it ends as failed with cause, so a poller learns what
-// happened instead of hanging or getting "session not found".
-func (p *Pool) dropSession(ctx context.Context, id string, cause error) {
-	machine := p.disconnectMachine(ctx, id)
-	_ = p.closeWithCause(ctx, id, cause)
-	p.notifyDisconnect(machine, cause)
 }
 
 func (p *Pool) touchLastPing(ctx context.Context, id string) {
@@ -262,70 +312,96 @@ func (p *Pool) notifyDisconnect(machine string, err error) {
 }
 
 func (p *Pool) RunLoop(ctx context.Context) {
-	st := &poolState{
-		sessions:  make(map[string]*Session),
-		uploads:   make(map[string]*TransferJob),
-		downloads: make(map[string]*TransferJob),
-	}
+	sessions := make(map[string]*Session)
 	dialCh := make(chan dialResult)
+
+	var idleTickerC <-chan time.Time
+	if p.idleTimeout > 0 {
+		idleTicker := time.NewTicker(idleSweepInterval(p.idleTimeout))
+		defer idleTicker.Stop()
+		idleTickerC = idleTicker.C
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			for _, s := range st.sessions {
-				s.cancel(ErrSessionClosed)
-				for _, path := range s.spools {
-					_ = p.spoolFS.Remove(path)
-				}
-				closeAll(s.forwards)
-				_ = p.spoolFS.RemoveAll(s.ID)
-
-				_ = s.client.Close()
+			for _, s := range sessions {
 				p.logger.Debug("ssh session closed (shutdown)", "id", s.ID, "machine", s.Machine)
+				p.closeSession(sessions, s)
 			}
 			return
 		case res := <-dialCh:
-			p.handleDialResult(ctx, st, res)
+			p.handleDialResult(ctx, sessions, res)
+		case now := <-idleTickerC:
+			p.sweepIdle(sessions, now)
 		case req := <-p.reqCh:
 			switch r := req.(type) {
 			case OpenRequest:
 				p.handleOpen(ctx, dialCh, r)
+			case AdoptRequest:
+				p.handleAdopt(ctx, sessions, r)
 			case GetRequest:
-				p.handleGet(st, r)
+				p.handleGet(sessions, r)
 			case CloseRequest:
-				p.handleClose(st, r)
+				p.handleClose(sessions, r)
 			case ListRequest:
-				p.handleList(st, r)
+				p.handleList(sessions, r)
 			case UploadRequest:
-				p.handleUpload(st, r)
+				p.handleUpload(sessions, r)
 			case UploadStatusRequest:
-				p.handleUploadStatus(st, r)
+				p.handleUploadStatus(sessions, r)
 			case UploadWaitRequest:
-				p.handleUploadWait(st, r)
+				p.handleUploadWait(sessions, r)
 			case UploadCancelRequest:
-				p.handleUploadCancel(st, r)
+				p.handleUploadCancel(sessions, r)
 			case DownloadRequest:
-				p.handleDownload(st, r)
+				p.handleDownload(sessions, r)
 			case DownloadStatusRequest:
-				p.handleDownloadStatus(st, r)
+				p.handleDownloadStatus(sessions, r)
 			case DownloadWaitRequest:
-				p.handleDownloadWait(st, r)
+				p.handleDownloadWait(sessions, r)
 			case DownloadCancelRequest:
-				p.handleDownloadCancel(st, r)
+				p.handleDownloadCancel(sessions, r)
 			case RegisterSpoolRequest:
-				p.handleRegisterSpool(st, r)
+				p.handleRegisterSpool(sessions, r)
 			case GetSpoolRequest:
-				p.handleGetSpool(st, r)
+				p.handleGetSpool(sessions, r)
 			case DeleteSpoolRequest:
-				p.handleDeleteSpool(st, r)
+				p.handleDeleteSpool(sessions, r)
 			case MachineRequest:
-				p.handleMachine(st, r)
+				p.handleMachine(sessions, r)
 			case TouchRequest:
-				p.handleTouch(st, r)
+				p.handleTouch(sessions, r)
 			case ExecRequest:
-				p.handleExec(st, r)
+				p.handleExec(sessions, r)
 			}
 		}
+	}
+}
+
+// idleSweepInterval picks how often the idle sweep checks for expired
+// sessions: often enough to enforce idleTimeout within a reasonable margin,
+// but never so often it busy-loops for a very small timeout.
+func idleSweepInterval(idleTimeout time.Duration) time.Duration {
+	const (
+		divisor = 4
+		floor   = 100 * time.Millisecond
+	)
+	if d := idleTimeout / divisor; d > floor {
+		return d
+	}
+	return floor
+}
+
+// sweepIdle closes every session whose lastUsed is older than p.idleTimeout.
+func (p *Pool) sweepIdle(sessions map[string]*Session, now time.Time) {
+	for id, s := range sessions {
+		last := time.Unix(0, s.lastUsed.Load())
+		if now.Sub(last) < p.idleTimeout {
+			continue
+		}
+		p.logger.Debug("ssh session closed (idle)", "id", id, "machine", s.Machine)
+		p.closeSession(sessions, s)
 	}
 }
 
@@ -672,6 +748,30 @@ func (p *Pool) OpenCfg(ctx context.Context, cfg Config) (OpenResult, error) {
 	}
 	return OpenResult{
 		ID:        resp.ID,
+		Label:     resp.Label,
+		UserAgent: resp.UserAgent,
+		Banner:    resp.Banner,
+		Platform:  resp.Platform,
+	}, nil
+}
+
+// Adopt registers an already-connected SSH client with the pool, giving it
+// the same bookkeeping (keepalive/liveness watch, idle sweep, spool/upload
+// state) as a session opened via [Pool.Open]. The pool takes ownership of
+// r.Client and closes it when the session is torn down, for any reason.
+func (p *Pool) Adopt(ctx context.Context, r AdoptRequest) (OpenResult, error) {
+	respCh := make(chan OpenResponse, 1)
+	r.resp = respCh
+	resp, ok := send(ctx, p.reqCh, r, respCh)
+	if !ok {
+		return OpenResult{}, ctx.Err()
+	}
+	if resp.Err != nil {
+		return OpenResult{}, resp.Err
+	}
+	return OpenResult{
+		ID:        resp.ID,
+		Label:     resp.Label,
 		UserAgent: resp.UserAgent,
 		Banner:    resp.Banner,
 		Platform:  resp.Platform,
@@ -679,13 +779,8 @@ func (p *Pool) OpenCfg(ctx context.Context, cfg Config) (OpenResult, error) {
 }
 
 func (p *Pool) Close(ctx context.Context, id string) error {
-	return p.closeWithCause(ctx, id, ErrSessionClosed)
-}
-
-// closeWithCause closes a session and records cause as the reason its transfers ended.
-func (p *Pool) closeWithCause(ctx context.Context, id string, cause error) error {
 	respCh := make(chan error, 1)
-	err, ok := send(ctx, p.reqCh, CloseRequest{ID: id, Cause: cause, resp: respCh}, respCh)
+	err, ok := send(ctx, p.reqCh, CloseRequest{ID: id, resp: respCh}, respCh)
 	if !ok {
 		return ctx.Err()
 	}
