@@ -40,6 +40,7 @@ golangci-lint run ./...
 cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
 cmd/grafana-dashboard-mcp/ ← MCP server binary (go build ./cmd/grafana-dashboard-mcp)
 cmd/alertmanager-mcp/ ← MCP server binary (go build ./cmd/alertmanager-mcp)
+cmd/gitlab-mcp/       ← MCP server binary (go build ./cmd/gitlab-mcp)
 internal/
   effect/             ← The fs/HTTP effect providers every agent-reachable side effect goes through.
                         effect.Root(dir) is a filesystem confined to dir, backed by os.Root (so a symlink
@@ -56,6 +57,7 @@ internal/
     core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec, ssh_ping, ssh_read_output, ssh_save_output
     disk/             ← disk_df, disk_lsblk, disk_mounts
     fs/               ← ls, cat, find, grep, stat, du, truncate, upload_file, write_file
+    gitlab/           ← issue_*, mr_*, release_*, repo_* (see "gitlab-mcp" below)
     grafana/          ← add_dashboard, add_panel, add_query, export_dashboard, etc.
     proc/             ← proc_list, proc_info, proc_lsof, proc_kill
     sysinfo/          ← sys_mem, sys_net_addrs, sys_os_info, sys_uptime
@@ -118,6 +120,34 @@ go build ./cmd/alertmanager-mcp
 # Or HTTP transport with debug logging:
 ./alertmanager-mcp -transport streamable-http -addr :8082 -log-file /tmp/alertmanager-mcp.log
 ```
+
+## gitlab-mcp Build
+
+```bash
+go build ./cmd/gitlab-mcp
+# Run with default stdio transport (credentials come from the glab CLI config):
+./gitlab-mcp
+# Pin a default project and enable the release asset tools:
+./gitlab-mcp -project mygroup/myproject -assets-dir ./assets
+# Or HTTP transport with debug logging:
+./gitlab-mcp -transport streamable-http -addr :8083 -log-file /tmp/gitlab-mcp.log
+```
+
+`gitlab-mcp` deliberately does **not** wrap the `glab` CLI. It calls
+`gitlab.com/gitlab-org/api/client-go` directly, which is what lets every tool take a `project`
+argument; glab's own MCP server hides `--repo` from its tool schemas and so requires a checkout.
+Keep this property when adding tools:
+
+- **Every tool takes `project`**, optional only when `Config.DefaultProject` is set. Never resolve a
+  project from the working directory or a git remote.
+- **Return a compact summary type, not the API struct.** `gl.Issue` has ~40 fields; `IssueSummary` has
+  the ones an agent uses. Cap anything unbounded (descriptions, file contents, diffs) and set an
+  explicit `*_truncated` field rather than silently cutting.
+- Do not add merge, approve, or delete tools. The absence is the design.
+- Release asset tools reach host files only via `Config.FS`; a nil FS means `effect.Deny`. Asset
+  downloads follow a URL that project content chose, so they rely on the HTTP client's allowlist.
+- Test fixtures for issues **must include `"id"`**: `gl.Issue.UnmarshalJSON` calls
+  `reflect.TypeOf(raw["id"]).Kind()` unguarded and panics without it.
 
 ## Skills
 
