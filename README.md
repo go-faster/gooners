@@ -10,6 +10,7 @@ MCP (Model Context Protocol) servers, AI tools, and agent skills built on go-fas
 | [grafana-dashboard-mcp](cmd/grafana-dashboard-mcp) | MCP server for building, verifying, and exporting Grafana dashboards using the Grafana Foundation SDK (Docker support included) |
 | [alertmanager-mcp](cmd/alertmanager-mcp) | MCP server for Alertmanager alerts, silences, receivers, and cluster status, plus PromQL validate/evaluate tools (Docker support included) |
 | [opencode-handoff-mcp](cmd/opencode-handoff-mcp) | MCP server for delegating coding tasks to opencode agents and monitoring their sessions |
+| [gitlab-mcp](cmd/gitlab-mcp) | MCP server for GitLab issues, merge requests, releases, and repository browsing; every tool takes a `project`, so no git checkout is required |
 | [mcpgateway](cmd/mcpgateway) | MCP proxy that aggregates tools from multiple upstream MCP servers (stdio, streamable-http, sse) with per-upstream prefixes, allow/deny globs, description trim, output redaction, and optional per-upstream host/path routes |
 
 ## Prompts
@@ -30,6 +31,11 @@ The MCP servers expose read-only resources for state that is useful to inspect w
 | `grafana-dashboard-mcp` | `grafana-dashboard://sessions` | Lists active dashboard builder sessions |
 | `grafana-dashboard-mcp` | `grafana-dashboard://sessions/{dashboard_id}/state` | Returns editable session state plus computed layout |
 | `grafana-dashboard-mcp` | `grafana-dashboard://sessions/{dashboard_id}/export{?version}` | Returns compiled dashboard JSON; optional `version` is `v1` or `v2` |
+| `gitlab-mcp` | `gitlab:///{project}` | Metadata of the project passed as `-project`; listed only when one is configured |
+| `gitlab-mcp` | `gitlab:///{project}/-/issues/{iid}` | One issue, as `issue_view` returns it |
+| `gitlab-mcp` | `gitlab:///{project}/-/merge_requests/{iid}` | One merge request, as `mr_view` returns it |
+| `gitlab-mcp` | `gitlab:///{project}/-/releases/{tag}` | One release, as `release_view` returns it |
+| `gitlab-mcp` | `gitlab:///{project}/-/blob/{ref}/{path}` | A repository file's contents at a ref |
 
 ## Skills
 
