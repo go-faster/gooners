@@ -1,0 +1,26 @@
+name: release-dispatch
+
+# Relays a tag push to release.yml as a `workflow_dispatch` on `main`, so the
+# actual release build runs in main's ref (and can see its GitHub Actions
+# cache) instead of the tag's own, never-before-seen ref. See release.yml
+# for the full explanation.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  actions: write
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch release build on main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh workflow run release.yml \
+            --repo "${{ github.repository }}" \
+            --ref main \
+            -f "tag=$TAG"

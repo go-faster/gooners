@@ -83,6 +83,11 @@ dockers_v2:
     build_args:
       BINARY_NAME: ssh-mcp
     dockerfile: Dockerfile.goreleaser
+    # Registry-backed buildx cache: unlike GitHub Actions' cache, it isn't
+    # scoped to a ref, so it's actually reusable across releases.
+    flags:
+      - "--cache-from=type=registry,ref=ghcr.io/go-faster/gooners/ssh-mcp:buildcache"
+      - "--cache-to=type=registry,ref=ghcr.io/go-faster/gooners/ssh-mcp:buildcache,mode=max"
 
   - id: grafana-dashboard-mcp
     ids: [grafana-dashboard-mcp]
@@ -94,6 +99,9 @@ dockers_v2:
     build_args:
       BINARY_NAME: grafana-dashboard-mcp
     dockerfile: Dockerfile.goreleaser
+    flags:
+      - "--cache-from=type=registry,ref=ghcr.io/go-faster/gooners/grafana-dashboard-mcp:buildcache"
+      - "--cache-to=type=registry,ref=ghcr.io/go-faster/gooners/grafana-dashboard-mcp:buildcache,mode=max"
 
   - id: mcpgateway
     ids: [mcpgateway]
@@ -105,6 +113,9 @@ dockers_v2:
     build_args:
       BINARY_NAME: mcpgateway
     dockerfile: Dockerfile.goreleaser
+    flags:
+      - "--cache-from=type=registry,ref=ghcr.io/go-faster/gooners/mcpgateway:buildcache"
+      - "--cache-to=type=registry,ref=ghcr.io/go-faster/gooners/mcpgateway:buildcache,mode=max"
 
   - id: opencode-handoff-mcp
     ids: [opencode-handoff-mcp]
@@ -116,6 +127,9 @@ dockers_v2:
     build_args:
       BINARY_NAME: opencode-handoff-mcp
     dockerfile: Dockerfile.goreleaser
+    flags:
+      - "--cache-from=type=registry,ref=ghcr.io/go-faster/gooners/opencode-handoff-mcp:buildcache"
+      - "--cache-to=type=registry,ref=ghcr.io/go-faster/gooners/opencode-handoff-mcp:buildcache,mode=max"
 
   - id: alertmanager-mcp
     ids: [alertmanager-mcp]
@@ -127,6 +141,9 @@ dockers_v2:
     build_args:
       BINARY_NAME: alertmanager-mcp
     dockerfile: Dockerfile.goreleaser
+    flags:
+      - "--cache-from=type=registry,ref=ghcr.io/go-faster/gooners/alertmanager-mcp:buildcache"
+      - "--cache-to=type=registry,ref=ghcr.io/go-faster/gooners/alertmanager-mcp:buildcache,mode=max"
 
 archives:
   - formats: tar.gz
