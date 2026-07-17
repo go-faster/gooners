@@ -72,6 +72,20 @@ builds:
       - amd64
       - arm64
 
+  - id: gitlab-mcp
+    main: ./cmd/gitlab-mcp
+    binary: gitlab-mcp
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
 dockers_v2:
   - id: ssh-mcp
     ids: [ssh-mcp]
@@ -128,6 +142,23 @@ dockers_v2:
       BINARY_NAME: alertmanager-mcp
     dockerfile: Dockerfile.goreleaser
 
+  - id: gitlab-mcp
+    ids: [gitlab-mcp]
+    images:
+      - "ghcr.io/go-faster/gooners/gitlab-mcp"
+    tags:
+      - "{{ .Version }}"
+      - "latest"
+    build_args:
+      BINARY_NAME: gitlab-mcp
+    dockerfile: Dockerfile.goreleaser
+    # Registry-backed buildx cache, matching what ci/fix-release-cache-scoping
+    # adds for the other images: carried here so gitlab-mcp is cached whichever
+    # of the two branches lands first.
+    flags:
+      - "--cache-from=type=registry,ref=ghcr.io/go-faster/gooners/gitlab-mcp:buildcache"
+      - "--cache-to=type=registry,ref=ghcr.io/go-faster/gooners/gitlab-mcp:buildcache,mode=max"
+
 archives:
   - formats: tar.gz
     name_template: >-
@@ -159,6 +190,7 @@ release:
     ghcr.io/go-faster/gooners/mcpgateway:v{{ .Version }}
     ghcr.io/go-faster/gooners/opencode-handoff-mcp:v{{ .Version }}
     ghcr.io/go-faster/gooners/alertmanager-mcp:v{{ .Version }}
+    ghcr.io/go-faster/gooners/gitlab-mcp:v{{ .Version }}
     ```
 
 signs:
@@ -236,6 +268,19 @@ nfpms:
     homepage: https://github.com/go-faster/gooners
     maintainer: tdakkota <tdakkota@users.noreply.github.com>
     description: Alertmanager MCP server for alerts, silences, receivers, and PromQL validation.
+    license: Apache 2.0
+    formats: [apk, deb, rpm, archlinux]
+    deb:
+      lintian_overrides:
+        - statically-linked-binary
+        - changelog-file-missing-in-native-package
+
+  - id: gitlab-mcp
+    package_name: gitlab-mcp
+    ids: [gitlab-mcp]
+    homepage: https://github.com/go-faster/gooners
+    maintainer: tdakkota <tdakkota@users.noreply.github.com>
+    description: GitLab MCP server for issues, merge requests, releases, and repository browsing.
     license: Apache 2.0
     formats: [apk, deb, rpm, archlinux]
     deb:

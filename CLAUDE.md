@@ -216,6 +216,19 @@ func NewFoo(ctx context.Context, opts FooOptions) *Foo {
 - Tools go in the **Tools** table; skills go in the **Skills** table.
 - Keep the **Tools** and **Skills** tables accurate and comprehensive.
 
+## Releases
+
+- When adding, removing, or renaming a binary under `cmd/`, update `.goreleaser.yaml`. A binary that
+  builds and passes CI is still absent from every release artifact until it is listed there, and
+  nothing fails to tell you — this is why `gitlab-mcp` shipped without it.
+- Each binary appears in **four** places; adding it to only some is the failure mode:
+  1. `builds` — the binary itself
+  2. `dockers_v2` — the `ghcr.io/go-faster/gooners/<name>` image, including its registry buildcache flags
+  3. `release.footer` — the image list in the release notes
+  4. `nfpms` — the apk/deb/rpm/archlinux packages
+- Verify with `goreleaser check`, then `goreleaser build --snapshot --clean --id <name> --single-target`.
+  `check` only validates the schema; it cannot know a binary is missing.
+
 ## GitHub Labels
 
 - When adding, removing, or renaming a component under `cmd/` or `skills/`, update the GitHub component label set if repository access allows it.
