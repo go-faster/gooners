@@ -10,7 +10,7 @@ MCP (Model Context Protocol) servers, AI tools, and agent skills built on go-fas
 | [grafana-dashboard-mcp](cmd/grafana-dashboard-mcp) | MCP server for building, verifying, and exporting Grafana dashboards using the Grafana Foundation SDK (Docker support included) |
 | [alertmanager-mcp](cmd/alertmanager-mcp) | MCP server for Alertmanager alerts, silences, receivers, and cluster status, plus PromQL validate/evaluate tools (Docker support included) |
 | [opencode-handoff-mcp](cmd/opencode-handoff-mcp) | MCP server for delegating coding tasks to opencode agents and monitoring their sessions |
-| [gitlab-mcp](cmd/gitlab-mcp) | MCP server for GitLab issues, merge requests, releases, and repository browsing; every tool takes a `project`, so no git checkout is required |
+| [gitlab-mcp](cmd/gitlab-mcp) | MCP server for GitLab issues, merge requests, releases, and repository browsing; every tool takes a `project`, so no git checkout is required, and `-auth=client` lets each caller supply its own token |
 | [mcpgateway](cmd/mcpgateway) | MCP proxy that aggregates tools from multiple upstream MCP servers (stdio, streamable-http, sse) with per-upstream prefixes, allow/deny globs, description trim, output redaction, and optional per-upstream host/path routes |
 
 ## Prompts

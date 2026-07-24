@@ -131,6 +131,8 @@ go build ./cmd/gitlab-mcp
 ./gitlab-mcp -project mygroup/myproject -assets-dir ./assets
 # Or HTTP transport with debug logging:
 ./gitlab-mcp -transport streamable-http -addr :8083 -log-file /tmp/gitlab-mcp.log
+# Shared server where each caller sends its own token on PRIVATE-TOKEN/Authorization:
+./gitlab-mcp -transport streamable-http -addr :8083 -auth client -tls-cert-file c.pem -tls-key-file k.pem
 ```
 
 `gitlab-mcp` deliberately does **not** wrap the `glab` CLI. It calls
@@ -144,6 +146,12 @@ Keep this property when adding tools:
   the ones an agent uses. Cap anything unbounded (descriptions, file contents, diffs) and set an
   explicit `*_truncated` field rather than silently cutting.
 - Do not add merge, approve, or delete tools. The absence is the design.
+- **The credential may vary per session; the instance URL may not.** `-auth=client` takes each caller's
+  token off a `PRIVATE-TOKEN`/`Authorization` header and `ClientSet` builds a `Client` per token. Never
+  extend this to let a caller choose the host: the server would then send its own token, or another
+  user's, to an attacker-named destination. `effect.AllowHostOf(cfg.BaseURL)` is what pins it.
+- A tool handler must take its `*Client` from the closure it was registered with — that is the session's
+  credential. Do not reach for a package-level or `Config`-level token inside a handler.
 - Release asset tools reach host files only via `Config.FS`; a nil FS means `effect.Deny`. Asset
   downloads follow a URL that project content chose, so they rely on the HTTP client's allowlist.
 - Test fixtures for issues **must include `"id"`**: `gl.Issue.UnmarshalJSON` calls
