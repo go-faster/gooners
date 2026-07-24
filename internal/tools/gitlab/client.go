@@ -42,7 +42,9 @@ type Config struct {
 	// instance, so neither the API client nor an asset download can reach
 	// another host.
 	//
-	// It exists as a seam for tests; production code leaves it nil.
+	// It is a seam for tests, and how [ClientSet] shares one connection pool
+	// across per-token clients. A credential never lives here — it is a
+	// request header — so sharing one across tokens is safe.
 	HTTPClient *http.Client
 }
 

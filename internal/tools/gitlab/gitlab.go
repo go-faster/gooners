@@ -8,7 +8,12 @@
 package gitlab
 
 import (
+	"log/slog"
+	"net/http"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/go-faster/gooners/internal/mcputil"
 )
 
 // Instructions is the server-level guidance sent to clients.
@@ -27,4 +32,80 @@ func Register(s *mcp.Server, c *Client) {
 	registerReleaseTools(s, c)
 	registerRepoTools(s, c)
 	registerResources(s, c)
+}
+
+// SessionServerOptions configures [NewSessionServer].
+type SessionServerOptions struct {
+	// Clients builds the per-credential GitLab clients.
+	Clients *ClientSet
+	// Mode decides whose credential a session uses.
+	Mode AuthMode
+	// Server is the base MCP server configuration; one server is built per
+	// session from it.
+	Server mcputil.ServerConfig
+	// Logger records rejected sessions. Defaults to [slog.Default].
+	Logger *slog.Logger
+}
+
+func (o *SessionServerOptions) setDefaults() {
+	if o.Logger == nil {
+		o.Logger = slog.Default()
+	}
+}
+
+// NewSessionServer returns the getServer function for
+// [cmdutil.RunOptions.Handler]. It runs once per MCP session, so a session's
+// credential is fixed for its lifetime rather than re-read per tool call. That
+// makes the session ID as sensitive as the token: a later request on the same
+// session runs as whoever opened it, whatever header it carries.
+//
+// A nil return makes the SDK refuse the session with 400.
+func NewSessionServer(opts SessionServerOptions) func(*http.Request) *mcp.Server {
+	opts.setDefaults()
+
+	return func(r *http.Request) *mcp.Server {
+		c, ok := opts.clientFor(r)
+		if !ok {
+			return nil
+		}
+
+		s := mcputil.NewServer(opts.Server)
+		Register(s, c)
+		return s
+	}
+}
+
+// clientFor resolves the client a session runs as, or reports that the session
+// must be refused.
+func (o SessionServerOptions) clientFor(r *http.Request) (*Client, bool) {
+	token := ClientToken(r)
+	switch o.Mode {
+	case AuthServer:
+		token = o.Clients.Token()
+	case AuthClientOptional:
+		if token == "" {
+			token = o.Clients.Token()
+		}
+	case AuthClientRequired:
+		if token == "" {
+			o.Logger.Warn("refusing session with no client token", "remote", remoteOf(r))
+			return nil, false
+		}
+	}
+
+	c, err := o.Clients.For(token)
+	if err != nil {
+		o.Logger.Error("failed to build gitlab client for session", "err", err)
+		return nil, false
+	}
+	return c, true
+}
+
+// remoteOf identifies a rejected caller in a log line without touching any
+// header it sent.
+func remoteOf(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return r.RemoteAddr
 }

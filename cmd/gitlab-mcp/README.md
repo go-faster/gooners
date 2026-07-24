@@ -28,6 +28,8 @@ go build ./cmd/gitlab-mcp
 | `-glab-config-dir` | | Where to read `glab`'s `config.yml`. Defaults to `glab`'s own location (`$GLAB_CONFIG_DIR`, else `$XDG_CONFIG_HOME/glab-cli`, else `~/.config/glab-cli`). |
 | `-no-glab-config` | | Do not read credentials from the `glab` config. |
 | `-assets-dir` | | Directory the release asset tools may read and write. They are disabled when unset. |
+| `-auth` | | Credential source: `server` (default), `client`, or `client-optional`. See [Authentication](#authentication). |
+| `-auth-insecure` | | Allow caller-supplied tokens over plaintext HTTP. |
 
 If you already run `glab auth login`, no configuration is needed:
 
@@ -37,6 +39,47 @@ If you already run `glab auth login`, no configuration is needed:
 ```
 
 Without a token, only public projects are readable, and the server logs a warning at startup.
+
+## Authentication
+
+`-auth` decides whose GitLab credential a session runs as.
+
+| Mode | Credential | Use |
+|------|-----------|-----|
+| `server` (default) | `-gitlab-token`, or the `glab` config | One operator, one token. On stdio this is the only sensible mode. |
+| `client` | The caller's, per session; sessions without one are refused | A shared HTTP server where each user brings their own token. |
+| `client-optional` | The caller's, falling back to the server's | Migrating to `client` without breaking existing clients. |
+
+Callers send their token on either header, `PRIVATE-TOKEN` taking precedence:
+
+```
+PRIVATE-TOKEN: glpat-xxxxxxxxxxxx
+Authorization: Bearer glpat-xxxxxxxxxxxx
+```
+
+The credential is read once per MCP session, not per tool call, and clients presenting the same token
+share one GitLab client. Under `-auth=client` the server holds no credential of its own: the `glab`
+config is read only for the instance URL, and an explicit `-gitlab-token` is ignored with a warning.
+
+Two guardrails refuse to start rather than fail quietly:
+
+- **`client`/`client-optional` require an HTTP transport.** stdio has no headers, so a caller could never
+  present a token and every session would silently read as anonymous.
+- **They require TLS**, or an explicit `-auth-insecure`. Passthrough puts a credential on the wire.
+
+The **instance URL is always the operator's**, in every mode. A server that let a caller supply both host
+and token would be a shared server; one that let a caller supply the host while the server supplies the
+token would be a credential-exfiltration endpoint. `effect.AllowHostOf` pins egress to the configured
+instance and nothing in a request can widen it.
+
+Note what `client` mode is not: authentication of the caller *to this server*. GitLab validates the token
+on the first API call, so a session opened with a garbage token is accepted here and fails there. If you
+need the server itself to reject unknown callers, put it behind something that does that.
+
+Because the credential is bound at session creation, the **`Mcp-Session-Id` is as sensitive as the token
+itself**: requests on an existing session run as whoever opened it, and a `PRIVATE-TOKEN` header sent
+later in that session is ignored rather than honoured. Isolation between users is therefore only as good
+as the secrecy of the session ID, which is another reason `-auth-insecure` is a deliberate opt-out.
 
 ## Tools
 
@@ -108,3 +151,8 @@ Per the effect-provider invariant in `CLAUDE.md`:
   they get an `effect.Deny` provider and can touch nothing. No handler checks paths itself.
 - Reading `glab`'s config uses `os.ReadFile` because it is an operator-controlled startup path that no
   agent can influence.
+- Under `-auth=server` on an HTTP transport, the server is a shared-credential proxy: whoever reaches
+  `-addr` acts as the token it started with. That is the default because it is what stdio needs; it is
+  `-auth=client` that makes an exposed server safe to share.
+- The per-token client cache is bounded at 128 entries and dropped wholesale past it, because under
+  `-auth=client` the set of tokens is caller-supplied and so is attacker-driven input.

@@ -32,6 +32,9 @@ func main() {
 		noGlabConfig  = flag.Bool("no-glab-config", false, "do not read credentials from the glab CLI config")
 
 		assetsDir = flag.String("assets-dir", "", "directory the release asset tools may read and write; they are disabled when unset")
+
+		auth         = flag.String("auth", "server", "credential source: server (the configured token for everyone), client (each caller sends its own), client-optional (caller's token, else the configured one)")
+		authInsecure = flag.Bool("auth-insecure", false, "allow caller-supplied tokens over plaintext HTTP")
 	)
 	flag.Parse()
 
@@ -45,6 +48,27 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	mode, err := gitlab.ParseAuthMode(*auth)
+	if err != nil {
+		// A mistyped flag deserves the accepted values, not a stack trace.
+		logger.Error("invalid -auth", "value", *auth, "want", "server, client or client-optional")
+		os.Exit(1)
+	}
+	clientAuth := mode != gitlab.AuthServer
+
+	// A caller's token can only arrive on a header, and stdio has none, so
+	// client auth over stdio would authenticate as nobody. Refusing beats a
+	// server that silently reads every project as anonymous.
+	if clientAuth && transport.Transport == "stdio" {
+		logger.Error("client auth requires an HTTP transport", "auth", mode.String(), "transport", transport.Transport)
+		os.Exit(1)
+	}
+	// Passthrough puts a credential on the wire on every session.
+	if clientAuth && transport.TLSCertFile == "" && !*authInsecure {
+		logger.Error("client auth over plaintext sends tokens in the clear; pass -tls-cert-file/-tls-key-file, or -auth-insecure to accept it", "auth", mode.String())
+		os.Exit(1)
+	}
+
 	cfg := gitlab.Config{
 		BaseURL:        *baseURL,
 		Token:          *token,
@@ -54,6 +78,9 @@ func main() {
 	// The glab CLI is the likeliest place a token already exists, so an
 	// operator who has run `glab auth login` needs no further setup. Explicit
 	// flags and environment still win.
+	//
+	// Under -auth=client the server holds no credential, so the only thing
+	// worth reading from the glab config is the instance URL.
 	if !*noGlabConfig {
 		dir := *glabConfigDir
 		if dir == "" {
@@ -70,7 +97,7 @@ func main() {
 				cfg.BaseURL = glabURL
 				logger.Info("using GitLab instance from glab config", "url", glabURL)
 			}
-			if cfg.Token == "" && glabToken != "" {
+			if cfg.Token == "" && glabToken != "" && mode != gitlab.AuthClientRequired {
 				cfg.Token = glabToken
 				logger.Info("using GitLab token from glab config", "host", hostOf(cfg.BaseURL))
 			}
@@ -83,28 +110,41 @@ func main() {
 		cfg.FS = effect.Root(*assetsDir)
 	}
 
-	if cfg.Token == "" {
+	switch {
+	case mode == gitlab.AuthClientRequired:
+		// Nothing should have set it, but an explicit -gitlab-token plus
+		// -auth=client is a contradiction worth naming rather than obeying.
+		if cfg.Token != "" {
+			logger.Warn("ignoring the configured token: every session must present its own")
+			cfg.Token = ""
+		}
+	case cfg.Token == "":
 		logger.Warn("no GitLab token configured; only public projects will be readable")
 	}
 
-	c, err := gitlab.NewClient(cfg)
+	clients, err := gitlab.NewClientSet(cfg)
 	if err != nil {
 		logger.Error("failed to create gitlab client", "err", err)
 		os.Exit(1)
 	}
 
-	s := mcputil.NewServer(mcputil.ServerConfig{
-		Name:         "gitlab-mcp",
-		Instructions: gitlab.Instructions,
-		Logger:       logger.With("component", "mcp-sdk"),
+	logger.Info("gitlab-mcp configured", "url", cfg.BaseURL, "auth", mode.String())
+
+	handler := gitlab.NewSessionServer(gitlab.SessionServerOptions{
+		Clients: clients,
+		Mode:    mode,
+		Server: mcputil.ServerConfig{
+			Name:         "gitlab-mcp",
+			Instructions: gitlab.Instructions,
+			Logger:       logger.With("component", "mcp-sdk"),
+		},
+		Logger: logger.With("component", "auth"),
 	})
 
-	gitlab.Register(s, c)
-
 	if err := transport.Run(ctx, cmdutil.RunOptions{
-		Name:   "gitlab-mcp",
-		Server: s,
-		Logger: logger.With("component", "transport"),
+		Name:    "gitlab-mcp",
+		Handler: handler,
+		Logger:  logger.With("component", "transport"),
 	}); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
