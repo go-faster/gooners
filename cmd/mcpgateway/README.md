@@ -57,7 +57,27 @@ url = "http://grafana.internal:8080/mcp"
 tools.lazy = true
 ```
 
-Setting it on any upstream adds two gateway tools to the aggregate endpoint:
+`[server] lazy_tools = true` does it for every upstream at once. Per-upstream `tools.lazy` then
+overrides it in either direction, which is how you keep a handful of tools always in front of the
+model:
+
+```toml
+[server]
+lazy_tools = true
+
+[[upstream]]
+name = "grafana"          # inherits lazy_tools: hidden
+kind = "http"
+url = "http://grafana.internal:8080/mcp"
+
+[[upstream]]
+name = "ssh"              # opts back out: always in tools/list
+kind = "stdio"
+command = ["./ssh-mcp"]
+tools.lazy = false
+```
+
+Lazy listing anywhere adds two gateway tools to the aggregate endpoint:
 
 - `search_tools(query, limit)` — searches the catalog by name and description, returning names,
   owning upstream and truncated descriptions, but **no input schemas**. `hidden: true` marks a tool

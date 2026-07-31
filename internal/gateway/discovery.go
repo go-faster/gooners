@@ -109,7 +109,7 @@ func (g *Gateway) handleSearchTools(_ context.Context, req *mcp.CallToolRequest,
 				Name:        name,
 				Upstream:    u.cfg.Name,
 				Description: TrimDescription(tool.Description, searchDescMax),
-				Hidden:      u.cfg.Tools.Lazy,
+				Hidden:      u.cfg.Tools.lazy(),
 			},
 			score: score,
 		})
@@ -231,7 +231,7 @@ func (g *Gateway) lazyMiddleware() mcp.Middleware {
 			}
 			lt.Tools = slices.DeleteFunc(slices.Clone(lt.Tools), func(t *mcp.Tool) bool {
 				u, _ := g.resolveToolOwner(nil, t.Name)
-				return u != nil && u.cfg.Tools.Lazy
+				return u != nil && u.cfg.Tools.lazy()
 			})
 			return lt, nil
 		}

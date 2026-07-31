@@ -166,6 +166,9 @@ func (o *Options) setDefaults() {
 // New builds the resolver, upstream objects (not connected) and local server.
 func New(cfg *Config, opts Options) (*Gateway, error) {
 	opts.setDefaults()
+	// Idempotent, and Load already ran it; repeated here so a hand-built Config
+	// still gets tools.lazy resolved against the server-wide default.
+	cfg.setDefaults()
 
 	res, err := NewSecretResolver(cfg.Secrets, opts.Slogger.With("component", "secretresolver"))
 	if err != nil {

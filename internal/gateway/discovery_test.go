@@ -43,7 +43,7 @@ func TestSearchScore(t *testing.T) {
 func newDiscoveryTestGateway() *Gateway {
 	grafana := &Upstream{cfg: UpstreamConfig{
 		Name:  "grafana",
-		Tools: ToolsConfig{Prefix: "grafana.", Scopes: grafanaScopes, Lazy: true},
+		Tools: ToolsConfig{Prefix: "grafana.", Scopes: grafanaScopes, Lazy: new(true)},
 	}}
 	ssh := &Upstream{cfg: UpstreamConfig{Name: "ssh"}}
 	tools := map[string]*mcp.Tool{
@@ -246,7 +246,7 @@ func TestGateway_Discovery_EndToEnd(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{Name: "gw"},
 		Upstreams: []UpstreamConfig{
-			{Name: "u1", Kind: "stdio", Command: []string{"ignored"}, Tools: ToolsConfig{Lazy: true}},
+			{Name: "u1", Kind: "stdio", Command: []string{"ignored"}, Tools: ToolsConfig{Lazy: new(true)}},
 		},
 	}
 	g, err := New(cfg, Options{})
@@ -307,6 +307,23 @@ func TestGateway_Discovery_EndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, callRes.IsError)
 	require.Equal(t, "ok", callRes.Content[0].(*mcp.TextContent).Text)
+}
+
+func TestGateway_Discovery_ServerLazyTools(t *testing.T) {
+	cfg := &Config{
+		Server: ServerConfig{Name: "gw", LazyTools: true},
+		Upstreams: []UpstreamConfig{
+			{Name: "inherits", Kind: "stdio", Command: []string{"ignored"}},
+			{Name: "opts-out", Kind: "stdio", Command: []string{"ignored"}, Tools: ToolsConfig{Lazy: new(false)}},
+		},
+	}
+	g, err := New(cfg, Options{})
+	require.NoError(t, err)
+	require.True(t, g.discovery)
+	require.True(t, cfg.Upstreams[0].Tools.lazy())
+	require.False(t, cfg.Upstreams[1].Tools.lazy())
+	require.True(t, g.upstreams[0].cfg.Tools.lazy())
+	require.False(t, g.upstreams[1].cfg.Tools.lazy())
 }
 
 func TestGateway_Discovery_DisabledByDefault(t *testing.T) {
