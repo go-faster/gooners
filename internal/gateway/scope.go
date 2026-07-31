@@ -35,6 +35,9 @@ func (g *Gateway) scopeMiddleware(forUpstream *Upstream) mcp.Middleware {
 				if !ok {
 					return next(ctx, method, req)
 				}
+				if g.isOwnTool(forUpstream, call.Params.Name) {
+					return next(ctx, method, req)
+				}
 				u, rawName := g.resolveToolOwner(forUpstream, call.Params.Name)
 				if u == nil || !scopeAllowsTool(extra.TokenInfo.Scopes, u.cfg.Name, u.cfg.Tools.Scopes, rawName) {
 					return nil, fmt.Errorf("tool %q not permitted by granted OAuth scope", call.Params.Name)
@@ -50,6 +53,9 @@ func (g *Gateway) scopeMiddleware(forUpstream *Upstream) mcp.Middleware {
 					return res, nil
 				}
 				lt.Tools = slices.DeleteFunc(slices.Clone(lt.Tools), func(t *mcp.Tool) bool {
+					if g.isOwnTool(forUpstream, t.Name) {
+						return false
+					}
 					u, rawName := g.resolveToolOwner(forUpstream, t.Name)
 					return u == nil || !scopeAllowsTool(extra.TokenInfo.Scopes, u.cfg.Name, u.cfg.Tools.Scopes, rawName)
 				})

@@ -106,6 +106,55 @@ command = ["echo", "hi"]
 	require.Equal(t, "u1", c.Upstreams[0].Name)
 }
 
+func TestConfigLoadLazy(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `[[upstream]]
+name = "eager"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[[upstream]]
+name = "lazy"
+kind = "stdio"
+command = ["echo", "hi"]
+tools.lazy = true
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.False(t, c.Upstreams[0].Tools.lazy())
+	require.True(t, c.Upstreams[1].Tools.lazy())
+	require.True(t, c.anyLazy())
+
+	c.Upstreams[1].Tools.Lazy = new(false)
+	require.False(t, c.anyLazy())
+}
+
+func TestConfigLoadLazyTools(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "g.toml")
+	data := `server.lazy_tools = true
+
+[[upstream]]
+name = "inherits"
+kind = "stdio"
+command = ["echo", "hi"]
+
+[[upstream]]
+name = "opts-out"
+kind = "stdio"
+command = ["echo", "hi"]
+tools.lazy = false
+`
+	require.NoError(t, os.WriteFile(p, []byte(data), 0o600))
+	c, err := Load(p)
+	require.NoError(t, err)
+	require.True(t, c.Upstreams[0].Tools.lazy())
+	require.False(t, c.Upstreams[1].Tools.lazy())
+	require.True(t, c.anyLazy())
+}
+
 func TestConfigValidateSecretRef(t *testing.T) {
 	cfg := Config{
 		Upstreams: []UpstreamConfig{{

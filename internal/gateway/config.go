@@ -24,10 +24,16 @@ type Config struct {
 	Redact    RedactConfig     `toml:"redact"`
 }
 
-// setDefaults applies server name and telemetry defaults.
+// setDefaults applies server name and telemetry defaults, and resolves the
+// per-upstream lazy flag against the server-wide default. It is idempotent.
 func (c *Config) setDefaults() {
 	if c.Server.Name == "" {
 		c.Server.Name = "mcpgateway"
+	}
+	for i := range c.Upstreams {
+		if c.Upstreams[i].Tools.Lazy == nil {
+			c.Upstreams[i].Tools.Lazy = new(c.Server.LazyTools)
+		}
 	}
 }
 
@@ -35,6 +41,9 @@ func (c *Config) setDefaults() {
 type ServerConfig struct {
 	Name         string `toml:"name"`
 	Instructions string `toml:"instructions"`
+	// LazyTools is the default for every upstream's tools.lazy, which an
+	// upstream may still override in either direction.
+	LazyTools bool `toml:"lazy_tools"`
 }
 
 // UpstreamConfig describes one upstream MCP server to proxy.
@@ -96,6 +105,31 @@ type ToolsConfig struct {
 	Prefix  string        `toml:"prefix"`
 	DescMax int           `toml:"desc_max"`
 	Scopes  []ScopeConfig `toml:"scope"`
+	// Lazy omits this upstream's tools from tools/list on the aggregate server
+	// without blocking tools/call: a client finds them via the gateway's
+	// [searchToolsName]/[describeToolsName] tools and calls them directly.
+	// Enabling it anywhere enables those two tools. Routed per-upstream
+	// endpoints are unaffected.
+	//
+	// nil inherits [ServerConfig.LazyTools], which [Config.setDefaults]
+	// resolves; use [ToolsConfig.lazy] to read the effective value.
+	Lazy *bool `toml:"lazy"`
+}
+
+// lazy reports the effective lazy flag, treating an unresolved (nil) one as off.
+func (t ToolsConfig) lazy() bool {
+	return t.Lazy != nil && *t.Lazy
+}
+
+// anyLazy reports whether any upstream ends up with lazy tool listing, which is
+// what enables the gateway's discovery tools.
+func (c *Config) anyLazy() bool {
+	for _, u := range c.Upstreams {
+		if u.Tools.lazy() {
+			return true
+		}
+	}
+	return false
 }
 
 // ScopeConfig defines a named OAuth sub-scope for an upstream, granting access to
