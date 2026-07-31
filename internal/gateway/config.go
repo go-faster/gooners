@@ -96,6 +96,23 @@ type ToolsConfig struct {
 	Prefix  string        `toml:"prefix"`
 	DescMax int           `toml:"desc_max"`
 	Scopes  []ScopeConfig `toml:"scope"`
+	// Lazy omits this upstream's tools from tools/list on the aggregate server
+	// without blocking tools/call: a client finds them via the gateway's
+	// [searchToolsName]/[describeToolsName] tools and calls them directly.
+	// Setting it on any upstream enables those two tools. Routed per-upstream
+	// endpoints are unaffected.
+	Lazy bool `toml:"lazy"`
+}
+
+// anyLazy reports whether any upstream requests lazy tool listing, which is what
+// enables the gateway's discovery tools.
+func (c *Config) anyLazy() bool {
+	for _, u := range c.Upstreams {
+		if u.Tools.Lazy {
+			return true
+		}
+	}
+	return false
 }
 
 // ScopeConfig defines a named OAuth sub-scope for an upstream, granting access to

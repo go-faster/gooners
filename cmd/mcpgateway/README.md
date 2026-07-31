@@ -43,6 +43,36 @@ name = "PROD_TOKEN"
 env = "PROD_TOKEN"
 ```
 
+## Tool discovery (`tools.lazy`)
+
+An LLM client resends the whole tool list on every completion, so a large upstream costs context on
+every turn. Set `tools.lazy = true` on an upstream to omit its tools from `tools/list` while keeping
+them callable:
+
+```toml
+[[upstream]]
+name = "grafana"
+kind = "http"
+url = "http://grafana.internal:8080/mcp"
+tools.lazy = true
+```
+
+Setting it on any upstream adds two gateway tools to the aggregate endpoint:
+
+- `search_tools(query, limit)` — searches the catalog by name and description, returning names,
+  owning upstream and truncated descriptions, but **no input schemas**. `hidden: true` marks a tool
+  absent from `tools/list`. `query` is space-separated terms matched case-insensitively; all must
+  match. An empty query returns the whole catalog.
+- `describe_tools(names)` — returns the full definitions, input schemas included, of the named tools,
+  identical to what `tools/list` reports. A client splices these into the tool set it sends to the
+  model.
+
+There is no per-session state: `tools.lazy` filters `tools/list` only and never blocks `tools/call`,
+so a client can call a tool as soon as it has the schema. Both tools apply the same OAuth scope and
+`tools.allow`/`tools.deny` filtering as `tools/list`, so they never reveal a tool the caller could
+not otherwise see. Routed per-upstream endpoints are unaffected, and `search_tools`/`describe_tools`
+become reserved names — an upstream tool that resolves to either is skipped with a warning.
+
 ## Flags
 
 - `-config` path to TOML (default `gateway.toml`)

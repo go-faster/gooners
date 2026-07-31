@@ -40,6 +40,10 @@ type Gateway struct {
 	registryMu sync.RWMutex
 	routeMu    sync.RWMutex
 
+	// discovery reports whether the gateway's own search/describe tools are
+	// registered, which also makes their names reserved against upstreams.
+	discovery bool
+
 	promptRegistry           featureRegistry[*mcp.Prompt]
 	resourceRegistry         featureRegistry[*mcp.Resource]
 	resourceTemplateRegistry featureRegistry[*mcp.ResourceTemplate]
@@ -242,6 +246,11 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		Logger:       opts.Slogger.With("component", "server"),
 	})
 	g.server.AddReceivingMiddleware(g.scopeMiddleware(nil))
+	if cfg.anyLazy() {
+		g.discovery = true
+		g.server.AddReceivingMiddleware(g.lazyMiddleware())
+		g.registerDiscoveryTools()
+	}
 	return g, nil
 }
 
@@ -828,6 +837,14 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 			continue
 		}
 		finalName := NamespaceName(u.cfg.Tools.Prefix, rt.Name)
+		if g.discovery && isGatewayTool(finalName) {
+			g.logger.Warn("tool name reserved by the gateway; skipping",
+				zap.String("upstream", u.cfg.Name),
+				zap.String("tool", rt.Name),
+				zap.String("result_name", finalName),
+			)
+			continue
+		}
 		newSet[finalName] = struct{}{}
 		toolByFinal[finalName] = &mcp.Tool{
 			Name:         finalName,
