@@ -13,7 +13,7 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/go-faster/errors v0.8.0
 	github.com/go-faster/jx v1.2.0
-	github.com/go-faster/sdk v0.37.0
+	github.com/go-faster/sdk v0.38.0
 	github.com/go-faster/yaml v0.4.6
 	github.com/go-openapi/runtime v0.33.0
 	github.com/go-openapi/strfmt v0.27.0
@@ -96,7 +96,7 @@ require (
 	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/grafana/otel-profiling-go v0.6.0 // indirect
-	github.com/grafana/pyroscope-go v1.3.1 // indirect
+	github.com/grafana/pyroscope-go v1.4.1 // indirect
 	github.com/grafana/pyroscope-go/godeltaprof v0.1.11 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
@@ -186,7 +186,7 @@ require (
 	golang.org/x/tools v0.48.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
-	google.golang.org/grpc v1.82.1 // indirect
+	google.golang.org/grpc v1.83.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
