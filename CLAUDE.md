@@ -135,6 +135,11 @@ writes to a directory the gateway sees through a bind mount. Upstreams need no c
   one. If this is ever added, it must key off declared structured-content fields, never a regex.
 - `reservedTool` gates each gateway tool name on its own feature. A gateway without a blob store must
   not reserve `blob_share` against an upstream that happens to use the name.
+- **The mount list belongs in the tool description, not in the instructions.** Instructions are handed
+  to the transport once at startup while `[[blob.mount]]` reloads in place, so a list embedded there
+  goes stale; `blobShareDescription` builds it and `Reload` re-registers the tool when the mounts
+  change, which emits `listChanged`. `blobInstructions` stays a fixed pointer sentence naming no
+  path — keep it that way.
 
 ### mcpgateway config reload (issue #26)
 

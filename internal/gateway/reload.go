@@ -80,8 +80,18 @@ func (g *Gateway) Reload(ctx context.Context, cfg *Config) (ReloadResult, error)
 	g.stateMu.Lock()
 	g.cfg = cfg
 	g.resolver = resolver
+	oldMounts := g.blobMounts
 	g.blobMounts = mounts
 	g.stateMu.Unlock()
+
+	// The tool's description names the served directories, so a changed mount
+	// list has to be re-advertised; re-registering emits listChanged and the
+	// client re-reads it.
+	if g.blobStore != nil && !slices.EqualFunc(oldMounts, mounts, func(a, b blobMount) bool {
+		return a.name == b.name && a.prefix == b.prefix
+	}) {
+		g.registerBlobTool(mounts)
+	}
 
 	// Detach before attaching: a renamed prefix or a moved route must free its
 	// names before the replacement claims them, otherwise the replacement is
