@@ -38,11 +38,20 @@ func main() {
 		if err != nil {
 			return errors.Wrap(err, "load config")
 		}
+		// The blob store owns a listener and mints URLs from a base URL, so it
+		// is built once here rather than by the gateway: a reload can swap
+		// which directories it serves, but not where it listens.
+		blobStore, runBlob, err := blobStoreFor(cfg, slogger)
+		if err != nil {
+			return errors.Wrap(err, "blob store")
+		}
+
 		gw, err := gateway.New(cfg, gateway.Options{
 			Logger:         lg,
 			Slogger:        slogger,
 			MeterProvider:  t.MeterProvider(),
 			TracerProvider: t.TracerProvider(),
+			Blob:           blobStore,
 		})
 		if err != nil {
 			return errors.Wrap(err, "new gateway")
@@ -60,6 +69,9 @@ func main() {
 		}
 
 		grp, ctx := errgroup.WithContext(ctx)
+		grp.Go(func() error {
+			return runBlob(ctx)
+		})
 		// The transport starts before Build, so an upstream that is slow or
 		// hung cannot keep the process from answering at all. Until Build
 		// finishes the gateway serves an empty tool set, which is what /readyz
