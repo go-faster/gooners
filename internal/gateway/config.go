@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,6 +23,102 @@ type Config struct {
 	Auth      AuthConfig       `toml:"auth"`
 	Telemetry TelemetryConfig  `toml:"telemetry"`
 	Redact    RedactConfig     `toml:"redact"`
+	Blob      BlobConfig       `toml:"blob"`
+}
+
+// BlobConfig configures the blob store behind the gateway's blob_share tool.
+//
+// It exists for upstreams that write their output to a directory and report a
+// host path. A path is useless to an agent that does not share that
+// filesystem; with the same directory bind-mounted into the gateway, the path
+// becomes a URL the agent can fetch.
+type BlobConfig struct {
+	// Addr is the blob store's own listen address, e.g. ":8090". Empty
+	// disables blob_share entirely.
+	Addr string `toml:"addr"`
+	// BaseURL is where the agent reaches Addr, e.g. https://gw.example.com/blob.
+	// Required unless Addr is unambiguously local, since only then does the
+	// address imply its own URL.
+	BaseURL string `toml:"base_url"`
+	// Dir holds objects the gateway stores itself. Mounted files are served in
+	// place and never land here.
+	Dir string `toml:"dir"`
+	// TTL is how long a URL keeps working. Empty means [blob.DefaultTTL].
+	TTL string `toml:"ttl"`
+	// Mounts are the directories blob_share may serve from. A path outside
+	// every mount is refused: the mount list, not the caller, is the boundary.
+	Mounts []BlobMountConfig `toml:"mount"`
+}
+
+// BlobMountConfig is one directory the gateway may serve files from.
+type BlobMountConfig struct {
+	// Name identifies the mount in errors and logs. Usually the upstream that
+	// writes into it.
+	Name string `toml:"name"`
+	// Dir is the directory as the gateway sees it.
+	Dir string `toml:"dir"`
+	// Prefix is the directory as upstreams report it, when a bind mount put it
+	// somewhere else in their namespace. Empty means it is the same as Dir.
+	//
+	// Nothing translates a path automatically: an upstream saying
+	// /var/lib/example-mcp/out.png is only understood here because some mount
+	// claims that prefix.
+	Prefix string `toml:"prefix"`
+}
+
+// Enabled reports whether the blob store should be built at all.
+func (c BlobConfig) Enabled() bool { return c.Addr != "" }
+
+// TTLDuration is the parsed [BlobConfig.TTL]; zero means the store's default.
+func (c BlobConfig) TTLDuration() (time.Duration, error) {
+	return parseOptionalDuration(c.TTL)
+}
+
+// prefix is the path the mount answers to, defaulting to its own directory.
+func (m BlobMountConfig) prefix() string {
+	if m.Prefix != "" {
+		return m.Prefix
+	}
+	return m.Dir
+}
+
+// validate checks the blob section. Mounts without a store are an error rather
+// than dead config: they read as "these directories are shared" and would
+// silently do nothing.
+func (c BlobConfig) validate() error {
+	if !c.Enabled() {
+		if len(c.Mounts) > 0 {
+			return errors.New("blob: mounts are configured but addr is not, so nothing would serve them")
+		}
+		return nil
+	}
+	if _, err := parseOptionalDuration(c.TTL); err != nil {
+		return fmt.Errorf("blob: ttl: %w", err)
+	}
+
+	seen := map[string]bool{}
+	for i, m := range c.Mounts {
+		if m.Name == "" {
+			return fmt.Errorf("blob.mount[%d]: name is required", i)
+		}
+		if seen[m.Name] {
+			return fmt.Errorf("blob.mount name %q duplicated", m.Name)
+		}
+		seen[m.Name] = true
+		if m.Dir == "" {
+			return fmt.Errorf("blob.mount %q: dir is required", m.Name)
+		}
+		// A relative directory would resolve against the gateway's working
+		// directory, which is not something an operator can reason about from
+		// the config file.
+		if !filepath.IsAbs(m.Dir) {
+			return fmt.Errorf("blob.mount %q: dir must be absolute, got %q", m.Name, m.Dir)
+		}
+		if m.Prefix != "" && !path.IsAbs(m.Prefix) {
+			return fmt.Errorf("blob.mount %q: prefix must be absolute, got %q", m.Name, m.Prefix)
+		}
+	}
+	return nil
 }
 
 // setDefaults applies server name and telemetry defaults, and resolves the
@@ -239,6 +336,9 @@ func (c *Config) Validate() error {
 		}
 	}
 	if err := validateRouteCollisions(c.Upstreams); err != nil {
+		return err
+	}
+	if err := c.Blob.validate(); err != nil {
 		return err
 	}
 	seenSec := map[string]bool{}

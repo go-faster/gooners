@@ -115,6 +115,26 @@ call site — enforces policy. This is a security invariant, not a style prefere
   cleared at startup, which is what lets the store stay inside the existing filesystem interface.
 - A tool that produces bytes calls `blob.Content`, which decides inline vs link. Do not reimplement
   that threshold in a handler, and do not put it inside a `Store`: storage is not content policy.
+- **`Attach` borrows bytes; `Put` owns them.** An attached object's file belongs to whoever wrote it,
+  so expiry, `Delete` and shutdown drop the reference only. A sweep that removes an attached file
+  would empty the volume a gateway was serving — `object.attached` is what prevents that.
+
+### mcpgateway blob_share
+
+`blob_share` turns a host path an upstream reported into a URL, for the case where an upstream
+writes to a directory the gateway sees through a bind mount. Upstreams need no changes.
+
+- **The store is passed in through `Options.Blob`; the mounts come from config.** The store owns a
+  listener and mints URLs from `base_url`, which a live reload cannot move, so `[blob]` minus its
+  mounts is in `restartRequired`. `[[blob.mount]]` is a table the tool reads per call and reloads.
+- **Nothing translates paths.** `prefix` is the only reason the gateway knows an upstream's
+  `/var/lib/x/out.png` is its own `/mnt/x/out.png`. Do not add path guessing, and do not fall back to
+  what happens to exist on the gateway's filesystem.
+- **Do not rewrite paths out of tool results.** It was considered and rejected: matching paths in
+  prose rewrites them inside error messages and code snippets, and misses upstreams that never print
+  one. If this is ever added, it must key off declared structured-content fields, never a regex.
+- `reservedTool` gates each gateway tool name on its own feature. A gateway without a blob store must
+  not reserve `blob_share` against an upstream that happens to use the name.
 
 ### mcpgateway config reload (issue #26)
 
