@@ -3,6 +3,7 @@ package gateway
 
 import (
 	"context"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -982,6 +983,55 @@ func TestGateway_ForwardsMeta(t *testing.T) {
 	_, err = downSess.GetPrompt(t.Context(), &mcp.GetPromptParams{Meta: mcp.Meta{"client": "prompt"}, Name: "prompt"})
 	require.NoError(t, err)
 	require.Equal(t, mcp.Meta{"client": "prompt"}, <-promptMeta)
+
+	// The negotiated protocol version belongs to the client<->gateway hop, so
+	// it must not reach an upstream that negotiated its own.
+	_, err = downSess.CallTool(t.Context(), &mcp.CallToolParams{
+		Meta: mcp.Meta{"client": "tool", metaKeyProtocolVersion: "2025-11-25"},
+		Name: "echo",
+	})
+	require.NoError(t, err)
+	require.Equal(t, mcp.Meta{"client": "tool"}, <-toolMeta)
+
+	_, err = downSess.GetPrompt(t.Context(), &mcp.GetPromptParams{
+		Meta: mcp.Meta{"client": "prompt", metaKeyProtocolVersion: "2025-11-25"},
+		Name: "prompt",
+	})
+	require.NoError(t, err)
+	require.Equal(t, mcp.Meta{"client": "prompt"}, <-promptMeta)
+}
+
+func TestProxyMeta(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		in   mcp.Meta
+		want mcp.Meta
+	}{
+		{name: "Nil"},
+		{name: "Empty", in: mcp.Meta{}, want: mcp.Meta{}},
+		{
+			name: "PassesEverythingElse",
+			in:   mcp.Meta{"client": "x", "io.modelcontextprotocol/clientInfo": "y"},
+			want: mcp.Meta{"client": "x", "io.modelcontextprotocol/clientInfo": "y"},
+		},
+		{
+			name: "StripsProtocolVersion",
+			in:   mcp.Meta{"client": "x", metaKeyProtocolVersion: "2025-11-25"},
+			want: mcp.Meta{"client": "x"},
+		},
+		{
+			name: "StripsOnlyKey",
+			in:   mcp.Meta{metaKeyProtocolVersion: "2025-11-25"},
+			want: mcp.Meta{},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			in := maps.Clone(tt.in)
+
+			require.Equal(t, tt.want, proxyMeta(tt.in))
+			require.Equal(t, in, tt.in, "the caller's Meta must not be mutated")
+		})
+	}
 }
 
 func TestGateway_OnReconnect_ReRegistersAll(t *testing.T) {

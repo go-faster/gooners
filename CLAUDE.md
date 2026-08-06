@@ -119,6 +119,20 @@ not its problem. Keep the split:
   initial `Build` finished, nothing more. Do not make it depend on upstreams being connected: they
   reconnect on their own, and one broken dependency must not pull a working gateway out of rotation.
 
+### mcpgateway request `_meta`
+
+A downstream request's `_meta` is forwarded to the upstream **as is**, so an upstream sees the same
+client it would have seen with no gateway in the path — `clientInfo` and `clientCapabilities`
+included. The gateway cannot upgrade the client, and hiding it from upstreams would only make them
+expect something that is not there.
+
+The exception is `io.modelcontextprotocol/protocolVersion`, which `proxyMeta` strips. That value
+describes one hop: the gateway negotiates separately with the client and with each upstream, so
+forwarding the client's version announces one that was never agreed on that connection. SDK v1.7.0
+validates it and rejects the request. Route every request `_meta` through `proxyMeta`; do not pass
+`req.Params.Meta` straight into an upstream call, and do not extend the strip list to keys that are
+genuinely about the client.
+
 ## Key Dependencies
 
 - `github.com/modelcontextprotocol/go-sdk` — MCP server/tool SDK; all tool registrations call `mcp.NewServer` and pass a `session.Pool` or local state.
