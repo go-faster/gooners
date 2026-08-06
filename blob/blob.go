@@ -108,6 +108,23 @@ type Store interface {
 	Delete(ctx context.Context, id string) error
 }
 
+// Attacher is a [Store] that can also serve a file that already exists,
+// without copying it.
+//
+// It is what makes a shared volume work: an MCP server writes its output to a
+// directory, a second process sees the same directory through a bind mount,
+// and the file becomes fetchable without moving a byte. src is the filesystem
+// the file lives in, so one store can serve several mounts, each confined to
+// its own directory.
+//
+// An attached object's bytes belong to whoever wrote them. Expiry, [Store.Delete]
+// and shutdown drop the reference and leave the file alone; only the URL stops
+// working.
+type Attacher interface {
+	Store
+	Attach(ctx context.Context, src FS, name string, opts PutOptions) (Blob, error)
+}
+
 // FS is the host filesystem a store writes through.
 //
 // It is deliberately the method set of the repository's internal filesystem
@@ -130,13 +147,13 @@ type File interface {
 	Stat() (fs.FileInfo, error)
 }
 
-// Deny returns a Store that refuses every operation with [ErrDenied], wrapped
-// with reason.
+// Deny returns a store that refuses every operation with [ErrDenied], wrapped
+// with reason. It satisfies [Attacher], and so stands in for either interface.
 //
 // It is the right value for a process that was started without a reachable
 // base URL: a tool then fails with an error naming the missing flag instead of
 // returning a URL that resolves nowhere.
-func Deny(reason string) Store { return denyStore{reason: reason} }
+func Deny(reason string) Attacher { return denyStore{reason: reason} }
 
 type denyStore struct{ reason string }
 
@@ -151,3 +168,9 @@ func (d denyStore) Open(context.Context, string) (io.ReadSeekCloser, Blob, error
 }
 
 func (d denyStore) Delete(context.Context, string) error { return d.err() }
+
+// Attach makes the denial usable where an [Attacher] is expected, so a call
+// site need not care which kind of store it was given.
+func (d denyStore) Attach(context.Context, FS, string, PutOptions) (Blob, error) {
+	return Blob{}, d.err()
+}

@@ -60,7 +60,7 @@ func (o *BlobOptions) setDefaults() error {
 // With neither -blob-base-url nor -blob-addr it returns a [blob.Deny] store
 // and a Run that returns immediately: a tool then fails with an error naming
 // the flag, rather than returning a URL that resolves nowhere.
-func (flags BlobFlags) Setup(opts BlobOptions) (blob.Store, func(context.Context) error, error) {
+func (flags BlobFlags) Setup(opts BlobOptions) (blob.Attacher, func(context.Context) error, error) {
 	if err := opts.setDefaults(); err != nil {
 		return nil, nil, err
 	}
