@@ -215,3 +215,68 @@ func TestServerConfig_DrainTimeout(t *testing.T) {
 	t.Cleanup(func() { _ = g.Close(context.Background()) })
 	require.Equal(t, 250*time.Millisecond, g.upstreamByName("u1").drainTimeout)
 }
+
+// call_timeout bounds one call. It is deliberately separate from drain_timeout:
+// an upstream may have legitimately long-running tools and still need a bounded
+// shutdown.
+func TestUpstream_CallTimeout(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	buildFn, _ := blockingUpstream(t, release)
+	u, err := NewUpstream(upstreamCfg("u1"), UpstreamOptions{
+		TransportBuilder: buildFn,
+		CallTimeout:      50 * time.Millisecond,
+		ReconnectInitial: time.Millisecond,
+		ReconnectMax:     time.Millisecond,
+	})
+	require.NoError(t, err)
+	require.NoError(t, u.Connect(t.Context()))
+	t.Cleanup(func() { _ = u.Close(context.Background()) })
+
+	_, err = u.CallTool(context.Background(), &mcp.CallToolParams{Name: "slow"})
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	// The timed-out call must not stay counted, or every later drain would
+	// wait out its full timeout for a call that is long gone.
+	u.mu.RLock()
+	inflight := u.inflight
+	u.mu.RUnlock()
+	require.Zero(t, inflight)
+}
+
+// Zero means unlimited, so a long-running tool is never cut off.
+func TestUpstream_CallTimeoutUnlimited(t *testing.T) {
+	release := make(chan struct{})
+	buildFn, _ := blockingUpstream(t, release)
+	u, err := NewUpstream(upstreamCfg("u1"), UpstreamOptions{
+		TransportBuilder: buildFn,
+		ReconnectInitial: time.Millisecond,
+		ReconnectMax:     time.Millisecond,
+	})
+	require.NoError(t, err)
+	require.NoError(t, u.Connect(t.Context()))
+	t.Cleanup(func() { _ = u.Close(context.Background()) })
+
+	errCh := startCall(t, u)
+	select {
+	case err := <-errCh:
+		t.Fatalf("call was cut off with no timeout configured: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, <-errCh)
+}
+
+func TestUpstreamConfig_CallTimeout(t *testing.T) {
+	uc := upstreamCfg("u1")
+	uc.CallTimeout = "nonsense"
+	cfg := &Config{Server: ServerConfig{Name: "gw"}, Upstreams: []UpstreamConfig{uc}}
+	require.ErrorContains(t, cfg.Validate(), "call_timeout")
+
+	cfg.Upstreams[0].CallTimeout = "90s"
+	require.NoError(t, cfg.Validate())
+	g, err := New(cfg, Options{TransportBuilder: fakeUpstreams(map[string][]string{"u1": {"a"}})})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = g.Close(context.Background()) })
+	require.Equal(t, 90*time.Second, g.upstreamByName("u1").callTimeout)
+}

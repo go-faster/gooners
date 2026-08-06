@@ -62,6 +62,11 @@ type UpstreamConfig struct {
 	Tools        ToolsConfig       `toml:"tools"`
 	Route        RouteConfig       `toml:"route"`
 	Reconnect    *ReconnectConfig  `toml:"reconnect"`
+	// CallTimeout bounds a single request to this upstream. Empty means no
+	// limit, which is what an upstream with genuinely long-running tools needs.
+	// It is unrelated to [ServerConfig.DrainTimeout]: that one bounds shutdown,
+	// and applies however long a call is allowed to run.
+	CallTimeout string `toml:"call_timeout"`
 	// Redact overrides the global redact config when present; nil inherits the global [redact] section.
 	Redact *RedactConfig `toml:"redact"`
 }
@@ -222,6 +227,9 @@ func (c *Config) Validate() error {
 			if err := validateReconnectConfig(u.Name, u.Reconnect); err != nil {
 				return err
 			}
+		}
+		if _, err := parseOptionalDuration(u.CallTimeout); err != nil {
+			return fmt.Errorf("upstream %q: call_timeout: %w", u.Name, err)
 		}
 		if err := validateRouteConfig(u.Name, u.Route); err != nil {
 			return err

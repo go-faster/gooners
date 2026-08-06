@@ -276,11 +276,16 @@ func (g *Gateway) newUpstream(uc UpstreamConfig, cfg *Config, res SecretResolver
 	if err != nil {
 		return nil, errors.Wrap(err, "server: drain_timeout")
 	}
+	callTimeout, err := parseOptionalDuration(uc.CallTimeout)
+	if err != nil {
+		return nil, errors.Wrapf(err, "upstream %q: call_timeout", uc.Name)
+	}
 	uopts := UpstreamOptions{
 		Logger:                g.slogger.With("upstream", uc.Name),
 		Resolver:              res,
 		TransportBuilder:      g.transportBuilder,
 		DrainTimeout:          drainTimeout,
+		CallTimeout:           callTimeout,
 		OnToolListChanged:     g.onToolListChanged,
 		OnPromptListChanged:   g.onPromptListChanged,
 		OnResourceListChanged: g.onResourceListChanged,

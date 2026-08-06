@@ -53,31 +53,14 @@ func Build(_ context.Context, opts Options) (mcp.Transport, func() error, error)
 	case "stdio":
 		return buildStdio(opts.Command, opts.Env, opts.Interpolate)
 	case "http":
-		cl := clientWithHeaders(opts.HTTPClient, opts.Headers, opts.StripHeaders, opts.Interpolate)
-		return &mcp.StreamableClientTransport{Endpoint: opts.URL, HTTPClient: cl}, noCleanup, nil
+		cl, cleanup := newUpstreamClient(opts.HTTPClient, opts.Headers, opts.StripHeaders, opts.Interpolate)
+		return &mcp.StreamableClientTransport{Endpoint: opts.URL, HTTPClient: cl}, cleanup, nil
 	case "sse":
-		cl := clientWithHeaders(opts.HTTPClient, opts.Headers, opts.StripHeaders, opts.Interpolate)
-		return &mcp.SSEClientTransport{Endpoint: opts.URL, HTTPClient: cl}, noCleanup, nil
+		cl, cleanup := newUpstreamClient(opts.HTTPClient, opts.Headers, opts.StripHeaders, opts.Interpolate)
+		return &mcp.SSEClientTransport{Endpoint: opts.URL, HTTPClient: cl}, cleanup, nil
 	default:
 		return nil, nil, errors.Errorf("unknown upstream kind %q", opts.Kind)
 	}
-}
-
-func noCleanup() error { return nil }
-
-// clientWithHeaders returns a copy of cl whose transport injects and strips
-// headers on top of cl's own (policy-enforcing) transport.
-func clientWithHeaders(cl *http.Client, headers map[string]string, stripHeaders []string, interpolate func(string) (string, error)) *http.Client {
-	if len(headers) == 0 && len(stripHeaders) == 0 {
-		return cl
-	}
-	base := cl.Transport
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	out := *cl
-	out.Transport = &headerRT{base: base, headers: headers, stripHeaders: stripHeaders, interpolate: interpolate}
-	return &out
 }
 
 func buildStdio(command []string, env map[string]string, interpolate func(string) (string, error)) (mcp.Transport, func() error, error) {
@@ -128,34 +111,4 @@ func buildStdio(command []string, env map[string]string, interpolate func(string
 		return nil
 	}
 	return &mcp.CommandTransport{Command: cmd}, cleanup, nil
-}
-
-type headerRT struct {
-	base         http.RoundTripper
-	headers      map[string]string
-	stripHeaders []string
-	interpolate  func(string) (string, error)
-}
-
-func (h *headerRT) RoundTrip(req *http.Request) (*http.Response, error) {
-	req = req.Clone(req.Context())
-	for _, header := range h.stripHeaders {
-		req.Header.Del(header)
-	}
-	for k, v := range h.headers {
-		iv := v
-		if h.interpolate != nil {
-			var err error
-			iv, err = h.interpolate(v)
-			if err != nil {
-				return nil, errors.Wrapf(err, "interpolate header %q", v)
-			}
-		}
-		req.Header.Set(k, iv)
-	}
-	base := h.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return base.RoundTrip(req)
 }

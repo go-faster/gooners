@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"time"
 
 	"github.com/go-faster/errors"
@@ -54,6 +55,17 @@ func (u *Upstream) enter() (*mcp.ClientSession, error) {
 	}
 	u.inflight++
 	return u.session, nil
+}
+
+// withCallTimeout bounds one request to this upstream. A zero timeout means no
+// limit: an upstream whose tools legitimately run for minutes must not be cut
+// off, and shutdown is bounded separately by the drain timeout, which does not
+// depend on calls being short.
+func (u *Upstream) withCallTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if u.callTimeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, u.callTimeout)
 }
 
 // leave releases a claim taken by enter, waking a waiting drain once the last

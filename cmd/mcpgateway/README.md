@@ -161,11 +161,25 @@ Closing an upstream — on removal, on restart, or at process shutdown — drain
 accepting new calls, waits for the in-flight ones to finish, and only then tears the session down.
 Upstreams close concurrently, so a reload removing several waits out one drain rather than their sum.
 
-`[server] drain_timeout` (default `5s`) bounds each phase; a negative value disables draining and
-cuts in-flight calls off immediately. The bound applies to the session close as well as the wait:
-the MCP SDK's session close itself waits for outstanding calls, so an upstream that never answers
-would otherwise hang shutdown forever. When that happens the close is abandoned and the transport is
-torn down underneath it, which for stdio means the child process is killed.
+Two independent timeouts are involved, and they are deliberately not the same knob:
+
+| Setting | Scope | Default | Bounds |
+|---|---|---|---|
+| `[[upstream]] call_timeout` | per upstream | unset = no limit | one request to that upstream |
+| `[server] drain_timeout` | gateway | `5s` | each phase of closing an upstream |
+
+An upstream with genuinely long-running tools sets no `call_timeout` and still gets a bounded
+shutdown: `drain_timeout` does not depend on calls being short. Set `call_timeout` only where you
+want a call itself capped. A negative `drain_timeout` disables draining and cuts in-flight calls off
+immediately.
+
+`drain_timeout` also bounds the session close, not just the wait before it. The MCP SDK's session
+close waits for outstanding calls, so an upstream that never answers would otherwise hang shutdown
+forever regardless of the timeout. When it stalls, the close is abandoned and the transport is torn
+down underneath it: for stdio the child process is killed, and for http/sse the in-flight requests
+are canceled. Without that last part an http upstream that accepts a request and never answers
+would leak the request, its goroutine and its connection for the life of the process, since these
+clients carry no timeout by design (both transports stream).
 
 Polling compares a content hash rather than mtime or inotify events, which is what makes it work for
 atomic rename, ConfigMap symlink swap, and editor save-with-backup, while a rewrite with identical

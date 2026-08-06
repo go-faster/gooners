@@ -67,6 +67,7 @@ type Upstream struct {
 	drained  chan struct{}
 
 	drainTimeout time.Duration
+	callTimeout  time.Duration
 }
 
 // UpstreamOptions configures optional dependencies for an Upstream.
@@ -92,6 +93,9 @@ type UpstreamOptions struct {
 	// before closing the session out from under them. Negative disables
 	// draining.
 	DrainTimeout time.Duration
+	// CallTimeout bounds a single request to this upstream. Zero means no
+	// limit, for upstreams with genuinely long-running tools.
+	CallTimeout time.Duration
 }
 
 func (o *UpstreamOptions) setDefaults() {
@@ -134,6 +138,7 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 		buildTransport:   opts.TransportBuilder,
 		redactor:         opts.Redactor,
 		drainTimeout:     opts.DrainTimeout,
+		callTimeout:      opts.CallTimeout,
 	}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
@@ -490,6 +495,8 @@ func (u *Upstream) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 		return nil, err
 	}
 	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	return collectSeq(sess.Tools(ctx, &mcp.ListToolsParams{}))
 }
 
@@ -500,6 +507,8 @@ func (u *Upstream) CallTool(ctx context.Context, params *mcp.CallToolParams) (*m
 		return nil, err
 	}
 	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	return sess.CallTool(ctx, params)
 }
 
@@ -511,6 +520,8 @@ func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
 		return nil, err
 	}
 	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Prompts == nil {
 		return nil, nil
 	}
@@ -524,6 +535,8 @@ func (u *Upstream) GetPrompt(ctx context.Context, params *mcp.GetPromptParams) (
 		return nil, err
 	}
 	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	return sess.GetPrompt(ctx, params)
 }
 
@@ -536,6 +549,8 @@ func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
 		return nil, err
 	}
 	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Resources == nil {
 		return nil, nil
 	}
@@ -551,6 +566,8 @@ func (u *Upstream) ListResourceTemplates(ctx context.Context) ([]*mcp.ResourceTe
 		return nil, err
 	}
 	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Resources == nil {
 		return nil, nil
 	}
@@ -575,6 +592,8 @@ func (u *Upstream) ReadResource(ctx context.Context, params *mcp.ReadResourcePar
 		return nil, err
 	}
 	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	return sess.ReadResource(ctx, params)
 }
 
