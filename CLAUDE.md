@@ -106,6 +106,19 @@ not its problem. Keep the split:
 - Reloadable state on `Gateway` (`cfg`, `resolver`, `upstreams`) is guarded by `stateMu`; read it
   through `config()`/`secretResolver()`/`upstreamList()`, never the field directly.
 
+### mcpgateway startup
+
+- **Nothing an upstream does may block the gateway from listening.** The transport starts before
+  `Build`, and `Build` runs alongside it; the reloader is sequenced *after* `Build` so a SIGHUP
+  cannot race the registration it would replace.
+- **Every pre-serving upstream request is bounded.** `withCallTimeout` is for tool calls and is
+  deliberately unlimited by default; feature listings use `withListTimeout`, which falls back to the
+  connect timeout. Switching a `List*` method back to `withCallTimeout` reintroduces a gateway that
+  never starts when an upstream stalls after the handshake — `TestListTimeoutBoundsListing` guards it.
+- **`/health` is liveness, `Gateway.Ready` behind `/readyz` is readiness.** Readiness means the
+  initial `Build` finished, nothing more. Do not make it depend on upstreams being connected: they
+  reconnect on their own, and one broken dependency must not pull a working gateway out of rotation.
+
 ## Key Dependencies
 
 - `github.com/modelcontextprotocol/go-sdk` — MCP server/tool SDK; all tool registrations call `mcp.NewServer` and pass a `session.Pool` or local state.

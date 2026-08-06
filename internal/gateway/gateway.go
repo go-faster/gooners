@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-faster/errors"
@@ -52,6 +53,11 @@ type Gateway struct {
 	// discovery reports whether the gateway's own search/describe tools are
 	// registered, which also makes their names reserved against upstreams.
 	discovery bool
+
+	// built records that the initial Build finished, which is what readiness
+	// reports. It is only ever set, never cleared: a reload replaces features
+	// on a gateway that is already serving.
+	built atomic.Bool
 
 	promptRegistry           featureRegistry[*mcp.Prompt]
 	resourceRegistry         featureRegistry[*mcp.Resource]
@@ -680,6 +686,26 @@ func (g *Gateway) Build(ctx context.Context) error {
 		if u.hasRoute() {
 			g.setRouteServer(u, g.newUpstreamRouteServer(u, lt.tools, lt.prompts, lt.resources, lt.templates))
 		}
+	}
+	g.built.Store(true)
+	return nil
+}
+
+// Ready reports whether the gateway can serve its aggregated feature set,
+// returning why not when it cannot.
+//
+// It is not liveness: the HTTP transport starts before [Gateway.Build], so that
+// a slow or hung upstream cannot keep the process from answering at all. That
+// makes a window where the gateway is up and reachable but still has an empty
+// tool set, and this is what distinguishes the two.
+//
+// An upstream that is configured but currently unreachable does not make the
+// gateway unready. Its supervisor is retrying and its tools appear over
+// listChanged when it comes back; failing readiness for it would take a
+// working gateway out of service over one broken dependency.
+func (g *Gateway) Ready() error {
+	if !g.built.Load() {
+		return errors.New("initial build has not finished")
 	}
 	return nil
 }

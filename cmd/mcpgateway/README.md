@@ -100,7 +100,35 @@ become reserved names — an upstream tool that resolves to either is skipped wi
 - Standard `-log-*` and `-transport` flags from cmdutil
 - HTTP TLS flags: `-tls-cert-file`, `-tls-key-file`, and optional `-tls-client-ca-file` for mTLS
 
-For `streamable-http`/`sse` transports, a `/health` endpoint is also served on the same address for liveness checks.
+## Startup, `/health` and `/readyz`
+
+The HTTP transport starts **before** upstreams are connected, so one slow or unresponsive upstream
+cannot keep the gateway from answering at all. Until the initial build finishes, the gateway serves
+an empty tool set; clients that connect early learn the real one through `listChanged`.
+
+For `streamable-http`/`sse` transports, two probe endpoints are served on the same address:
+
+| Endpoint | Answers | Fails when | Act on it by |
+|---|---|---|---|
+| `/health` | is the process up? | it stops listening | restarting |
+| `/readyz` | can it serve its tools? | the initial build has not finished | keeping it out of rotation |
+
+```jsonc
+// 503 while starting
+{"status": "not_ready", "server": "mcpgateway", "reason": "initial build has not finished"}
+// 200 once built
+{"status": "ready", "server": "mcpgateway"}
+```
+
+An upstream that is configured but currently unreachable does **not** make the gateway unready: its
+supervisor keeps retrying and its tools appear when it returns. Failing readiness for it would take
+a working gateway out of service over one broken dependency.
+
+Startup is bounded even when an upstream misbehaves. Connecting is capped at 10s, and each feature
+listing is capped too — by `call_timeout` when set, otherwise by the same 10s. That second bound
+matters: `call_timeout` defaults to no limit, and an upstream that completes the handshake and then
+never answers `tools/list` would otherwise park startup forever. Such an upstream is skipped with a
+warning and retried in the background.
 
 When an upstream has `[upstream.route]`, requests matching `host` and/or `path` are served by a per-upstream MCP server. Requests that do not match a route use the default aggregate gateway server.
 
@@ -167,6 +195,10 @@ Two independent timeouts are involved, and they are deliberately not the same kn
 |---|---|---|---|
 | `[[upstream]] call_timeout` | per upstream | unset = no limit | one request to that upstream |
 | `[server] drain_timeout` | gateway | `5s` | each phase of closing an upstream |
+
+A feature listing is the one request that is never unbounded: it falls back to the connect timeout
+(10s) when `call_timeout` is unset, because it runs during startup and after every reconnect, before
+the gateway can serve anything.
 
 An upstream with genuinely long-running tools sets no `call_timeout` and still gets a bounded
 shutdown: `drain_timeout` does not depend on calls being short. Set `call_timeout` only where you

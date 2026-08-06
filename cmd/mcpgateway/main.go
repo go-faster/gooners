@@ -48,9 +48,6 @@ func main() {
 			return errors.Wrap(err, "new gateway")
 		}
 		defer func() { _ = gw.Close(ctx) }()
-		if err := gw.Build(ctx); err != nil {
-			return errors.Wrap(err, "build gateway")
-		}
 
 		reloader, err := gateway.NewReloader(gateway.ReloaderOptions{
 			Source:        src,
@@ -63,16 +60,27 @@ func main() {
 		}
 
 		grp, ctx := errgroup.WithContext(ctx)
-		grp.Go(func() error {
-			return reloader.Run(ctx)
-		})
+		// The transport starts before Build, so an upstream that is slow or
+		// hung cannot keep the process from answering at all. Until Build
+		// finishes the gateway serves an empty tool set, which is what /readyz
+		// reports; clients learn the real one through listChanged.
 		grp.Go(func() error {
 			return transport.Run(ctx, cmdutil.RunOptions{
 				Name:       "mcpgateway",
 				Handler:    gw.ServerForRequest,
 				Middleware: gw.HTTPMiddleware(),
 				Logger:     slogger.With("component", "transport"),
+				Ready:      gw.Ready,
 			})
+		})
+		// Reloading is sequenced after the initial build rather than run
+		// alongside it: a SIGHUP arriving mid-build would otherwise race the
+		// registration it is trying to replace.
+		grp.Go(func() error {
+			if err := gw.Build(ctx); err != nil {
+				return errors.Wrap(err, "build gateway")
+			}
+			return reloader.Run(ctx)
 		})
 		return grp.Wait()
 	}, app.WithServiceName("mcpgateway"))

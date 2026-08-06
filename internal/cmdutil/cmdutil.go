@@ -108,6 +108,13 @@ type RunOptions struct {
 	Handler    func(*http.Request) *mcp.Server
 	Middleware func(http.Handler) http.Handler
 	Logger     *slog.Logger
+	// Ready reports whether the server can do its job, returning why not when
+	// it cannot. It backs /readyz, and nil means "ready as soon as it listens",
+	// which is the truth for a server with nothing to warm up.
+	//
+	// It is deliberately separate from /health: a process that is up but not
+	// yet usable should be kept out of a load balancer without being restarted.
+	Ready func() error
 }
 
 func (o *RunOptions) setDefaults() error {
@@ -161,6 +168,7 @@ func (flags TransportFlags) Run(ctx context.Context, opts RunOptions) error {
 		}
 		mux := http.NewServeMux()
 		mux.Handle("/health", healthHandler(opts.Name))
+		mux.Handle("/readyz", readyHandler(opts.Name, opts.Ready))
 		mux.Handle("/", h)
 		opts.Logger.Info("starting MCP server on streamable-http transport", "server", opts.Name, "at", fmt.Sprintf("%s://%s/mcp", scheme, flags.Addr))
 		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, opts.Logger) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
@@ -176,6 +184,7 @@ func (flags TransportFlags) Run(ctx context.Context, opts RunOptions) error {
 		}
 		mux := http.NewServeMux()
 		mux.Handle("/health", healthHandler(opts.Name))
+		mux.Handle("/readyz", readyHandler(opts.Name, opts.Ready))
 		mux.Handle("/", h)
 		opts.Logger.Info("starting MCP server on SSE transport", "server", opts.Name, "at", fmt.Sprintf("%s://%s", scheme, flags.Addr))
 		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, opts.Logger) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
@@ -191,6 +200,29 @@ func healthHandler(name string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "server": name})
+	})
+}
+
+// readyHandler returns a handler for a readiness check endpoint, reporting
+// whether the server can serve requests rather than merely accept them.
+//
+// A nil ready func means always ready. The two endpoints answer different
+// questions and are wired to different actions: /health failing should restart
+// the process, /readyz failing should only take it out of rotation.
+func readyHandler(name string, ready func() error) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		res := map[string]string{"status": "ready", "server": name}
+		code := http.StatusOK
+		if ready != nil {
+			if err := ready(); err != nil {
+				res["status"] = "not_ready"
+				res["reason"] = err.Error()
+				code = http.StatusServiceUnavailable
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		_ = json.NewEncoder(w).Encode(res)
 	})
 }
 
