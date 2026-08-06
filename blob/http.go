@@ -113,11 +113,25 @@ type HTTP struct {
 	lg      *slog.Logger
 
 	mu      sync.Mutex
-	objects map[string]Blob
+	objects map[string]object
+}
+
+// object is one served reference: the metadata handed to the agent, plus where
+// the bytes actually are.
+type object struct {
+	blob Blob
+	// fs and path locate the bytes. For a stored object they are the store's
+	// own filesystem and objects/<id>; for an attached one they are the
+	// caller's mount and the file's name within it.
+	fs   FS
+	path string
+	// attached marks bytes the store does not own. Expiry drops the reference
+	// and leaves the file where it was.
+	attached bool
 }
 
 var (
-	_ Store        = (*HTTP)(nil)
+	_ Attacher     = (*HTTP)(nil)
 	_ http.Handler = (*HTTP)(nil)
 )
 
@@ -150,7 +164,7 @@ func NewHTTP(opts HTTPOptions) (*HTTP, error) {
 		maxSize: opts.MaxSize,
 		now:     opts.Now,
 		lg:      opts.Logger,
-		objects: make(map[string]Blob),
+		objects: make(map[string]object),
 	}, nil
 }
 
@@ -176,23 +190,70 @@ func (h *HTTP) Put(ctx context.Context, r io.Reader, opts PutOptions) (Blob, err
 		return Blob{}, err
 	}
 
+	b := h.describe(id, name, opts, n)
+	h.mu.Lock()
+	h.objects[id] = object{blob: b, fs: h.fs, path: objectPath(id)}
+	h.mu.Unlock()
+	return b, nil
+}
+
+// Attach serves a file that already exists in src, without copying it. The
+// bytes stay where they are, and expiry drops only the reference.
+func (h *HTTP) Attach(ctx context.Context, src FS, name string, opts PutOptions) (Blob, error) {
+	if err := ctx.Err(); err != nil {
+		return Blob{}, err
+	}
+	if src == nil {
+		return Blob{}, errors.New("attach: src filesystem is required")
+	}
+
+	// Statting through src is also the confinement check: a path outside its
+	// root, symlinked or not, never gets an id.
+	info, err := src.Stat(name)
+	if err != nil {
+		return Blob{}, errors.Wrapf(err, "stat %q", name)
+	}
+	if info.IsDir() {
+		return Blob{}, errors.Errorf("%q is a directory", name)
+	}
+	if !info.Mode().IsRegular() {
+		// A device or a fifo would make the handler block on a read that never
+		// ends, holding a connection for as long as the client waits.
+		return Blob{}, errors.Errorf("%q is not a regular file", name)
+	}
+	if info.Size() > h.maxSize {
+		return Blob{}, errors.Wrapf(ErrTooLarge, "%d bytes, limit is %d", info.Size(), h.maxSize)
+	}
+
+	id, err := newID()
+	if err != nil {
+		return Blob{}, err
+	}
+	if opts.Name == "" {
+		opts.Name = path.Base(name)
+	}
+
+	b := h.describe(id, cleanName(opts.Name, id), opts, info.Size())
+	h.mu.Lock()
+	h.objects[id] = object{blob: b, fs: src, path: name, attached: true}
+	h.mu.Unlock()
+	return b, nil
+}
+
+// describe builds the reference handed to the agent.
+func (h *HTTP) describe(id, name string, opts PutOptions, size int64) Blob {
 	ttl := opts.TTL
 	if ttl <= 0 {
 		ttl = h.ttl
 	}
-	b := Blob{
+	return Blob{
 		ID:        id,
 		URL:       h.baseURL + "/" + id + "/" + url.PathEscape(name),
 		Name:      name,
 		MIMEType:  contentType(opts.MIMEType, name),
-		Size:      n,
+		Size:      size,
 		ExpiresAt: h.now().Add(ttl),
 	}
-
-	h.mu.Lock()
-	h.objects[id] = b
-	h.mu.Unlock()
-	return b, nil
 }
 
 // write copies r into the object file, removing it if anything goes wrong so a
@@ -227,53 +288,62 @@ func (h *HTTP) Open(ctx context.Context, id string) (io.ReadSeekCloser, Blob, er
 	if err := ctx.Err(); err != nil {
 		return nil, Blob{}, err
 	}
-	b, ok := h.lookup(id)
+	o, ok := h.lookup(id)
 	if !ok {
 		return nil, Blob{}, errors.Wrapf(ErrNotFound, "id %q", id)
 	}
-	f, err := h.fs.Open(objectPath(id))
+	f, err := o.fs.Open(o.path)
 	if err != nil {
 		return nil, Blob{}, errors.Wrapf(ErrNotFound, "id %q: %s", id, err)
 	}
-	return f, b, nil
+	return f, o.blob, nil
 }
 
-// Delete removes an object.
+// Delete drops an object. Bytes the store does not own stay where they are.
 func (h *HTTP) Delete(_ context.Context, id string) error {
 	h.mu.Lock()
-	_, known := h.objects[id]
+	o, known := h.objects[id]
 	delete(h.objects, id)
 	h.mu.Unlock()
 	if !known {
 		return nil
 	}
-	if err := h.fs.Remove(objectPath(id)); err != nil {
+	if err := h.discard(o); err != nil {
 		return errors.Wrapf(err, "remove object %q", id)
 	}
 	return nil
 }
 
+// discard removes the bytes behind an object, if they were the store's to
+// remove in the first place.
+func (h *HTTP) discard(o object) error {
+	if o.attached {
+		return nil
+	}
+	return o.fs.Remove(o.path)
+}
+
 // lookup returns the object if it exists and has not expired, dropping it if
 // it has.
-func (h *HTTP) lookup(id string) (Blob, bool) {
+func (h *HTTP) lookup(id string) (object, bool) {
 	h.mu.Lock()
-	b, ok := h.objects[id]
-	expired := ok && !h.now().Before(b.ExpiresAt)
+	o, ok := h.objects[id]
+	expired := ok && !h.now().Before(o.blob.ExpiresAt)
 	if expired {
 		delete(h.objects, id)
 	}
 	h.mu.Unlock()
 
 	if !ok {
-		return Blob{}, false
+		return object{}, false
 	}
 	if expired {
-		if err := h.fs.Remove(objectPath(id)); err != nil {
+		if err := h.discard(o); err != nil {
 			h.lg.Warn("could not remove an expired object", "id", id, "err", err)
 		}
-		return Blob{}, false
+		return object{}, false
 	}
-	return b, true
+	return o, true
 }
 
 // Run sweeps expired objects until ctx is done, then removes everything the
@@ -295,10 +365,10 @@ func (h *HTTP) Run(ctx context.Context) {
 func (h *HTTP) sweep() {
 	now := h.now()
 	h.mu.Lock()
-	var expired []string
-	for id, b := range h.objects {
-		if !now.Before(b.ExpiresAt) {
-			expired = append(expired, id)
+	var expired []object
+	for id, o := range h.objects {
+		if !now.Before(o.blob.ExpiresAt) {
+			expired = append(expired, o)
 			delete(h.objects, id)
 		}
 	}
@@ -308,23 +378,23 @@ func (h *HTTP) sweep() {
 
 func (h *HTTP) purge() {
 	h.mu.Lock()
-	ids := make([]string, 0, len(h.objects))
-	for id := range h.objects {
-		ids = append(ids, id)
+	held := make([]object, 0, len(h.objects))
+	for _, o := range h.objects {
+		held = append(held, o)
 	}
 	clear(h.objects)
 	h.mu.Unlock()
-	h.remove(ids)
+	h.remove(held)
 }
 
-func (h *HTTP) remove(ids []string) {
-	for _, id := range ids {
-		if err := h.fs.Remove(objectPath(id)); err != nil {
-			h.lg.Warn("could not remove an object", "id", id, "err", err)
+func (h *HTTP) remove(objects []object) {
+	for _, o := range objects {
+		if err := h.discard(o); err != nil {
+			h.lg.Warn("could not remove an object", "id", o.blob.ID, "err", err)
 		}
 	}
-	if len(ids) > 0 {
-		h.lg.Debug("removed expired blobs", "count", len(ids))
+	if len(objects) > 0 {
+		h.lg.Debug("dropped blobs", "count", len(objects))
 	}
 }
 
@@ -337,7 +407,7 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := h.requestID(r.URL.Path)
-	b, ok := h.lookup(id)
+	o, ok := h.lookup(id)
 	if !ok {
 		// Unknown, expired and malformed ids are one response: anything else
 		// tells a prober which ids exist.
@@ -345,9 +415,11 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	f, err := h.fs.Open(objectPath(id))
+	f, err := o.fs.Open(o.path)
 	if err != nil {
-		h.lg.Warn("could not open a stored object", "id", id, "err", err)
+		// An attached file can be deleted or replaced by whoever owns it while
+		// a reference is live, so this is an ordinary outcome, not a fault.
+		h.lg.Warn("could not open a served object", "id", id, "err", err)
 		http.NotFound(w, r)
 		return
 	}
@@ -356,9 +428,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// These bytes are whatever a tool was handed, served from the operator's
 	// origin: never let a browser render them, and never let it sniff a type
 	// out of the content.
-	w.Header().Set("Content-Type", serveType(b.MIMEType))
+	w.Header().Set("Content-Type", serveType(o.blob.MIMEType))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Disposition", contentDisposition(b.Name))
+	w.Header().Set("Content-Disposition", contentDisposition(o.blob.Name))
 	w.Header().Set("Cache-Control", "no-store")
 
 	// A zero modtime omits Last-Modified, which nothing here can use. Range
