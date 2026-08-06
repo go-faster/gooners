@@ -142,8 +142,30 @@ values keep running:
 - toggling `tools.lazy` on or off across the whole config, which decides whether the discovery tools
   and lazy middleware are installed on the server
 
-Every attempt increments `mcpgateway.config.reload` with a `result` attribute of `success` or
-`failure`.
+Metrics:
+
+| Metric | Type | Attributes |
+|---|---|---|
+| `mcpgateway.config.reload` | counter | `result` = `success` \| `failure` |
+| `mcpgateway.config.reload.last_success_timestamp` | gauge (unix seconds) | — |
+| `mcpgateway.upstreams` | gauge | `state` = `connected` \| `disconnected` |
+
+`last_success_timestamp` is seeded at startup, so `now() - last_success_timestamp` is a usable
+staleness alert from the first scrape — a gateway stuck on a config it cannot replace looks stale
+rather than merely quiet. `mcpgateway.upstreams` separates "not configured" from "configured but
+unreachable", since a disconnected upstream is still being retried by its supervisor.
+
+## Graceful shutdown
+
+Closing an upstream — on removal, on restart, or at process shutdown — drains it first: it stops
+accepting new calls, waits for the in-flight ones to finish, and only then tears the session down.
+Upstreams close concurrently, so a reload removing several waits out one drain rather than their sum.
+
+`[server] drain_timeout` (default `5s`) bounds each phase; a negative value disables draining and
+cuts in-flight calls off immediately. The bound applies to the session close as well as the wait:
+the MCP SDK's session close itself waits for outstanding calls, so an upstream that never answers
+would otherwise hang shutdown forever. When that happens the close is abandoned and the transport is
+torn down underneath it, which for stdio means the child process is killed.
 
 Polling compares a content hash rather than mtime or inotify events, which is what makes it work for
 atomic rename, ConfigMap symlink swap, and editor save-with-backup, while a rewrite with identical

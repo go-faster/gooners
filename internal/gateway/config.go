@@ -44,6 +44,10 @@ type ServerConfig struct {
 	// LazyTools is the default for every upstream's tools.lazy, which an
 	// upstream may still override in either direction.
 	LazyTools bool `toml:"lazy_tools"`
+	// DrainTimeout bounds how long a closing upstream waits for its in-flight
+	// calls, on both reload and shutdown. Empty uses [defaultDrainTimeout];
+	// negative disables draining.
+	DrainTimeout string `toml:"drain_timeout"`
 }
 
 // UpstreamConfig describes one upstream MCP server to proxy.
@@ -190,6 +194,9 @@ func Decode(data []byte) (*Config, error) {
 func (c *Config) Validate() error {
 	if len(c.Upstreams) == 0 {
 		return errors.New("at least one upstream required")
+	}
+	if _, err := parseOptionalDuration(c.Server.DrainTimeout); err != nil {
+		return fmt.Errorf("server: drain_timeout: %w", err)
 	}
 	seenUp := map[string]bool{}
 	for i, u := range c.Upstreams {

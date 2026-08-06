@@ -245,7 +245,7 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		}
 	}
 	for _, uc := range cfg.Upstreams {
-		u, err := g.newUpstream(uc, res, redactor)
+		u, err := g.newUpstream(uc, cfg, res, redactor)
 		if err != nil {
 			return nil, err
 		}
@@ -265,14 +265,22 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 	return g, nil
 }
 
-// newUpstream builds one upstream against the given resolver and global
-// redactor, wiring the gateway's notification callbacks. It does not connect
-// and does not register the upstream on the gateway.
-func (g *Gateway) newUpstream(uc UpstreamConfig, res SecretResolver, globalRedactor *Redactor) (*Upstream, error) {
+// newUpstream builds one upstream against the given config, resolver and global
+// redactor, wiring the gateway's notification callbacks. It does not connect and
+// does not register the upstream on the gateway.
+//
+// cfg is passed rather than read from g, because a reload builds its upstreams
+// before the new config is installed.
+func (g *Gateway) newUpstream(uc UpstreamConfig, cfg *Config, res SecretResolver, globalRedactor *Redactor) (*Upstream, error) {
+	drainTimeout, err := parseOptionalDuration(cfg.Server.DrainTimeout)
+	if err != nil {
+		return nil, errors.Wrap(err, "server: drain_timeout")
+	}
 	uopts := UpstreamOptions{
 		Logger:                g.slogger.With("upstream", uc.Name),
 		Resolver:              res,
 		TransportBuilder:      g.transportBuilder,
+		DrainTimeout:          drainTimeout,
 		OnToolListChanged:     g.onToolListChanged,
 		OnPromptListChanged:   g.onPromptListChanged,
 		OnResourceListChanged: g.onResourceListChanged,
@@ -1143,11 +1151,9 @@ func (g *Gateway) RegisteredResourceTemplates() map[string]string {
 	return out
 }
 
-// Close closes all upstreams.
+// Close drains and closes all upstreams concurrently.
 func (g *Gateway) Close(ctx context.Context) error {
-	for _, u := range g.upstreamList() {
-		_ = u.Close(ctx)
-	}
+	closeUpstreams(ctx, g.upstreamList())
 	g.registryMu.Lock()
 	clear(g.registry.finalToUpstream)
 	clear(g.registry.upstreamRegistered)
