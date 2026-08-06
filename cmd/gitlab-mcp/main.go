@@ -9,6 +9,8 @@ import (
 	"net/url"
 	"os"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/mcputil"
@@ -19,9 +21,11 @@ func main() {
 	var (
 		logging   cmdutil.LoggingFlags
 		transport cmdutil.TransportFlags
+		blobFlags cmdutil.BlobFlags
 	)
 	logging.Register(flag.CommandLine)
 	transport.Register(flag.CommandLine)
+	blobFlags.Register(flag.CommandLine)
 
 	var (
 		baseURL = flag.String("gitlab-url", os.Getenv("GITLAB_URL"), "GitLab instance URL; defaults to the glab CLI's configured host, then https://gitlab.com")
@@ -110,6 +114,18 @@ func main() {
 		cfg.FS = effect.Root(*assetsDir)
 	}
 
+	// Where a downloaded asset goes when the agent cannot read this server's
+	// filesystem. Unset leaves a store that refuses, naming the flag.
+	blobStore, runBlob, err := blobFlags.Setup(cmdutil.BlobOptions{
+		Name:   "gitlab-mcp",
+		Logger: logger.With("component", "blob"),
+	})
+	if err != nil {
+		logger.Error("invalid blob store configuration", "err", err)
+		os.Exit(1)
+	}
+	cfg.Blob = blobStore
+
 	switch {
 	case mode == gitlab.AuthClientRequired:
 		// Nothing should have set it, but an explicit -gitlab-token plus
@@ -141,11 +157,19 @@ func main() {
 		Logger: logger.With("component", "auth"),
 	})
 
-	if err := transport.Run(ctx, cmdutil.RunOptions{
-		Name:    "gitlab-mcp",
-		Handler: handler,
-		Logger:  logger.With("component", "transport"),
-	}); err != nil {
+	// The blob store serves on its own listener, so it runs alongside the MCP
+	// transport rather than inside it; either one failing stops the other.
+	g, ctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return runBlob(ctx) })
+	g.Go(func() error {
+		defer cancel()
+		return transport.Run(ctx, cmdutil.RunOptions{
+			Name:    "gitlab-mcp",
+			Handler: handler,
+			Logger:  logger.With("component", "transport"),
+		})
+	})
+	if err := g.Wait(); err != nil {
 		slog.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}

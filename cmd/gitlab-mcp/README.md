@@ -28,6 +28,10 @@ go build ./cmd/gitlab-mcp
 | `-glab-config-dir` | | Where to read `glab`'s `config.yml`. Defaults to `glab`'s own location (`$GLAB_CONFIG_DIR`, else `$XDG_CONFIG_HOME/glab-cli`, else `~/.config/glab-cli`). |
 | `-no-glab-config` | | Do not read credentials from the `glab` config. |
 | `-assets-dir` | | Directory the release asset tools may read and write. They are disabled when unset. |
+| `-blob-addr` | | Listen address for the blob store. Enables downloading assets to a URL. See [Downloading assets without a shared filesystem](#downloading-assets-without-a-shared-filesystem). |
+| `-blob-base-url` | | Externally reachable URL prefix for served files. Required unless `-blob-addr` is local. |
+| `-blob-dir` | | Directory holding served files. Defaults to `$TMPDIR/gitlab-mcp-blobs`. |
+| `-blob-ttl` | | How long a served file stays fetchable. Defaults to 15m. |
 | `-auth` | | Credential source: `server` (default), `client`, or `client-optional`. See [Authentication](#authentication). |
 | `-auth-insecure` | | Allow caller-supplied tokens over plaintext HTTP. |
 
@@ -104,7 +108,7 @@ know it. Issues and merge requests are addressed by their project-scoped number 
 | `release_view` | Reads one release by tag, or the latest; includes notes and assets |
 | `release_create` | Creates a release from a tag |
 | `release_asset_upload` | Uploads a local file and attaches it to a release |
-| `release_asset_download` | Downloads a release asset to a local file |
+| `release_asset_download` | Downloads a release asset to a local file, or to a temporary URL when `path` is omitted |
 | `repo_view` | Project metadata, optionally with the README |
 | `repo_search` | Finds projects by name or path |
 | `repo_tree` | Lists files and directories at a path and ref |
@@ -131,6 +135,31 @@ The URIs mirror GitLab's own web URLs, `/-/` included: a project path has an unb
 segments, so something has to mark where it ends. The `ref` in a blob URI cannot contain a slash, so
 address a branch like `feat/x` by commit SHA. The tools have no such limit.
 
+## Downloading assets without a shared filesystem
+
+`release_asset_download` writes to `path` under `-assets-dir`, which is only useful to an agent that can
+read that directory. Containerise this server and the path names something the agent cannot open — and it
+fails by handing back a plausible wrong answer, not an error.
+
+Omit `path` and the asset goes to the blob store instead, and the tool answers with a URL:
+
+```bash
+# The agent reaches this server at localhost:8090, so the URL is derived from the address.
+./gitlab-mcp -blob-addr :8090
+
+# In a container, or behind a proxy, say where the agent actually reaches it.
+./gitlab-mcp -blob-addr :8090 -blob-base-url https://mcp.example.com/blob
+```
+
+The agent then fetches it with `curl`, and the bytes never enter its context. Small text and images stay
+inline, where a URL would cost more than the payload.
+
+The URL is a credential: it embeds an unguessable id, it is the only thing guarding the bytes, and it
+ends up in the session transcript. It expires after `-blob-ttl` (15m by default), objects do not survive
+a restart, and the listener serves plaintext — front it with a TLS proxy if it leaves the host.
+
+Without `-blob-addr`, omitting `path` is an error naming the flag rather than a URL that resolves nowhere.
+
 ## Response size
 
 A single API response can dwarf everything else in an agent's context, so the tools cap what they return
@@ -149,6 +178,9 @@ Per the effect-provider invariant in `CLAUDE.md`:
   is what stops that from turning this server into a fetch-anything proxy.
 - The release asset tools reach host files only through `effect.Root(-assets-dir)`. With no `-assets-dir`
   they get an `effect.Deny` provider and can touch nothing. No handler checks paths itself.
+- The blob store writes through the same kind of confined provider, rooted at `-blob-dir`, and serves
+  every object as `attachment` with `nosniff`, downgrading types a browser would execute. The bytes come
+  from project content, and they are served from the operator's origin.
 - Reading `glab`'s config uses `os.ReadFile` because it is an operator-controlled startup path that no
   agent can influence.
 - Under `-auth=server` on an HTTP transport, the server is a shared-credential proxy: whoever reaches
