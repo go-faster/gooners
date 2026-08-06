@@ -12,6 +12,7 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -39,6 +40,14 @@ type Gateway struct {
 	registry   upstreamRegistry
 	registryMu sync.RWMutex
 	routeMu    sync.RWMutex
+	// stateMu guards the reloadable state: cfg, resolver, redactor and the
+	// upstreams slice. Reload swaps them while requests are in flight.
+	stateMu sync.RWMutex
+	// reloadMu serializes Reload calls so two concurrent reloads cannot
+	// interleave their detach/attach phases.
+	reloadMu sync.Mutex
+
+	transportBuilder TransportBuilder
 
 	// discovery reports whether the gateway's own search/describe tools are
 	// registered, which also makes their names reserved against upstreams.
@@ -69,12 +78,35 @@ type upstreamRegistry struct {
 }
 
 func (g *Gateway) upstreamByName(name string) *Upstream {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
 	for _, u := range g.upstreams {
 		if u.cfg.Name == name {
 			return u
 		}
 	}
 	return nil
+}
+
+// upstreamList returns a snapshot safe to range over while a reload runs.
+func (g *Gateway) upstreamList() []*Upstream {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
+	return slices.Clone(g.upstreams)
+}
+
+// config returns the currently active configuration.
+func (g *Gateway) config() *Config {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
+	return g.cfg
+}
+
+// secretResolver returns the resolver built from the active [Config.Secrets].
+func (g *Gateway) secretResolver() SecretResolver {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
+	return g.resolver
 }
 
 func toolEqual(a, b *mcp.Tool) bool {
@@ -146,6 +178,9 @@ type Options struct {
 	TracerProvider trace.TracerProvider
 	Logger         *zap.Logger
 	Slogger        *slog.Logger
+	// TransportBuilder builds the transport for every upstream, including ones
+	// created by [Gateway.Reload]. Nil uses the production stdio/http/sse builder.
+	TransportBuilder TransportBuilder
 }
 
 func (o *Options) setDefaults() {
@@ -185,8 +220,9 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 	}
 
 	g := &Gateway{
-		cfg:      cfg,
-		resolver: res,
+		cfg:              cfg,
+		resolver:         res,
+		transportBuilder: opts.TransportBuilder,
 		registry: upstreamRegistry{
 			finalToUpstream:    make(map[string]string),
 			upstreamRegistered: make(map[string]map[string]struct{}),
@@ -209,35 +245,7 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		}
 	}
 	for _, uc := range cfg.Upstreams {
-		uopts := UpstreamOptions{
-			Logger:                opts.Slogger.With("upstream", uc.Name),
-			Resolver:              res,
-			OnToolListChanged:     g.onToolListChanged,
-			OnPromptListChanged:   g.onPromptListChanged,
-			OnResourceListChanged: g.onResourceListChanged,
-			OnResourceUpdated:     g.onResourceUpdated,
-			OnReconnect:           g.onUpstreamReconnect,
-		}
-
-		uopts.Redactor = redactor
-		if uc.Redact != nil {
-			if uc.Redact.Enabled {
-				r, err := NewRedactor(uc.Redact.Patterns, uc.Redact.MinEntropy)
-				if err != nil {
-					return nil, errors.Wrapf(err, "upstream %q: create redactor", uc.Name)
-				}
-				uopts.Redactor = r
-			} else {
-				uopts.Redactor = nil
-			}
-		}
-
-		if uc.Reconnect != nil {
-			if err := applyReconnectConfig(uc.Reconnect, &uopts); err != nil {
-				return nil, errors.Wrapf(err, "parse reconnect config for upstream %s", uc.Name)
-			}
-		}
-		u, err := NewUpstream(uc, uopts)
+		u, err := g.newUpstream(uc, res, redactor)
 		if err != nil {
 			return nil, err
 		}
@@ -255,6 +263,40 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		g.registerDiscoveryTools()
 	}
 	return g, nil
+}
+
+// newUpstream builds one upstream against the given resolver and global
+// redactor, wiring the gateway's notification callbacks. It does not connect
+// and does not register the upstream on the gateway.
+func (g *Gateway) newUpstream(uc UpstreamConfig, res SecretResolver, globalRedactor *Redactor) (*Upstream, error) {
+	uopts := UpstreamOptions{
+		Logger:                g.slogger.With("upstream", uc.Name),
+		Resolver:              res,
+		TransportBuilder:      g.transportBuilder,
+		OnToolListChanged:     g.onToolListChanged,
+		OnPromptListChanged:   g.onPromptListChanged,
+		OnResourceListChanged: g.onResourceListChanged,
+		OnResourceUpdated:     g.onResourceUpdated,
+		OnReconnect:           g.onUpstreamReconnect,
+		Redactor:              globalRedactor,
+	}
+	if uc.Redact != nil {
+		if uc.Redact.Enabled {
+			r, err := NewRedactor(uc.Redact.Patterns, uc.Redact.MinEntropy)
+			if err != nil {
+				return nil, errors.Wrapf(err, "upstream %q: create redactor", uc.Name)
+			}
+			uopts.Redactor = r
+		} else {
+			uopts.Redactor = nil
+		}
+	}
+	if uc.Reconnect != nil {
+		if err := applyReconnectConfig(uc.Reconnect, &uopts); err != nil {
+			return nil, errors.Wrapf(err, "parse reconnect config for upstream %s", uc.Name)
+		}
+	}
+	return NewUpstream(uc, uopts)
 }
 
 func (g *Gateway) onToolListChanged(ctx context.Context, upstreamName string) error {
@@ -521,7 +563,7 @@ func (g *Gateway) Build(ctx context.Context) error {
 	}
 	var listedItems []listed
 
-	for _, u := range g.upstreams {
+	for _, u := range g.upstreamList() {
 		if err := u.Connect(ctx); err != nil {
 			g.logger.Warn("upstream unavailable during build; will retry in background", zap.String("upstream", u.cfg.Name), zap.Error(err))
 			continue
@@ -737,7 +779,7 @@ func (g *Gateway) setRouteServer(u *Upstream, server *mcp.Server) {
 func (g *Gateway) newUpstreamRouteServer(u *Upstream, tools []*mcp.Tool, prompts []*mcp.Prompt, resources []*mcp.Resource, templates []*mcp.ResourceTemplate) *mcp.Server {
 	s := mcputil.NewServer(mcputil.ServerConfig{
 		Name:         u.cfg.Name,
-		Instructions: g.cfg.Server.Instructions,
+		Instructions: g.config().Server.Instructions,
 		Logger:       g.slogger.With("component", "route-server", "upstream", u.cfg.Name),
 	})
 	s.AddReceivingMiddleware(g.scopeMiddleware(u))
@@ -1103,7 +1145,7 @@ func (g *Gateway) RegisteredResourceTemplates() map[string]string {
 
 // Close closes all upstreams.
 func (g *Gateway) Close(ctx context.Context) error {
-	for _, u := range g.upstreams {
+	for _, u := range g.upstreamList() {
 		_ = u.Close(ctx)
 	}
 	g.registryMu.Lock()

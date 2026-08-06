@@ -164,12 +164,17 @@ type RedactConfig struct {
 	MinEntropy float64  `toml:"min_entropy"`
 }
 
-// Load reads a TOML file, decodes it, applies defaults and validates.
+// Load reads a TOML file and decodes it via [Decode].
 func Load(cfgPath string) (*Config, error) {
 	data, err := os.ReadFile(cfgPath) //nolint:gosec // G304: operator-controlled config file path
 	if err != nil {
 		return nil, errors.Wrap(err, "read config")
 	}
+	return Decode(data)
+}
+
+// Decode decodes TOML, applies defaults and validates.
+func Decode(data []byte) (*Config, error) {
 	var c Config
 	if _, err := toml.Decode(string(data), &c); err != nil {
 		return nil, errors.Wrap(err, "decode toml")

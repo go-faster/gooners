@@ -96,6 +96,7 @@ become reserved names — an upstream tool that resolves to either is skipped wi
 ## Flags
 
 - `-config` path to TOML (default `gateway.toml`)
+- `-config-watch-interval` poll the config file for changes at this interval; `0` (default) reloads on `SIGHUP` only
 - Standard `-log-*` and `-transport` flags from cmdutil
 - HTTP TLS flags: `-tls-cert-file`, `-tls-key-file`, and optional `-tls-client-ca-file` for mTLS
 
@@ -109,6 +110,45 @@ Example HTTPS gateway with routed upstreams:
 ./mcpgateway -config gateway.toml -transport streamable-http -addr :8443 \
   -tls-cert-file server.crt -tls-key-file server.key
 ```
+
+## Config reload
+
+The gateway reloads `-config` in place on `SIGHUP`, and — when `-config-watch-interval` is set —
+whenever the file's contents change. Downstream clients keep their sessions: the gateway applies the
+new config to the running MCP server and lets the usual `listChanged` notifications carry the new
+tool set, so no client has to reconnect.
+
+```bash
+kill -HUP $(pidof mcpgateway)                              # reload now
+./mcpgateway -config gateway.toml -config-watch-interval 10s  # reload on change
+```
+
+What a reload does:
+
+- **Invalid config is rejected before anything changes.** A config that does not parse or does not
+  validate leaves the running one serving; the failure is logged and counted.
+- **Unchanged upstreams keep their live session.** An upstream is closed and reconnected only when
+  its own `[[upstream]]` section changed, when a `{secret:...}` it interpolates changed, or when the
+  global `[redact]` section it inherits changed — all three are baked in at connect time.
+- **Added upstreams connect, removed upstreams are unregistered** along with their route. An added
+  upstream that is unreachable right now is still adopted; its supervisor retries in the background.
+
+What a reload does **not** apply — these are reported in the logs as needing a restart, and the old
+values keep running:
+
+- `[server]` — the gateway's MCP identity is handed to the transport at startup
+- `[auth]` — the HTTP middleware chain is built once
+- `[telemetry]` — exporters are wired at startup
+- toggling `tools.lazy` on or off across the whole config, which decides whether the discovery tools
+  and lazy middleware are installed on the server
+
+Every attempt increments `mcpgateway.config.reload` with a `result` attribute of `success` or
+`failure`.
+
+Polling compares a content hash rather than mtime or inotify events, which is what makes it work for
+atomic rename, ConfigMap symlink swap, and editor save-with-backup, while a rewrite with identical
+bytes does not churn upstream connections. A `SIGHUP` reloads unconditionally, since the secrets the
+file references may have changed even when the file did not.
 
 ## Limitations
 

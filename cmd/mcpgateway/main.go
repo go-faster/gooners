@@ -10,6 +10,7 @@ import (
 	"github.com/go-faster/sdk/app"
 	"go.uber.org/zap"
 	"go.uber.org/zap/exp/zapslog"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/gateway"
@@ -17,6 +18,8 @@ import (
 
 func main() {
 	cfgPath := flag.String("config", "gateway.toml", "path to gateway.toml")
+	watchInterval := flag.Duration("config-watch-interval", 0,
+		"poll the config file for changes at this interval; 0 reloads on SIGHUP only")
 	transport := cmdutil.TransportFlags{}
 	transport.Register(flag.CommandLine)
 	flag.Parse()
@@ -24,7 +27,14 @@ func main() {
 	app.Run(func(ctx context.Context, lg *zap.Logger, t *app.Telemetry) error {
 		slogger := slog.New(zapslog.NewHandler(lg.Core()))
 
-		cfg, err := gateway.Load(*cfgPath)
+		src, err := gateway.NewFileSource(gateway.FileSourceOptions{
+			Path:     *cfgPath,
+			Interval: *watchInterval,
+		})
+		if err != nil {
+			return errors.Wrap(err, "config source")
+		}
+		cfg, err := src.Load(ctx)
 		if err != nil {
 			return errors.Wrap(err, "load config")
 		}
@@ -41,11 +51,29 @@ func main() {
 		if err := gw.Build(ctx); err != nil {
 			return errors.Wrap(err, "build gateway")
 		}
-		return transport.Run(ctx, cmdutil.RunOptions{
-			Name:       "mcpgateway",
-			Handler:    gw.ServerForRequest,
-			Middleware: gw.HTTPMiddleware(),
-			Logger:     slogger.With("component", "transport"),
+
+		reloader, err := gateway.NewReloader(gateway.ReloaderOptions{
+			Source:        src,
+			Target:        gw,
+			Logger:        lg,
+			MeterProvider: t.MeterProvider(),
 		})
+		if err != nil {
+			return errors.Wrap(err, "new reloader")
+		}
+
+		grp, ctx := errgroup.WithContext(ctx)
+		grp.Go(func() error {
+			return reloader.Run(ctx)
+		})
+		grp.Go(func() error {
+			return transport.Run(ctx, cmdutil.RunOptions{
+				Name:       "mcpgateway",
+				Handler:    gw.ServerForRequest,
+				Middleware: gw.HTTPMiddleware(),
+				Logger:     slogger.With("component", "transport"),
+			})
+		})
+		return grp.Wait()
 	}, app.WithServiceName("mcpgateway"))
 }

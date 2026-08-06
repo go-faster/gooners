@@ -86,6 +86,26 @@ call site — enforces policy. This is a security invariant, not a style prefere
 - A binary declares what it may touch by what it passes to `session.NewPool`. `ssh-mcp` passes
   `LocalFS: effect.Root(cwd)`.
 
+### mcpgateway config reload (issue #26)
+
+`Gateway.Reload` applies a new `*Config` to the running gateway; *where that config comes from* is
+not its problem. Keep the split:
+
+- **`Source` supplies configs, `Reloader` decides when and reports the outcome, `Gateway` only
+  applies.** Do not add file paths, poll intervals, signal handling, or reload metrics to `Gateway`
+  — that state belongs in `FileSource`/`Reloader`, which are testable without a gateway.
+- **Reload must never take the running config down.** Validate, build the secret resolver, the
+  redactor and every new `*Upstream` *before* mutating live state, so a bad config leaves the
+  previous one serving. A reload that half-applies is worse than one that is refused.
+- **Do not swap `g.server`.** Downstream sessions are bound to it; the whole point of reload is that
+  clients keep their session and learn the new tool set through `listChanged`. Detaching an upstream
+  therefore syncs it against an empty feature set (the normal removal path) instead of rebuilding.
+- A config section that cannot be applied in place goes in `restartRequired`, never silently
+  ignored. Anything captured once at startup (server identity, HTTP middleware, telemetry exporters,
+  whether the lazy middleware is installed) is in that category.
+- Reloadable state on `Gateway` (`cfg`, `resolver`, `upstreams`) is guarded by `stateMu`; read it
+  through `config()`/`secretResolver()`/`upstreamList()`, never the field directly.
+
 ## Key Dependencies
 
 - `github.com/modelcontextprotocol/go-sdk` — MCP server/tool SDK; all tool registrations call `mcp.NewServer` and pass a `session.Pool` or local state.

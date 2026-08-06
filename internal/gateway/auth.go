@@ -53,7 +53,7 @@ func (g *Gateway) HTTPMiddleware() func(http.Handler) http.Handler {
 				return
 			}
 
-			expected, err := Interpolate(r.Context(), cfg.Value, g.resolver)
+			expected, err := Interpolate(r.Context(), cfg.Value, g.secretResolver())
 			if err != nil {
 				http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 				return
@@ -254,7 +254,7 @@ func (o *oauthState) handleAuthorizePost(g *Gateway, w http.ResponseWriter, r *h
 		o.redirectOAuthError(w, q, "invalid_request")
 		return
 	}
-	expected, err := Interpolate(r.Context(), g.cfg.Auth.Value, g.resolver)
+	expected, err := Interpolate(r.Context(), g.config().Auth.Value, g.secretResolver())
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusServiceUnavailable), http.StatusServiceUnavailable)
 		return
