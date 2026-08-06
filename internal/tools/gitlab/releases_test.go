@@ -2,14 +2,17 @@ package gitlab
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/effect"
 )
 
@@ -225,6 +228,126 @@ func TestDownloadReleaseAsset(t *testing.T) {
 
 		_, statErr := os.Stat(filepath.Join(dir, "out.bin"))
 		require.True(t, os.IsNotExist(statErr), "no partial file should be written")
+	})
+}
+
+// assetServer serves one release with one asset named "bin" holding body.
+func assetServer(t *testing.T, body string) http.Handler {
+	t.Helper()
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v4/projects/g/p/releases/v1.0":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"tag_name": "v1.0", "assets": {"count": 1, "links": [
+				{"id": 5, "name": "bin", "url": "` + baseOf(r) + `/plain/bin", "direct_asset_url": "` + baseOf(r) + `/direct/bin"}
+			]}}`))
+		case "/direct/bin":
+			_, _ = w.Write([]byte(body))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	})
+}
+
+// newBlobStore returns a store whose URLs are stable enough to assert on.
+func newBlobStore(t *testing.T) *blob.HTTP {
+	t.Helper()
+
+	s, err := blob.NewHTTP(blob.HTTPOptions{
+		BaseURL: "http://blob.invalid/files",
+		FS:      blob.Dir(t.TempDir()),
+	})
+	require.NoError(t, err)
+	return s
+}
+
+// TestDownloadReleaseAssetToBlob covers the path an agent takes when it cannot
+// read this server's filesystem: no path argument, and the answer is a URL.
+func TestDownloadReleaseAssetToBlob(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns a resource link", func(t *testing.T) {
+		store := newBlobStore(t)
+		// No FS at all: a URL must not depend on -assets-dir.
+		c := newTestClient(t, Config{Blob: store}, assetServer(t, "binary-content"))
+
+		res, out, err := downloadReleaseAssetHandler(c)(ctx, &mcp.CallToolRequest{}, DownloadReleaseAssetArgs{
+			Project: "g/p", TagName: "v1.0", Name: "bin",
+		})
+		require.NoError(t, err)
+		require.Empty(t, out.Path)
+		require.Equal(t, int64(len("binary-content")), out.Size)
+		require.NotEmpty(t, out.URL)
+		require.NotNil(t, out.ExpiresAt)
+
+		require.NotNil(t, res)
+		require.Len(t, res.Content, 1)
+		link, ok := res.Content[0].(*mcp.ResourceLink)
+		require.True(t, ok, "got %T", res.Content[0])
+		require.Equal(t, out.URL, link.URI)
+		require.Equal(t, "bin", link.Name)
+
+		// The link resolves to the asset's bytes.
+		id, _, _ := strings.Cut(strings.TrimPrefix(link.URI, "http://blob.invalid/files/"), "/")
+		f, _, err := store.Open(ctx, id)
+		require.NoError(t, err)
+		defer func() { _ = f.Close() }()
+		got, err := io.ReadAll(f)
+		require.NoError(t, err)
+		require.Equal(t, "binary-content", string(got))
+	})
+
+	// A small text asset is worth more inline than as a URL the agent has to
+	// go and fetch.
+	t.Run("inlines a small text asset", func(t *testing.T) {
+		c := newTestClient(t, Config{Blob: newBlobStore(t)}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/api/v4/projects/g/p/releases/v1.0":
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"tag_name": "v1.0", "assets": {"count": 1, "links": [
+					{"id": 5, "name": "notes.txt", "url": "` + baseOf(r) + `/direct/notes"}
+				]}}`))
+			case "/direct/notes":
+				_, _ = w.Write([]byte("release notes"))
+			default:
+				t.Errorf("unexpected path %s", r.URL.Path)
+			}
+		}))
+
+		res, out, err := downloadReleaseAssetHandler(c)(ctx, &mcp.CallToolRequest{}, DownloadReleaseAssetArgs{
+			Project: "g/p", TagName: "v1.0", Name: "notes.txt",
+		})
+		require.NoError(t, err)
+		require.Empty(t, out.URL, "an inlined asset was never stored")
+
+		text, ok := res.Content[0].(*mcp.TextContent)
+		require.True(t, ok, "got %T", res.Content[0])
+		require.Equal(t, "release notes", text.Text)
+	})
+
+	// Without a store the tool says which flag is missing, instead of writing
+	// somewhere the agent cannot read or returning a URL that resolves nowhere.
+	t.Run("without a store the error names the flag", func(t *testing.T) {
+		c := newTestClient(t, Config{}, assetServer(t, "binary-content"))
+
+		_, _, err := downloadReleaseAssetHandler(c)(ctx, &mcp.CallToolRequest{}, DownloadReleaseAssetArgs{
+			Project: "g/p", TagName: "v1.0", Name: "bin",
+		})
+		require.ErrorIs(t, err, blob.ErrDenied)
+		require.ErrorContains(t, err, "-blob-addr")
+	})
+
+	// The size cap holds on the blob path too, and it is an error rather than
+	// a silently truncated object.
+	t.Run("an oversized asset is refused", func(t *testing.T) {
+		store := newBlobStore(t)
+		c := newTestClient(t, Config{Blob: store}, assetServer(t, strings.Repeat("x", maxAssetSize+1)))
+
+		_, _, err := downloadReleaseAssetHandler(c)(ctx, &mcp.CallToolRequest{}, DownloadReleaseAssetArgs{
+			Project: "g/p", TagName: "v1.0", Name: "bin",
+		})
+		require.ErrorContains(t, err, "over the")
 	})
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	gl "gitlab.com/gitlab-org/api/client-go/v2"
 
+	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/tools/mcputil"
 )
 
@@ -299,12 +300,14 @@ type DownloadReleaseAssetArgs struct {
 	Project string `json:"project,omitempty" jsonschema:"project path (group/project) or numeric ID; defaults to the server's configured project"`
 	TagName string `json:"tag_name" jsonschema:"tag of the release holding the asset"`
 	Name    string `json:"name" jsonschema:"asset name as listed by release_view"`
-	Path    string `json:"path" jsonschema:"local destination, relative to the server's assets directory"`
+	Path    string `json:"path,omitempty" jsonschema:"local destination, relative to the server's assets directory; omit to get a temporary URL instead, which is the only useful answer when you do not share this server's filesystem"`
 }
 
 type DownloadReleaseAssetRes struct {
-	Path string `json:"path" jsonschema:"host path the asset was written to"`
-	Size int64  `json:"size" jsonschema:"bytes written"`
+	Path      string     `json:"path,omitempty" jsonschema:"host path the asset was written to"`
+	URL       string     `json:"url,omitempty" jsonschema:"temporary URL to fetch the asset from, e.g. with curl"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty" jsonschema:"when url stops working"`
+	Size      int64      `json:"size" jsonschema:"bytes transferred"`
 }
 
 func downloadReleaseAssetHandler(c *Client) mcp.ToolHandlerFor[DownloadReleaseAssetArgs, DownloadReleaseAssetRes] {
@@ -319,13 +322,12 @@ func downloadReleaseAssetHandler(c *Client) mcp.ToolHandlerFor[DownloadReleaseAs
 		if args.Name == "" {
 			return nil, DownloadReleaseAssetRes{}, errors.New("name is required")
 		}
-		if args.Path == "" {
-			return nil, DownloadReleaseAssetRes{}, errors.New("path is required")
-		}
 		// Fail before the transfer rather than after it, while the error can
 		// still name the path.
-		if _, err := c.cfg.FS.Resolve(args.Path); err != nil {
-			return nil, DownloadReleaseAssetRes{}, errors.Wrapf(err, "destination %s", args.Path)
+		if args.Path != "" {
+			if _, err := c.cfg.FS.Resolve(args.Path); err != nil {
+				return nil, DownloadReleaseAssetRes{}, errors.Wrapf(err, "destination %s", args.Path)
+			}
 		}
 
 		release, _, err := c.gl.Releases.GetRelease(pid, args.TagName, gl.WithContext(ctx))
@@ -370,16 +372,18 @@ func downloadReleaseAssetHandler(c *Client) mcp.ToolHandlerFor[DownloadReleaseAs
 		if resp.StatusCode != http.StatusOK {
 			return nil, DownloadReleaseAssetRes{}, errors.Errorf("download %s: unexpected status %s", url, resp.Status)
 		}
+		// The cap applies however the asset leaves here, and it holds even when
+		// Content-Length lies or is absent.
+		body := newCappedReader(resp.Body, args.Name)
 
-		// LimitReader guards the case where Content-Length lies or is absent.
-		data, err := io.ReadAll(io.LimitReader(resp.Body, maxAssetSize+1))
+		if args.Path == "" {
+			return downloadToBlob(ctx, c, args, body, resp.ContentLength)
+		}
+
+		data, err := io.ReadAll(body)
 		if err != nil {
 			return nil, DownloadReleaseAssetRes{}, errors.Wrapf(err, "read %s", url)
 		}
-		if len(data) > maxAssetSize {
-			return nil, DownloadReleaseAssetRes{}, errors.Errorf("asset %q is over the %d byte limit", args.Name, maxAssetSize)
-		}
-
 		if err := c.cfg.FS.WriteFile(args.Path, data, 0o600); err != nil {
 			return nil, DownloadReleaseAssetRes{}, errors.Wrapf(err, "write %s", args.Path)
 		}
@@ -390,6 +394,55 @@ func downloadReleaseAssetHandler(c *Client) mcp.ToolHandlerFor[DownloadReleaseAs
 		}
 		return nil, DownloadReleaseAssetRes{Path: resolved, Size: int64(len(data))}, nil
 	}
+}
+
+// downloadToBlob stores the asset and answers with a link to it, for the agent
+// that cannot read this server's filesystem.
+func downloadToBlob(ctx context.Context, c *Client, args DownloadReleaseAssetArgs, body io.Reader, size int64) (*mcp.CallToolResult, DownloadReleaseAssetRes, error) {
+	if size <= 0 {
+		size = blob.SizeUnknown
+	}
+	// The type is guessed from the asset name rather than taken from the
+	// response: the name is what the agent asked for, and a type chosen by
+	// project content decides how a client renders these bytes.
+	content, b, err := blob.Content(ctx, c.cfg.Blob, body, blob.ContentOptions{
+		PutOptions: blob.PutOptions{Name: args.Name, Size: size},
+	})
+	if err != nil {
+		return nil, DownloadReleaseAssetRes{}, errors.Wrapf(err, "store asset %q", args.Name)
+	}
+
+	res := DownloadReleaseAssetRes{URL: b.URL, Size: b.Size}
+	if !b.ExpiresAt.IsZero() {
+		res.ExpiresAt = new(b.ExpiresAt)
+	}
+	return &mcp.CallToolResult{Content: content}, res, nil
+}
+
+// cappedReader fails at the limit instead of truncating there, so an asset
+// over the cap is an error rather than a silently short file.
+type cappedReader struct {
+	r    io.Reader
+	n    int64 // bytes still allowed, one more than the limit
+	name string
+}
+
+// newCappedReader allows one byte past [maxAssetSize], which is what
+// distinguishes an asset exactly at the limit from one over it.
+func newCappedReader(r io.Reader, name string) *cappedReader {
+	return &cappedReader{r: r, n: maxAssetSize + 1, name: name}
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.n <= 0 {
+		return 0, errors.Errorf("asset %q is over the %d byte limit", c.name, maxAssetSize)
+	}
+	if int64(len(p)) > c.n {
+		p = p[:c.n]
+	}
+	n, err := c.r.Read(p)
+	c.n -= int64(n)
+	return n, err
 }
 
 func registerReleaseTools(s *mcp.Server, c *Client) {
@@ -417,6 +470,6 @@ func registerReleaseTools(s *mcp.Server, c *Client) {
 
 	mcputil.Register(s, mcputil.ToolDef{
 		Name:        "release_asset_download",
-		Description: "Downloads a GitLab release asset to a local file. Only paths under the server's assets directory are writable, and only assets hosted on the configured instance can be fetched.",
+		Description: "Downloads a GitLab release asset, either to a local file when path is given, or to a temporary URL you can fetch with curl when it is omitted. Only paths under the server's assets directory are writable, and only assets hosted on the configured instance can be fetched.",
 	}, downloadReleaseAssetHandler(c))
 }
