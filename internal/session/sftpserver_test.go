@@ -24,12 +24,18 @@ var errConnKilled = errors.New("connection killed")
 type controlConn struct {
 	net.Conn
 
-	mu     sync.Mutex
-	stall  chan struct{} // non-nil while stalled; closed on kill
-	killed bool
-	read   int64
-	base   int64 // read count at the last mark
-	onRead func(c *controlConn, sinceMark int64)
+	mu      sync.Mutex
+	stall   chan struct{} // non-nil while stalled; closed on kill
+	killed  bool
+	read    int64
+	base    int64 // read count at the last mark
+	onRead  func(c *controlConn, sinceMark int64)
+	written int64
+	// writeBase is the write count at the last mark. Downloads are payload the
+	// server writes, so a test that has to act partway through one counts this
+	// side rather than the read side.
+	writeBase int64
+	onWrite   func(c *controlConn, sinceMark int64)
 
 	// hold, while non-nil, withholds everything the server sends.
 	// See [sftpTestServer.holdResponsesBetween].
@@ -39,11 +45,11 @@ type controlConn struct {
 	holdDone bool
 }
 
-// mark rebases the read counter, so a test can trigger on payload bytes rather than on
+// mark rebases both byte counters, so a test can trigger on payload bytes rather than on
 // whatever the SSH and SFTP handshakes happen to cost.
 func (c *controlConn) mark() {
 	c.mu.Lock()
-	c.base = c.read
+	c.base, c.writeBase = c.read, c.written
 	c.mu.Unlock()
 }
 
@@ -104,7 +110,18 @@ func (c *controlConn) Write(b []byte) (int, error) {
 	if hold != nil {
 		<-hold
 	}
-	return c.Conn.Write(b)
+
+	n, err := c.Conn.Write(b)
+	if n > 0 {
+		c.mu.Lock()
+		c.written += int64(n)
+		since, hook := c.written-c.writeBase, c.onWrite
+		c.mu.Unlock()
+		if hook != nil {
+			hook(c, since)
+		}
+	}
+	return n, err
 }
 
 // Stall makes every read and write from here on block indefinitely.
@@ -142,6 +159,7 @@ type sftpTestServer struct {
 	mu       sync.Mutex
 	conns    []*controlConn
 	onRead   func(c *controlConn, sinceMark int64)
+	onWrite  func(c *controlConn, sinceMark int64)
 	holdFrom int64
 	holdTo   int64
 }
@@ -202,6 +220,24 @@ func (s *sftpTestServer) afterBytes(n int64, fn func(c *controlConn)) {
 	}
 }
 
+// afterWritten runs fn once the server has written n payload bytes, counted from the
+// moment the SFTP subsystem starts. It is the download-side counterpart of
+// [sftpTestServer.afterBytes]: a download is data the server sends, so the read counter
+// only ever sees the client's small requests and cannot say how far along the transfer is.
+//
+// Choose n well below the file size and the hook is reached while the transfer is
+// genuinely in flight, however fast the machine is. It must be set before connecting.
+func (s *sftpTestServer) afterWritten(n int64, fn func(c *controlConn)) {
+	var once sync.Once
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onWrite = func(c *controlConn, sinceMark int64) {
+		if sinceMark >= n {
+			once.Do(func() { fn(c) })
+		}
+	}
+}
+
 // killAll drops every connection the server has accepted.
 func (s *sftpTestServer) killAll() {
 	s.mu.Lock()
@@ -221,7 +257,8 @@ func (s *sftpTestServer) serve(ln net.Listener, cfg *ssh.ServerConfig) {
 		}
 		c := &controlConn{Conn: conn}
 		s.mu.Lock()
-		c.onRead, c.holdFrom, c.holdTo = s.onRead, s.holdFrom, s.holdTo
+		c.onRead, c.onWrite = s.onRead, s.onWrite
+		c.holdFrom, c.holdTo = s.holdFrom, s.holdTo
 		s.conns = append(s.conns, c)
 		s.mu.Unlock()
 		go handleSFTPConn(c, cfg)
