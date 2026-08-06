@@ -61,15 +61,50 @@ type blobShareOutput struct {
 	ExpiresAt string `json:"expires_at" jsonschema:"RFC 3339 timestamp after which url stops working"`
 }
 
-// registerBlobTool adds blob_share to the aggregate server. Route servers
-// expose one upstream directly and do not get it, matching the discovery tools.
-func (g *Gateway) registerBlobTool() {
+// blobInstructions tells the model that a host path is not a dead end. A tool
+// description is only read once a client has decided to look at that tool, and
+// the agent is holding the path before it has any reason to; instructions are
+// in front of the model from the first turn, which is when it needs to know.
+//
+// It names no mount. Instructions are handed to the transport at startup while
+// the mount list reloads in place, so a list embedded here would go stale; the
+// tool's own refusal names the mounts that would have worked.
+const blobInstructions = "When a tool returns a path on the server's filesystem, that path is not " +
+	"reachable from where you run: call blob_share with it to get a temporary URL you can fetch."
+
+// withBlobInstructions appends [blobInstructions] to the operator's own.
+func withBlobInstructions(instructions string) string {
+	if instructions == "" {
+		return blobInstructions
+	}
+	return instructions + "\n\n" + blobInstructions
+}
+
+// blobShareDescription names the directories that would work, so an agent
+// holding a path can tell whether the tool applies to it without spending a
+// call to find out.
+//
+// The list lives here rather than in the gateway's instructions because
+// instructions are handed to the transport once at startup while the mount
+// list reloads in place: re-registering the tool refreshes the description and
+// emits listChanged, so what a client reads stays true after a reload.
+func blobShareDescription(mounts []blobMount) string {
+	desc := "Turn a host path another tool reported into a temporary URL you can fetch with curl. " +
+		"Use it when a tool writes a file and returns its path: the path is on the server's filesystem, " +
+		"which you may not share, while the URL works from anywhere you can reach this gateway. "
+	if len(mounts) == 0 {
+		return desc + "No shared directories are configured, so no path can be served right now."
+	}
+	return desc + "Only paths inside these shared directories can be served: " + describeMounts(mounts) + "."
+}
+
+// registerBlobTool adds blob_share to the aggregate server, or replaces it when
+// a reload changed which directories are served. Route servers expose one
+// upstream directly and do not get it, matching the discovery tools.
+func (g *Gateway) registerBlobTool(mounts []blobMount) {
 	mcp.AddTool(g.server, &mcp.Tool{
-		Name: blobShareName,
-		Description: "Turn a host path another tool reported into a temporary URL you can fetch with curl. " +
-			"Use it when a tool writes a file and returns its path: the path is on the server's filesystem, " +
-			"which you may not share, while the URL works from anywhere you can reach this gateway. " +
-			"Only paths inside the gateway's configured shared directories can be served.",
+		Name:        blobShareName,
+		Description: blobShareDescription(mounts),
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 	}, g.handleBlobShare)
 }

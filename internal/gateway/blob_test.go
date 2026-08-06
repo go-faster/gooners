@@ -309,3 +309,123 @@ func TestBlobRestartRequired(t *testing.T) {
 		})
 	}
 }
+
+// TestBlobInstructions checks what a downstream client is actually told at
+// initialize: the tool description alone is not enough, because a client that
+// never looks at blob_share holds a host path with no reason to look it up.
+func TestBlobInstructions(t *testing.T) {
+	newGateway := func(t *testing.T, withStore bool, instructions string) *Gateway {
+		t.Helper()
+
+		cfg := &Config{
+			Server:    ServerConfig{Name: "gw", Instructions: instructions},
+			Upstreams: []UpstreamConfig{{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}},
+		}
+		var opts Options
+		if withStore {
+			store, err := blob.NewHTTP(blob.HTTPOptions{
+				BaseURL: "http://gw.invalid/blob",
+				FS:      blob.Dir(t.TempDir()),
+			})
+			require.NoError(t, err)
+			cfg.Blob = BlobConfig{Addr: ":8090"}
+			opts.Blob = store
+		}
+		g, err := New(cfg, opts)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = g.Close(t.Context()) })
+		return g
+	}
+
+	// instructionsOf is what the client sees, not what the config said.
+	instructionsOf := func(t *testing.T, g *Gateway) string {
+		t.Helper()
+
+		serverTr, clientTr := mcp.NewInMemoryTransports()
+		go func() { _ = g.Server().Run(t.Context(), serverTr) }()
+
+		sess, err := mcp.NewClient(&mcp.Implementation{Name: "down", Version: "0"}, nil).
+			Connect(t.Context(), clientTr, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess.Close() })
+		return sess.InitializeResult().Instructions
+	}
+
+	t.Run("NoStore", func(t *testing.T) {
+		got := instructionsOf(t, newGateway(t, false, "Gateway to prod."))
+		require.Equal(t, "Gateway to prod.", got, "a gateway without a store must not advertise the tool")
+	})
+	t.Run("AppendsToOperators", func(t *testing.T) {
+		got := instructionsOf(t, newGateway(t, true, "Gateway to prod."))
+		require.Contains(t, got, "Gateway to prod.", "the operator's own instructions must survive")
+		require.Contains(t, got, blobShareName)
+	})
+	t.Run("StandsAlone", func(t *testing.T) {
+		got := instructionsOf(t, newGateway(t, true, ""))
+		require.Equal(t, blobInstructions, got)
+	})
+}
+
+// TestBlobShareDescriptionNamesMounts checks that an agent can tell which paths
+// are servable from tools/list alone, and that a reload changing the mount list
+// changes what it reads.
+func TestBlobShareDescriptionNamesMounts(t *testing.T) {
+	t.Run("Description", func(t *testing.T) {
+		require.Contains(t,
+			blobShareDescription(newBlobMounts([]BlobMountConfig{
+				{Name: "example-mcp", Dir: "/mnt/example", Prefix: "/var/lib/example-mcp"},
+			})),
+			"example-mcp at /var/lib/example-mcp")
+		require.Contains(t, blobShareDescription(nil), "No shared directories are configured")
+	})
+
+	t.Run("RefreshedOnReload", func(t *testing.T) {
+		store, err := blob.NewHTTP(blob.HTTPOptions{
+			BaseURL: "http://gw.invalid/blob",
+			FS:      blob.Dir(t.TempDir()),
+		})
+		require.NoError(t, err)
+
+		cfg := func(prefix string) *Config {
+			return &Config{
+				Server:    ServerConfig{Name: "gw"},
+				Upstreams: []UpstreamConfig{{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}},
+				Blob: BlobConfig{
+					Addr:   ":8090",
+					Mounts: []BlobMountConfig{{Name: "m", Dir: t.TempDir(), Prefix: prefix}},
+				},
+			}
+		}
+		g, err := New(cfg("/var/lib/first"), Options{Blob: store})
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = g.Close(t.Context()) })
+
+		serverTr, clientTr := mcp.NewInMemoryTransports()
+		go func() { _ = g.Server().Run(t.Context(), serverTr) }()
+		sess, err := mcp.NewClient(&mcp.Implementation{Name: "down", Version: "0"}, nil).
+			Connect(t.Context(), clientTr, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess.Close() })
+
+		descriptionOf := func(t *testing.T) string {
+			t.Helper()
+
+			list, err := sess.ListTools(t.Context(), &mcp.ListToolsParams{})
+			require.NoError(t, err)
+			for _, tool := range list.Tools {
+				if tool.Name == blobShareName {
+					return tool.Description
+				}
+			}
+			t.Fatalf("%s is not in tools/list", blobShareName)
+			return ""
+		}
+		require.Contains(t, descriptionOf(t), "/var/lib/first")
+
+		_, err = g.Reload(t.Context(), cfg("/var/lib/second"))
+		require.NoError(t, err)
+		got := descriptionOf(t)
+		require.Contains(t, got, "/var/lib/second")
+		require.NotContains(t, got, "/var/lib/first", "the old prefix must not still be advertised")
+	})
+}

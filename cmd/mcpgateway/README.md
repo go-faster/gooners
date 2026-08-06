@@ -180,6 +180,11 @@ A few things worth knowing before relying on it:
   mount is confined to its directory, symlinks included.
 - **Only the gateway serves them.** Upstreams do not need to know the store exists, which is the
   point — this works with any MCP server that writes files, unmodified.
+- **The agent is told, twice.** With `[blob]` configured the gateway appends a sentence to its MCP
+  `instructions` saying a returned host path is not a dead end, and `blob_share`'s own description
+  names the configured mounts and their prefixes. An agent can therefore tell from `tools/list`
+  whether a path it is holding is servable, without spending a call to find out. Changing
+  `[[blob.mount]]` re-advertises the tool, so the list a client reads stays current across reloads.
 - The listener is plaintext; front it with a TLS proxy and set `base_url` accordingly if it leaves
   the host.
 

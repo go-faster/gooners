@@ -272,9 +272,13 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		}
 		g.upstreams = append(g.upstreams, u)
 	}
+	instructions := cfg.Server.Instructions
+	if g.blobStore != nil {
+		instructions = withBlobInstructions(instructions)
+	}
 	g.server = mcputil.NewServer(mcputil.ServerConfig{
 		Name:         cfg.Server.Name,
-		Instructions: cfg.Server.Instructions,
+		Instructions: instructions,
 		Logger:       opts.Slogger.With("component", "server"),
 	})
 	g.server.AddReceivingMiddleware(g.scopeMiddleware(nil))
@@ -284,7 +288,7 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		g.registerDiscoveryTools()
 	}
 	if g.blobStore != nil {
-		g.registerBlobTool()
+		g.registerBlobTool(g.blobMounts)
 	}
 	return g, nil
 }
