@@ -342,14 +342,11 @@ func TestDownloadConnectionKilledMidTransfer(t *testing.T) {
 	require.NoError(t, f.Truncate(transferFileSize))
 	require.NoError(t, f.Close())
 
-	// Downloads flow the other way, so gate on what the server sends, not what it reads.
-	srv.afterBytes(1, func(c *controlConn) {
-		go func() {
-			// Let some of the file through before pulling the plug.
-			time.Sleep(50 * time.Millisecond)
-			c.Kill()
-		}()
-	})
+	// Downloads flow the other way, so gate on what the server sends, not what it reads:
+	// the read counter only ever sees the client's small requests. Killing after a
+	// fraction of the file has gone out puts the kill inside the transfer on any machine,
+	// where a sleep raced the transfer and lost on a fast one.
+	srv.afterWritten(interfereAfter, (*controlConn).Kill)
 
 	dl := newDisconnectLog()
 	p, sessionID := startTransferPool(t, srv, dl)
