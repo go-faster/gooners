@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"sync/atomic"
+	"time"
 
 	"github.com/go-faster/errors"
 	"go.opentelemetry.io/otel"
@@ -14,6 +16,15 @@ import (
 // Reloadable is the reload target of a [Reloader], satisfied by [*Gateway].
 type Reloadable interface {
 	Reload(ctx context.Context, cfg *Config) (ReloadResult, error)
+	// UpstreamStatus reports the target's current upstreams, so the reloader
+	// can export them without keeping its own (immediately stale) copy.
+	UpstreamStatus() UpstreamStatus
+}
+
+// UpstreamStatus counts upstreams by connection state.
+type UpstreamStatus struct {
+	Connected    int
+	Disconnected int
 }
 
 // Reloader drives a [Reloadable] from a [Source] and reports every attempt.
@@ -24,7 +35,13 @@ type Reloader struct {
 	target Reloadable
 	logger *zap.Logger
 	onDone func(ReloadResult, error)
+	now    func() time.Time
 	total  metric.Int64Counter
+
+	// lastSuccess is the Unix time of the last config that applied cleanly,
+	// read from an observable-gauge callback on the meter's collection
+	// goroutine.
+	lastSuccess atomic.Int64
 }
 
 // ReloaderOptions configures [NewReloader].
@@ -37,6 +54,8 @@ type ReloaderOptions struct {
 	MeterProvider metric.MeterProvider
 	// OnReload, if set, is called after every attempt, including failed ones.
 	OnReload func(ReloadResult, error)
+	// Now overrides the clock, for tests.
+	Now func() time.Time
 }
 
 func (o *ReloaderOptions) setDefaults() {
@@ -49,6 +68,9 @@ func (o *ReloaderOptions) setDefaults() {
 	if o.OnReload == nil {
 		o.OnReload = func(ReloadResult, error) {}
 	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
 }
 
 // NewReloader returns a Reloader wiring opts.Source to opts.Target.
@@ -60,20 +82,51 @@ func NewReloader(opts ReloaderOptions) (*Reloader, error) {
 	if opts.Target == nil {
 		return nil, errors.New("target is required")
 	}
-	total, err := opts.MeterProvider.Meter("mcpgateway").Int64Counter(
+	meter := opts.MeterProvider.Meter("mcpgateway")
+	total, err := meter.Int64Counter(
 		"mcpgateway.config.reload",
 		metric.WithDescription("Configuration reload attempts, by result."),
 	)
 	if err != nil {
 		return nil, errors.Wrap(err, "create reload counter")
 	}
-	return &Reloader{
+	r := &Reloader{
 		source: opts.Source,
 		target: opts.Target,
 		logger: opts.Logger.With(zap.String("component", "reloader")),
 		onDone: opts.OnReload,
+		now:    opts.Now,
 		total:  total,
-	}, nil
+	}
+	// Seed with construction time, which is when the caller loaded the config
+	// it started with. Without it, "now - last success" would exceed any
+	// staleness threshold on a gateway that has simply never been reloaded.
+	r.lastSuccess.Store(opts.Now().Unix())
+
+	if _, err := meter.Int64ObservableGauge(
+		"mcpgateway.config.reload.last_success_timestamp",
+		metric.WithDescription("Unix time of the last configuration that applied cleanly."),
+		metric.WithUnit("s"),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			o.Observe(r.lastSuccess.Load())
+			return nil
+		}),
+	); err != nil {
+		return nil, errors.Wrap(err, "create last success gauge")
+	}
+	if _, err := meter.Int64ObservableGauge(
+		"mcpgateway.upstreams",
+		metric.WithDescription("Configured upstreams, by connection state."),
+		metric.WithInt64Callback(func(_ context.Context, o metric.Int64Observer) error {
+			st := r.target.UpstreamStatus()
+			o.Observe(int64(st.Connected), metric.WithAttributes(attribute.String("state", "connected")))
+			o.Observe(int64(st.Disconnected), metric.WithAttributes(attribute.String("state", "disconnected")))
+			return nil
+		}),
+	); err != nil {
+		return nil, errors.Wrap(err, "create upstreams gauge")
+	}
+	return r, nil
 }
 
 // Run watches the source and reloads the target on every reported change. It
@@ -121,6 +174,7 @@ func (r *Reloader) observe(ctx context.Context, res ReloadResult, err error) {
 		result = "failure"
 		r.logger.Error("config reload failed", zap.Error(err))
 	} else {
+		r.lastSuccess.Store(r.now().Unix())
 		r.logger.Info("config reloaded",
 			zap.Strings("added", res.Added),
 			zap.Strings("removed", res.Removed),
