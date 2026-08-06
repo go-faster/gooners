@@ -17,6 +17,11 @@ import (
 	gwtransport "github.com/go-faster/gooners/internal/gateway/transport"
 )
 
+// defaultConnectTimeout bounds the MCP handshake, and with it every feature
+// listing that has no explicit call_timeout. Both happen before the gateway can
+// serve anything, so neither may be unbounded.
+const defaultConnectTimeout = 10 * time.Second
+
 // TransportBuilder constructs an mcp.Transport for an upstream and returns an
 // optional cleanup function to call after the session closes.
 type TransportBuilder func(ctx context.Context, cfg UpstreamConfig, r SecretResolver) (mcp.Transport, func() error, error)
@@ -219,7 +224,7 @@ func (u *Upstream) connectOnce(ctx context.Context) (rerr error) {
 
 	timeout := u.connectTimeout
 	if timeout == 0 {
-		timeout = 10 * time.Second
+		timeout = defaultConnectTimeout
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -495,7 +500,7 @@ func (u *Upstream) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 		return nil, err
 	}
 	defer u.leave()
-	ctx, cancel := u.withCallTimeout(ctx)
+	ctx, cancel := u.withListTimeout(ctx)
 	defer cancel()
 	return collectSeq(sess.Tools(ctx, &mcp.ListToolsParams{}))
 }
@@ -520,7 +525,7 @@ func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
 		return nil, err
 	}
 	defer u.leave()
-	ctx, cancel := u.withCallTimeout(ctx)
+	ctx, cancel := u.withListTimeout(ctx)
 	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Prompts == nil {
 		return nil, nil
@@ -549,7 +554,7 @@ func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
 		return nil, err
 	}
 	defer u.leave()
-	ctx, cancel := u.withCallTimeout(ctx)
+	ctx, cancel := u.withListTimeout(ctx)
 	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Resources == nil {
 		return nil, nil
@@ -566,7 +571,7 @@ func (u *Upstream) ListResourceTemplates(ctx context.Context) ([]*mcp.ResourceTe
 		return nil, err
 	}
 	defer u.leave()
-	ctx, cancel := u.withCallTimeout(ctx)
+	ctx, cancel := u.withListTimeout(ctx)
 	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Resources == nil {
 		return nil, nil

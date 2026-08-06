@@ -68,6 +68,28 @@ func (u *Upstream) withCallTimeout(ctx context.Context) (context.Context, contex
 	return context.WithTimeout(ctx, u.callTimeout)
 }
 
+// withListTimeout bounds one feature listing — tools, prompts, resources or
+// resource templates.
+//
+// Listing is not a tool call, and it must not inherit call_timeout's "no limit"
+// default. It happens during Build and after every reconnect, before the
+// gateway can serve anything, so an upstream that completes the handshake and
+// then never answers tools/list would otherwise park startup forever: the
+// connect timeout has already been satisfied, and nothing else bounds it.
+//
+// An explicit call_timeout still wins, so an operator who set one gets it
+// everywhere rather than having listing quietly use a larger bound.
+func (u *Upstream) withListTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if u.callTimeout > 0 {
+		return context.WithTimeout(ctx, u.callTimeout)
+	}
+	timeout := u.connectTimeout
+	if timeout <= 0 {
+		timeout = defaultConnectTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 // leave releases a claim taken by enter, waking a waiting drain once the last
 // call finishes.
 func (u *Upstream) leave() {
