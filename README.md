@@ -13,6 +13,14 @@ MCP (Model Context Protocol) servers, AI tools, and agent skills built on go-fas
 | [gitlab-mcp](cmd/gitlab-mcp) | MCP server for GitLab issues, merge requests, releases, and repository browsing; every tool takes a `project`, so no git checkout is required, and `-auth=client` lets each caller supply its own token |
 | [mcpgateway](cmd/mcpgateway) | MCP proxy that aggregates tools from multiple upstream MCP servers (stdio, streamable-http, sse) with per-upstream prefixes, allow/deny globs, description trim, output redaction, optional per-upstream host/path routes, lazy tool listing with `search_tools`/`describe_tools`, and in-place config reload on SIGHUP or file change |
 
+## Packages
+
+Exported packages any MCP server can import, in this repository or outside it.
+
+| Package | Description |
+|---------|-------------|
+| [blob](blob) | Returns files from MCP tools as a fetchable URL instead of loading them into the model's context. An HTTP store on its own listener, expiring unguessable URLs, and a helper that keeps small payloads inline |
+
 ## Prompts
 
 The MCP servers expose predefined prompts that can be invoked by AI agents:

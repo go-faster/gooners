@@ -37,6 +37,10 @@ golangci-lint run ./...
 ## Architecture
 
 ```
+blob/                 ← THE ONLY EXPORTED PACKAGE. Turns tool output into a fetchable URL instead of
+                        context. blob.Store is the interface; blob.NewHTTP serves objects from a
+                        confined directory on its own listener; blob.Content keeps small payloads
+                        inline. See "blob package" below.
 cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
 cmd/grafana-dashboard-mcp/ ← MCP server binary (go build ./cmd/grafana-dashboard-mcp)
 cmd/alertmanager-mcp/ ← MCP server binary (go build ./cmd/alertmanager-mcp)
@@ -85,6 +89,32 @@ call site — enforces policy. This is a security invariant, not a style prefere
   `effect.FS.Resolve` exists only to fail fast with a legible error and is explicitly *not* the gate.
 - A binary declares what it may touch by what it passes to `session.NewPool`. `ssh-mcp` passes
   `LocalFS: effect.Root(cwd)`.
+
+### blob package (issue #67)
+
+`blob` is the module's **only exported package**, so every change to it is a public API change that
+`gotd/tgmcp` and other outside servers depend on. Keep it that way:
+
+- **Nothing in `blob`'s exported API may name an `internal/` type.** `blob.FS` is a blob-owned
+  interface, not `effect.FS`, and `blob.Dir` returns it — an outside importer cannot import
+  `internal/effect` to construct one. `effect.FS` does *not* satisfy `blob.FS` automatically: Go
+  interface types are identical only when they are the same declaration, which is why `effectFS` in
+  `blob/dir.go` exists. Widen `blob.FS` and that adapter must grow with it.
+- **`blob` stays dependency-light** — stdlib, `go-faster/errors`, the MCP SDK, and `internal/effect`.
+  Every dependency it takes lands in the go.mod of everyone who imports it.
+- **A store that cannot advertise a reachable URL is `blob.Deny`, never a store minting URLs.**
+  `HTTPOptions.BaseURL` is required for exactly this reason. Returning an unreachable URL is the
+  plausible-wrong-answer failure the package exists to remove, so it must be an error naming the flag.
+- **The object id is the only credential.** 128 bits from `crypto/rand`, short TTL, and unknown /
+  expired / malformed ids all return the same 404 — distinguishing them is an oracle. A URL also
+  outlives the call in the transcript and the logs, so lengthening the default TTL needs a reason.
+- **The store serves attacker-influenced bytes on the operator's origin.** `attachment`, `nosniff`,
+  and a downgrade of types a browser executes are not optional; `Range` support is, and it stays,
+  because resuming a large fetch is half the point.
+- **Do not add a `ReadDir` to `effect.FS` for the sweep.** The index is in memory and `objectsDir` is
+  cleared at startup, which is what lets the store stay inside the existing filesystem interface.
+- A tool that produces bytes calls `blob.Content`, which decides inline vs link. Do not reimplement
+  that threshold in a handler, and do not put it inside a `Store`: storage is not content policy.
 
 ### mcpgateway config reload (issue #26)
 
@@ -201,6 +231,10 @@ Keep this property when adding tools:
   credential. Do not reach for a package-level or `Config`-level token inside a handler.
 - Release asset tools reach host files only via `Config.FS`; a nil FS means `effect.Deny`. Asset
   downloads follow a URL that project content chose, so they rely on the HTTP client's allowlist.
+- `release_asset_download` writes to `path` when given and to `Config.Blob` when not. A host path is
+  useless to an agent that does not share this filesystem, so neither destination is the default and
+  a missing store is an error naming `-blob-addr`. Its MIME type is guessed from the asset name, not
+  taken from the response: the type decides how a client renders bytes that project content supplied.
 - Test fixtures for issues **must include `"id"`**: `gl.Issue.UnmarshalJSON` calls
   `reflect.TypeOf(raw["id"]).Kind()` unguarded and panics without it.
 
