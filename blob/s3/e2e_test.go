@@ -32,7 +32,11 @@ const (
 // minioEndpoint is the shared MinIO, started once for the package. One
 // container is enough because every test gets its own tenant prefix, which is
 // the same isolation the deployment relies on.
-var minioEndpoint string
+var (
+	minioEndpoint string
+	// minioSkip is why there is no endpoint, when there is none.
+	minioSkip string
+)
 
 func TestMain(m *testing.M) {
 	flag.Parse()
@@ -40,10 +44,14 @@ func TestMain(m *testing.M) {
 		os.Exit(m.Run())
 	}
 
+	// A container that will not start is a skip, not a failure: these tests
+	// need Docker with Linux containers, which a Windows runner does not have.
+	// The reason is recorded so a broken Docker on a host that should have one
+	// is visible rather than silently green.
 	endpoint, stop, err := startMinIO(context.Background())
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "start minio: %v\n", err)
-		os.Exit(1)
+		minioSkip = fmt.Sprintf("could not start minio: %v", err)
+		os.Exit(m.Run())
 	}
 	minioEndpoint = endpoint
 
@@ -106,6 +114,9 @@ func tenant(t *testing.T) string {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("e2e test needs docker; skipped with -short")
+	}
+	if minioEndpoint == "" {
+		t.Skip(minioSkip)
 	}
 	return "tenants/" + t.Name()
 }
