@@ -27,19 +27,30 @@ const (
 	searchDescMax      = 200
 )
 
-// isGatewayTool reports whether name belongs to the gateway itself rather than to
-// an upstream. Such tools have no owning upstream, so scope and lazy filtering
-// must let them through.
-func isGatewayTool(name string) bool {
-	return name == searchToolsName || name == describeToolsName
+// reservedTool reports whether name belongs to the gateway itself rather than
+// to an upstream. Such tools have no owning upstream, so scope and lazy
+// filtering must let them through, and an upstream may not take the name.
+//
+// Each name is reserved only while its feature is on: a gateway without
+// discovery, or without a blob store, must not shadow an upstream tool that
+// happens to share the name.
+func (g *Gateway) reservedTool(name string) bool {
+	switch name {
+	case searchToolsName, describeToolsName:
+		return g.discovery
+	case blobShareName:
+		return g.blobStore != nil
+	default:
+		return false
+	}
 }
 
 // isOwnTool reports whether name is one of the tools the gateway itself
 // registered on the aggregate server. Route servers (forUpstream != nil) never
-// carry them, and neither does a gateway with discovery disabled — in both cases
-// a same-named upstream tool must still go through scope checks.
+// carry them, so a same-named upstream tool there must still go through scope
+// checks.
 func (g *Gateway) isOwnTool(forUpstream *Upstream, name string) bool {
-	return g.discovery && forUpstream == nil && isGatewayTool(name)
+	return forUpstream == nil && g.reservedTool(name)
 }
 
 type searchToolsInput struct {

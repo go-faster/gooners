@@ -150,6 +150,57 @@ Example HTTPS gateway with routed upstreams:
   -tls-cert-file server.crt -tls-key-file server.key
 ```
 
+## Sharing files an upstream wrote (`blob_share`)
+
+An upstream that produces a file usually returns its host path. That path is useless to an agent
+that does not share the filesystem — in a container it names something the agent cannot open, and it
+fails by handing back a plausible wrong answer rather than an error.
+
+Bind-mount the upstream's output directory into the gateway and configure it as a mount. The gateway
+then exposes one extra tool, `blob_share`, which turns a path into a URL:
+
+```toml
+[blob]
+addr = "127.0.0.1:8090"                        # the store's own listener
+base_url = "https://gw.example.com/blob"       # where the agent reaches it; optional if addr is local
+ttl = "15m"
+
+[[blob.mount]]
+name = "example-mcp"
+dir = "/mnt/example-mcp"                       # the directory as the gateway sees it
+prefix = "/var/lib/example-mcp"                # the directory as the upstream reports it
+```
+
+The agent reads the path out of the upstream's own reply and hands it back:
+
+```
+example_mcp_get_file → "wrote /var/lib/example-mcp/out.png"
+blob_share {"path": "/var/lib/example-mcp/out.png"}
+  → https://gw.example.com/blob/<id>/out.png
+```
+
+Nothing is copied: the file is served in place, and the reference expiring never deletes it. The URL
+embeds an unguessable id, is the only thing guarding the bytes, and stops working after `ttl`.
+
+A few things worth knowing before relying on it:
+
+- **Nothing translates paths automatically.** `prefix` is how the gateway knows that
+  `/var/lib/example-mcp/...` means its own `/mnt/example-mcp/...`. Omit `prefix` when the mount is at
+  the same path on both sides.
+- **The mount list is the boundary**, not the caller: a path outside every mount is refused, and each
+  mount is confined to its directory, symlinks included.
+- **Only the gateway serves them.** Upstreams do not need to know the store exists, which is the
+  point — this works with any MCP server that writes files, unmodified.
+- **The agent is told, twice.** With `[blob]` configured the gateway appends a sentence to its MCP
+  `instructions` saying a returned host path is not a dead end, and `blob_share`'s own description
+  names the configured mounts and their prefixes. An agent can therefore tell from `tools/list`
+  whether a path it is holding is servable, without spending a call to find out. Changing
+  `[[blob.mount]]` re-advertises the tool, so the list a client reads stays current across reloads.
+- The listener is plaintext; front it with a TLS proxy and set `base_url` accordingly if it leaves
+  the host.
+
+Without `[blob]` the tool is not registered at all, and the name stays available to upstreams.
+
 ## Config reload
 
 The gateway reloads `-config` in place on `SIGHUP`, and — when `-config-watch-interval` is set —
@@ -180,6 +231,8 @@ values keep running:
 - `[telemetry]` — exporters are wired at startup
 - toggling `tools.lazy` on or off across the whole config, which decides whether the discovery tools
   and lazy middleware are installed on the server
+- `[blob]` except its mounts — the store owns a listener and mints URLs from `base_url`, both fixed
+  at startup. `[[blob.mount]]` is not in this list: which directories are shared does reload
 
 Metrics:
 

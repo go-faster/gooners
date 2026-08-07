@@ -9,6 +9,7 @@ import (
 	"github.com/go-faster/errors"
 	gl "gitlab.com/gitlab-org/api/client-go/v2"
 
+	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/effect"
 )
 
@@ -37,6 +38,11 @@ type Config struct {
 	// business touching local files.
 	FS effect.FS
 
+	// Blob is where a downloaded asset goes when the caller wants a URL rather
+	// than a host path, which is the only useful answer when the agent does not
+	// share this server's filesystem. A nil Blob denies it.
+	Blob blob.Store
+
 	// HTTPClient performs every GitLab request. If nil, it is an
 	// [effect.NewHTTPClient] whose egress allowlist is exactly the configured
 	// instance, so neither the API client nor an asset download can reach
@@ -57,6 +63,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.FS == nil {
 		c.FS = effect.Deny("gitlab-mcp was started without a local directory; pass -assets-dir to enable release asset tools")
+	}
+	if c.Blob == nil {
+		c.Blob = blob.Deny("gitlab-mcp was started without a blob store; pass -blob-addr to download assets to a URL")
 	}
 }
 

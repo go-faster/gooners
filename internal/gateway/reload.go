@@ -73,10 +73,25 @@ func (g *Gateway) Reload(ctx context.Context, cfg *Config) (ReloadResult, error)
 		fresh = append(fresh, u)
 	}
 
+	// Mounts are a table the tool reads per call, so swapping them needs no new
+	// listener and no reconnect. The store itself was built at startup.
+	mounts := newBlobMounts(cfg.Blob.Mounts)
+
 	g.stateMu.Lock()
 	g.cfg = cfg
 	g.resolver = resolver
+	oldMounts := g.blobMounts
+	g.blobMounts = mounts
 	g.stateMu.Unlock()
+
+	// The tool's description names the served directories, so a changed mount
+	// list has to be re-advertised; re-registering emits listChanged and the
+	// client re-reads it.
+	if g.blobStore != nil && !slices.EqualFunc(oldMounts, mounts, func(a, b blobMount) bool {
+		return a.name == b.name && a.prefix == b.prefix
+	}) {
+		g.registerBlobTool(mounts)
+	}
 
 	// Detach before attaching: a renamed prefix or a moved route must free its
 	// names before the replacement claims them, otherwise the replacement is
@@ -210,7 +225,19 @@ func restartRequired(oldCfg, newCfg *Config) []string {
 	if oldCfg.anyLazy() != newCfg.anyLazy() {
 		out = append(out, "tools.lazy")
 	}
+	// The blob store owns a listener and its URLs are minted from base_url, both
+	// fixed when the process started. Its mount list is not here: that reloads.
+	if blobStoreChanged(oldCfg.Blob, newCfg.Blob) {
+		out = append(out, "blob")
+	}
 	return out
+}
+
+// blobStoreChanged reports whether the blob section changed in a way that
+// needs a new store, ignoring the mounts a live gateway can swap.
+func blobStoreChanged(oldCfg, newCfg BlobConfig) bool {
+	oldCfg.Mounts, newCfg.Mounts = nil, nil
+	return !reflect.DeepEqual(oldCfg, newCfg)
 }
 
 // detachUpstream removes everything an upstream contributed, leaving it

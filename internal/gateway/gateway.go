@@ -24,6 +24,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
+	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/gateway/middleware"
 	"github.com/go-faster/gooners/internal/gateway/router"
 	"github.com/go-faster/gooners/internal/mcputil"
@@ -58,6 +59,13 @@ type Gateway struct {
 	// reports. It is only ever set, never cleared: a reload replaces features
 	// on a gateway that is already serving.
 	built atomic.Bool
+
+	// blobStore is the store behind blob_share, handed in at startup because it
+	// owns a listener. Nil leaves the tool unregistered.
+	blobStore blob.Attacher
+	// blobMounts is reloadable: which directories may be served is config, and
+	// changing it needs no new listener. Guarded by stateMu.
+	blobMounts []blobMount
 
 	promptRegistry           featureRegistry[*mcp.Prompt]
 	resourceRegistry         featureRegistry[*mcp.Resource]
@@ -187,6 +195,11 @@ type Options struct {
 	// TransportBuilder builds the transport for every upstream, including ones
 	// created by [Gateway.Reload]. Nil uses the production stdio/http/sse builder.
 	TransportBuilder TransportBuilder
+	// Blob backs the blob_share tool. It is passed in rather than built from
+	// the config because it owns a listener, which a live reload cannot move;
+	// nil leaves the tool unregistered. Which directories it may serve is
+	// config, and does reload.
+	Blob blob.Attacher
 }
 
 func (o *Options) setDefaults() {
@@ -244,6 +257,8 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		logger:                   opts.Logger,
 		slogger:                  opts.Slogger,
 		redactor:                 redactor,
+		blobStore:                opts.Blob,
+		blobMounts:               newBlobMounts(cfg.Blob.Mounts),
 	}
 	for _, uc := range cfg.Upstreams {
 		if g.registry.upstreamRegistered[uc.Name] == nil {
@@ -257,9 +272,13 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		}
 		g.upstreams = append(g.upstreams, u)
 	}
+	instructions := cfg.Server.Instructions
+	if g.blobStore != nil {
+		instructions = withBlobInstructions(instructions)
+	}
 	g.server = mcputil.NewServer(mcputil.ServerConfig{
 		Name:         cfg.Server.Name,
-		Instructions: cfg.Server.Instructions,
+		Instructions: instructions,
 		Logger:       opts.Slogger.With("component", "server"),
 	})
 	g.server.AddReceivingMiddleware(g.scopeMiddleware(nil))
@@ -268,7 +287,18 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		g.server.AddReceivingMiddleware(g.lazyMiddleware())
 		g.registerDiscoveryTools()
 	}
+	if g.blobStore != nil {
+		g.registerBlobTool(g.blobMounts)
+	}
 	return g, nil
+}
+
+// blobState reads the blob store and the mounts it may serve. The store is
+// fixed for the process; the mounts are swapped by reload.
+func (g *Gateway) blobState() (blob.Attacher, []blobMount) {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
+	return g.blobStore, g.blobMounts
 }
 
 // newUpstream builds one upstream against the given config, resolver and global
@@ -921,7 +951,7 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 			continue
 		}
 		finalName := NamespaceName(u.cfg.Tools.Prefix, rt.Name)
-		if g.discovery && isGatewayTool(finalName) {
+		if g.reservedTool(finalName) {
 			g.logger.Warn("tool name reserved by the gateway; skipping",
 				zap.String("upstream", u.cfg.Name),
 				zap.String("tool", rt.Name),
