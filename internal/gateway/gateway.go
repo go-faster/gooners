@@ -836,7 +836,7 @@ func (g *Gateway) newUpstreamRouteServer(u *Upstream, tools []*mcp.Tool, prompts
 			Title:        rt.Title,
 		}
 		h := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return u.CallTool(ctx, &mcp.CallToolParams{Meta: req.Params.Meta, Name: orig, Arguments: req.Params.Arguments})
+			return u.CallTool(ctx, &mcp.CallToolParams{Meta: proxyMeta(req.Params.Meta), Name: orig, Arguments: req.Params.Arguments})
 		}
 		mw, err := middleware.NewTelemetry(h, middleware.TelemetryOptions{
 			Upstream:       u.cfg.Name,
@@ -864,7 +864,7 @@ func (g *Gateway) newUpstreamRouteServer(u *Upstream, tools []*mcp.Tool, prompts
 			Meta:        rp.Meta,
 		}
 		s.AddPrompt(prompt, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			return u.GetPrompt(ctx, &mcp.GetPromptParams{Meta: req.Params.Meta, Name: orig, Arguments: req.Params.Arguments})
+			return u.GetPrompt(ctx, &mcp.GetPromptParams{Meta: proxyMeta(req.Params.Meta), Name: orig, Arguments: req.Params.Arguments})
 		})
 	}
 	for _, rr := range resources {
@@ -963,7 +963,7 @@ func (g *Gateway) registerUpstreamTools(u *Upstream, rawTools []*mcp.Tool) (adde
 		if !owned || changed {
 			orig := rawNameByFinal[name]
 			h := func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return u.CallTool(ctx, &mcp.CallToolParams{Meta: req.Params.Meta, Name: orig, Arguments: req.Params.Arguments})
+				return u.CallTool(ctx, &mcp.CallToolParams{Meta: proxyMeta(req.Params.Meta), Name: orig, Arguments: req.Params.Arguments})
 			}
 			mw, err := middleware.NewTelemetry(h, middleware.TelemetryOptions{
 				Upstream:       u.cfg.Name,
@@ -1033,7 +1033,7 @@ func (g *Gateway) registerUpstreamPrompts(u *Upstream, rawPrompts []*mcp.Prompt)
 		orig := rawNameByFinal[name]
 		final := promptByFinal[name]
 		h := func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			return u.GetPrompt(ctx, &mcp.GetPromptParams{Meta: req.Params.Meta, Name: orig, Arguments: req.Params.Arguments})
+			return u.GetPrompt(ctx, &mcp.GetPromptParams{Meta: proxyMeta(req.Params.Meta), Name: orig, Arguments: req.Params.Arguments})
 		}
 		g.server.AddPrompt(final, h)
 		if _, owned := g.promptRegistry.finalToUpstream[name]; !owned {

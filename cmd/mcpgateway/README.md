@@ -93,6 +93,17 @@ so a client can call a tool as soon as it has the schema. Both tools apply the s
 not otherwise see. Routed per-upstream endpoints are unaffected, and `search_tools`/`describe_tools`
 become reserved names — an upstream tool that resolves to either is skipped with a warning.
 
+## Request `_meta`
+
+Whatever a client puts in a request's `_meta` reaches the upstream unchanged, so an upstream sees the
+same client it would have seen without a gateway in front of it — including
+`io.modelcontextprotocol/clientInfo` and `clientCapabilities`.
+
+One key is dropped: `io.modelcontextprotocol/protocolVersion`. The protocol version is negotiated per
+connection, and there are two of them here — client↔gateway and gateway↔upstream. Passing the
+client's value through would tell an upstream a version it never agreed to, which a validating server
+rejects outright.
+
 ## Flags
 
 - `-config` path to TOML (default `gateway.toml`)
