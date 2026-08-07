@@ -42,7 +42,7 @@ func mustDefault(t *testing.T, fs *flag.FlagSet, name string) time.Duration {
 // TestBlobFlagsSetupDisabled: unconfigured means a store that refuses by
 // naming the flag, not one that mints URLs nothing serves.
 func TestBlobFlagsSetupDisabled(t *testing.T) {
-	store, run, err := BlobFlags{}.Setup(BlobOptions{Name: "test-mcp", Logger: testLogger()})
+	store, run, err := BlobFlags{}.Setup(t.Context(), BlobOptions{Name: "test-mcp", Logger: testLogger()})
 	require.NoError(t, err)
 	require.NoError(t, run(t.Context()))
 
@@ -82,7 +82,7 @@ func TestBlobFlagsSetupValidation(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, _, err := tt.flags.Setup(tt.opts)
+			_, _, err := tt.flags.Setup(t.Context(), tt.opts)
 			require.Error(t, err)
 		})
 	}
@@ -91,7 +91,7 @@ func TestBlobFlagsSetupValidation(t *testing.T) {
 func TestBlobFlagsDerivedBaseURL(t *testing.T) {
 	for _, addr := range []string{":9000", "localhost:9000", "127.0.0.1:9000"} {
 		t.Run(addr, func(t *testing.T) {
-			store, _, err := BlobFlags{Addr: addr, Dir: t.TempDir()}.Setup(BlobOptions{Name: "test-mcp", Logger: testLogger()})
+			store, _, err := BlobFlags{Addr: addr, Dir: t.TempDir()}.Setup(t.Context(), BlobOptions{Name: "test-mcp", Logger: testLogger()})
 			require.NoError(t, err)
 
 			b, err := store.Put(t.Context(), strings.NewReader("x"), blob.PutOptions{Name: "a.txt"})
@@ -111,7 +111,7 @@ func TestBlobFlagsServes(t *testing.T) {
 	addr := ln.Addr().String()
 	require.NoError(t, ln.Close())
 
-	store, run, err := BlobFlags{Addr: addr, Dir: t.TempDir()}.Setup(BlobOptions{Name: "test-mcp", Logger: testLogger()})
+	store, run, err := BlobFlags{Addr: addr, Dir: t.TempDir()}.Setup(t.Context(), BlobOptions{Name: "test-mcp", Logger: testLogger()})
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(t.Context())

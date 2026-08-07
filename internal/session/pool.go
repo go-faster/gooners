@@ -728,6 +728,27 @@ func (p *Pool) Upload(ctx context.Context, sessionID, localPath, remotePath stri
 	return resp.UploadID, resp.Err
 }
 
+// UploadFrom uploads src to remotePath, for bytes that are not a file on this
+// host — a blob another server stored, read back through its store.
+//
+// It is the same asynchronous job as [Pool.Upload], so the returned id works
+// with UploadStatus, UploadWait and UploadCancel. size is for progress only and
+// may be zero when the length is not known up front.
+//
+// The pool takes ownership of src and closes it however the transfer ends,
+// including when it never starts.
+func (p *Pool) UploadFrom(ctx context.Context, sessionID string, src io.ReadCloser, size int64, remotePath string) (string, error) {
+	respCh := make(chan UploadResponse, 1)
+	req := UploadRequest{SessionID: sessionID, Source: src, SourceSize: size, RemotePath: remotePath, resp: respCh}
+	resp, ok := send(ctx, p.reqCh, req, respCh)
+	if !ok {
+		// The request never reached the pool, so ownership never transferred.
+		_ = src.Close()
+		return "", ctx.Err()
+	}
+	return resp.UploadID, resp.Err
+}
+
 func (p *Pool) UploadStatus(ctx context.Context, sessionID, uploadID string) (UploadStatusResponse, error) {
 	respCh := make(chan UploadStatusResponse, 1)
 	resp, ok := send(ctx, p.reqCh, UploadStatusRequest{SessionID: sessionID, UploadID: uploadID, resp: respCh}, respCh)

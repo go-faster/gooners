@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"io"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -90,9 +91,15 @@ type ExecResponse struct {
 }
 
 // UploadRequest is a request to upload a file to an existing SSH session.
+//
+// Exactly one of LocalPath and Source says what to upload. The pool takes
+// ownership of Source and closes it however the request ends, including when
+// the session is gone, so a caller that hands one over must not close it too.
 type UploadRequest struct {
 	SessionID  string
 	LocalPath  string
+	Source     io.ReadCloser
+	SourceSize int64
 	RemotePath string
 	resp       chan<- UploadResponse
 }

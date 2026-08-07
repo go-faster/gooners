@@ -27,9 +27,11 @@ func main() {
 	var (
 		logging   cmdutil.LoggingFlags
 		transport cmdutil.TransportFlags
+		blobFlags cmdutil.BlobFlags
 	)
 	logging.Register(flag.CommandLine)
 	transport.Register(flag.CommandLine)
+	blobFlags.Register(flag.CommandLine)
 	var (
 		disableSudo             = flag.Bool("disable-sudo", false, "do not register the ssh_sudo_exec tool")
 		disableSpecializedTools = flag.Bool("disable-specialized-tools", false, "register only core SSH tools: session management, exec, and file transfer")
@@ -106,6 +108,23 @@ func main() {
 		}),
 	})
 
+	// The store upload_file reads a blob id from, so a file another server
+	// produced can reach the remote host without ever landing on this one.
+	// Unset leaves a store that refuses, naming the flag.
+	blobStore, runBlob, err := blobFlags.Setup(ctx, cmdutil.BlobOptions{
+		Name:   "ssh-mcp",
+		Logger: logger.With("component", "blob"),
+	})
+	if err != nil {
+		logger.Error("invalid blob store configuration", "err", err)
+		os.Exit(1)
+	}
+	go func() {
+		if err := runBlob(ctx); err != nil {
+			logger.Error("blob store stopped", "err", err)
+		}
+	}()
+
 	pool := session.NewPool(session.PoolOptions{
 		CommandTimeout: *commandTimeout,
 		Logger:         logger,
@@ -122,9 +141,9 @@ func main() {
 	logger.Debug("registering MCP tools")
 	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
 	if *disableSpecializedTools {
-		fs.RegisterFileTransfer(s, pool)
+		fs.RegisterFileTransfer(s, pool, fs.Options{Blob: blobStore})
 	} else {
-		fs.Register(s, pool)
+		fs.Register(s, pool, fs.Options{Blob: blobStore})
 		systemd.Register(s, pool)
 		sysinfo.Register(s, pool)
 		proc.Register(s, pool)

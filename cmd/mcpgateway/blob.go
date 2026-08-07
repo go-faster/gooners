@@ -14,7 +14,7 @@ import (
 // blobStoreFor builds the store behind blob_share, plus the function serving
 // it. With no [blob] section it returns a store that refuses, so the tool is
 // left unregistered rather than present and useless.
-func blobStoreFor(cfg *gateway.Config, lg *slog.Logger) (blob.Attacher, func(context.Context) error, error) {
+func blobStoreFor(ctx context.Context, cfg *gateway.Config, lg *slog.Logger) (blob.Attacher, func(context.Context) error, error) {
 	if !cfg.Blob.Enabled() {
 		return nil, func(context.Context) error { return nil }, nil
 	}
@@ -27,7 +27,7 @@ func blobStoreFor(cfg *gateway.Config, lg *slog.Logger) (blob.Attacher, func(con
 		Addr:    cfg.Blob.Addr,
 		Dir:     cfg.Blob.Dir,
 		TTL:     ttl,
-	}.Setup(cmdutil.BlobOptions{
+	}.Setup(ctx, cmdutil.BlobOptions{
 		Name:   "mcpgateway",
 		Logger: lg.With("component", "blob"),
 	})

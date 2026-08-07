@@ -41,7 +41,7 @@ func main() {
 		// The blob store owns a listener and mints URLs from a base URL, so it
 		// is built once here rather than by the gateway: a reload can swap
 		// which directories it serves, but not where it listens.
-		blobStore, runBlob, err := blobStoreFor(cfg, slogger)
+		blobStore, runBlob, err := blobStoreFor(ctx, cfg, slogger)
 		if err != nil {
 			return errors.Wrap(err, "blob store")
 		}

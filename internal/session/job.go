@@ -37,6 +37,15 @@ type TransferJob struct {
 	RemotePath string
 	StartedAt  time.Time
 
+	// Source, when set, is what an upload reads instead of LocalPath, and the
+	// job owns closing it. It is how bytes that never touch this host — a blob
+	// another server stored — reach the remote without a staging file.
+	//
+	// LocalPath is empty in that case, so nothing downstream should treat it as
+	// a path. SourceSize is the length if known, for progress reporting only.
+	Source     io.ReadCloser
+	SourceSize int64
+
 	// mu guards every field below.
 	mu           sync.Mutex
 	TotalBytes   int64

@@ -186,11 +186,29 @@ claude mcp add ssh /path/to/ssh-mcp
 
 The server's **working directory at launch** becomes the upload root for `upload_file` and `download_file`.
 
+### Uploading a file this server cannot see
+
+`upload_file` also accepts a `blob` id instead of `local_path`, which is how a file another MCP
+server produced reaches the remote host without ever landing on this one. Configure a shared store
+with `-blob-s3-endpoint`/`-blob-s3-bucket` (all servers pointing at one bucket), and the agent
+passes the id it got from the other tool's result:
+
+```jsonc
+// tgmcp downloaded a kubeconfig from a chat and returned {"blob": "tgmcp/<uuid>", ...}
+{"session_id": "...", "blob": "tgmcp/<uuid>", "remote_path": "/root/.kube/config"}
+```
+
+It is the same asynchronous job as a local upload, so `upload_id`, `upload_status`, `upload_wait`
+and `upload_cancel` all behave identically. `local_path` and `blob` are mutually exclusive.
+
+The id names an object in the bucket this server was configured with — there is no URL and no host
+in the argument, so nothing here can be pointed at a destination the operator did not choose.
+
 ## File transfer tools
 
 | Tool | Description |
 |------|-------------|
-| `upload_file` | Start an asynchronous local-to-remote SFTP upload and return `upload_id` |
+| `upload_file` | Start an asynchronous SFTP upload from a local path or a `blob` id and return `upload_id` |
 | `upload_status` | Check upload progress |
 | `upload_wait` | Wait for an upload to complete |
 | `upload_cancel` | Cancel an upload |

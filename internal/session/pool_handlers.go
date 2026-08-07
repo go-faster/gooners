@@ -277,22 +277,35 @@ func (p *Pool) handleList(st *poolState, r ListRequest) {
 }
 
 func (p *Pool) handleUpload(st *poolState, r UploadRequest) {
+	// The pool owns r.Source from here, so every path that does not start a job
+	// has to close it or the reader leaks for the life of the process.
+	fail := func(err error) {
+		if r.Source != nil {
+			_ = r.Source.Close()
+		}
+		r.resp <- UploadResponse{Err: err}
+	}
+
 	s, ok := st.sessions[r.SessionID]
 	if !ok {
-		r.resp <- UploadResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
+		fail(fmt.Errorf("session not found: %s", r.SessionID))
 		return
 	}
 	// The upload itself goes through p.localFS and would refuse a disallowed
 	// path anyway; rejecting it here only turns an async job failure into an
-	// immediate, legible error.
-	if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
-		r.resp <- UploadResponse{Err: err}
-		return
+	// immediate, legible error. A Source has no local path to check: the bytes
+	// are not this host's.
+	if r.Source == nil {
+		if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
+			fail(err)
+			return
+		}
 	}
 	evict(st.uploads, p.jobRetention, time.Now())
 
 	uploadID := fmt.Sprintf("upload-%d", time.Now().UnixNano())
 	job, uCtx := newTransferJob(s.ctx, uploadID, r.SessionID, r.LocalPath, r.RemotePath)
+	job.Source, job.SourceSize = r.Source, r.SourceSize
 	st.uploads[uploadID] = job
 	go runUpload(uCtx, s.client, p.localFS, job)
 	r.resp <- UploadResponse{UploadID: uploadID}

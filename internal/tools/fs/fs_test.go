@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -68,6 +69,21 @@ func (p *dummyPool) Upload(ctx context.Context, sessionID, localPath, remotePath
 		return "", err
 	}
 	return "upload-123", nil
+}
+
+// UploadFrom mirrors [dummyPool.Upload] for bytes that are not a local file,
+// and closes src the way the real pool does.
+func (p *dummyPool) UploadFrom(_ context.Context, _ string, src io.ReadCloser, _ int64, remotePath string) (string, error) {
+	defer func() { _ = src.Close() }()
+
+	data, err := io.ReadAll(src)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(remotePath, data, 0o600); err != nil {
+		return "", err
+	}
+	return "upload-blob-123", nil
 }
 
 func (p *dummyPool) UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error) {
@@ -378,7 +394,7 @@ func TestUploadFileHandler_Security(t *testing.T) {
 	defer cleanup()
 
 	tmpRoot := t.TempDir()
-	handler := uploadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)})
+	handler := uploadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)}, nil)
 
 	// Create a file OUTSIDE the allowed root
 	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
