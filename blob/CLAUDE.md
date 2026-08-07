@@ -17,9 +17,16 @@ Guidance for `github.com/go-faster/gooners/blob`. Repo-wide rules are in the roo
 - **A store that cannot advertise a reachable URL is `blob.Deny`, never a store minting URLs.**
   `HTTPOptions.BaseURL` is required for exactly this reason. Returning an unreachable URL is the
   plausible-wrong-answer failure the package exists to remove, so it must be an error naming the flag.
-- **The object id is the only credential.** 128 bits from `crypto/rand`, short TTL, and unknown /
-  expired / malformed ids all return the same 404 — distinguishing them is an oracle. A URL also
-  outlives the call in the transcript and the logs, so lengthening the default TTL needs a reason.
+- **The object id is not an access control mechanism** — see "Reaching an object" in the package
+  doc. What guards the bytes is the deployment: `blob.HTTP` on loopback or behind a firewall, or
+  `blob.HTTP` behind authentication the operator put in front of it, or bucket credentials for
+  `blob/s3`. Only a presigned URL is a credential in its own right.
+  An id is a UUIDv4 anyway, because 122 bits of `crypto/rand` cost nothing and unguessability is a
+  fine second layer — just never the boundary. Do not switch to v7: it spends most of its bits on a
+  timestamp it then leaks, and its sequential keys hot-spot one S3 partition.
+  Keep the rest of the hygiene regardless. Unknown / expired / malformed ids return the same 404,
+  and a URL outlives the call in the transcript and the logs, so lengthening the default TTL still
+  needs a reason.
 - **The store serves attacker-influenced bytes on the operator's origin.** `attachment`, `nosniff`,
   and a downgrade of types a browser executes are not optional; `Range` support is, and it stays,
   because resuming a large fetch is half the point.

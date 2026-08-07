@@ -2,11 +2,8 @@ package blob
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"io"
 	"log/slog"
-	"mime"
 	"net/http"
 	"net/url"
 	"path"
@@ -15,10 +12,14 @@ import (
 	"time"
 
 	"github.com/go-faster/errors"
+
+	"github.com/go-faster/gooners/internal/blobutil"
 )
 
-// DefaultTTL is how long an object stays fetchable. It is short because the
-// URL is a credential that outlives the tool call in the transcript.
+// DefaultTTL is how long an object stays fetchable. It is short because a URL
+// outlives the tool call in the transcript, and because in a bucket-backed
+// store it is a bearer token; see "Reaching an object" in the package
+// documentation.
 const DefaultTTL = 15 * time.Minute
 
 // DefaultMaxSize bounds one object. Without a cap, one tool call fills the
@@ -179,11 +180,11 @@ func (h *HTTP) Put(ctx context.Context, r io.Reader, opts PutOptions) (Blob, err
 		return Blob{}, errors.Wrapf(ErrTooLarge, "%d bytes, limit is %d", opts.Size, h.maxSize)
 	}
 
-	id, err := newID()
+	id, err := blobutil.NewID()
 	if err != nil {
 		return Blob{}, err
 	}
-	name := cleanName(opts.Name, id)
+	name := blobutil.CleanName(opts.Name, id)
 
 	n, err := h.write(id, r)
 	if err != nil {
@@ -225,7 +226,7 @@ func (h *HTTP) Attach(ctx context.Context, src FS, name string, opts PutOptions)
 		return Blob{}, errors.Wrapf(ErrTooLarge, "%d bytes, limit is %d", info.Size(), h.maxSize)
 	}
 
-	id, err := newID()
+	id, err := blobutil.NewID()
 	if err != nil {
 		return Blob{}, err
 	}
@@ -233,7 +234,7 @@ func (h *HTTP) Attach(ctx context.Context, src FS, name string, opts PutOptions)
 		opts.Name = path.Base(name)
 	}
 
-	b := h.describe(id, cleanName(opts.Name, id), opts, info.Size())
+	b := h.describe(id, blobutil.CleanName(opts.Name, id), opts, info.Size())
 	h.mu.Lock()
 	h.objects[id] = object{blob: b, fs: src, path: name, attached: true}
 	h.mu.Unlock()
@@ -250,7 +251,7 @@ func (h *HTTP) describe(id, name string, opts PutOptions, size int64) Blob {
 		ID:        id,
 		URL:       h.baseURL + "/" + id + "/" + url.PathEscape(name),
 		Name:      name,
-		MIMEType:  contentType(opts.MIMEType, name),
+		MIMEType:  blobutil.ContentType(opts.MIMEType, name),
 		Size:      size,
 		ExpiresAt: h.now().Add(ttl),
 	}
@@ -428,9 +429,9 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// These bytes are whatever a tool was handed, served from the operator's
 	// origin: never let a browser render them, and never let it sniff a type
 	// out of the content.
-	w.Header().Set("Content-Type", serveType(o.blob.MIMEType))
+	w.Header().Set("Content-Type", blobutil.ServeType(o.blob.MIMEType))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Disposition", contentDisposition(o.blob.Name))
+	w.Header().Set("Content-Disposition", blobutil.ContentDisposition(o.blob.Name))
 	w.Header().Set("Cache-Control", "no-store")
 
 	// A zero modtime omits Last-Modified, which nothing here can use. Range
@@ -452,70 +453,6 @@ func (h *HTTP) requestID(p string) string {
 }
 
 func objectPath(id string) string { return path.Join(objectsDir, id) }
-
-// newID returns an unguessable object id. It is the only credential guarding
-// the object, so it is 128 bits from a cryptographic source.
-func newID() (string, error) {
-	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", errors.Wrap(err, "generate blob id")
-	}
-	return hex.EncodeToString(buf[:]), nil
-}
-
-// cleanName reduces a caller-supplied name to a base name safe to put in a URL
-// path and a Content-Disposition header.
-func cleanName(name, id string) string {
-	// Reduce to a base name first, so a path only loses its directories rather
-	// than being flattened into one long name.
-	name = path.Base(strings.TrimSpace(strings.ReplaceAll(name, `\`, "/")))
-	// What is left cannot break out of a quoted Content-Disposition or inject
-	// a header.
-	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r == '"' {
-			return -1
-		}
-		return r
-	}, name)
-	if name == "" || name == "." || name == ".." {
-		return id + ".bin"
-	}
-	return name
-}
-
-// contentType picks the declared type, guessing from the extension when the
-// caller had none.
-func contentType(declared, name string) string {
-	if declared != "" {
-		return declared
-	}
-	if t := mime.TypeByExtension(path.Ext(name)); t != "" {
-		return t
-	}
-	return "application/octet-stream"
-}
-
-// serveType downgrades the types a browser would execute on this origin. The
-// declared type still reaches the agent on the ResourceLink, which is where it
-// is useful; what goes on the wire is only what a fetcher needs.
-func serveType(t string) string {
-	base, _, err := mime.ParseMediaType(t)
-	if err != nil {
-		return "application/octet-stream"
-	}
-	switch base {
-	case "text/html", "application/xhtml+xml", "image/svg+xml", "application/xml", "text/xml":
-		return "application/octet-stream"
-	}
-	return t
-}
-
-func contentDisposition(name string) string {
-	// name is already stripped of quotes, backslashes and control characters,
-	// so the quoted form cannot be broken out of. The RFC 5987 form carries
-	// non-ASCII names that the quoted one cannot.
-	return mime.FormatMediaType("attachment", map[string]string{"filename": name})
-}
 
 // sweepInterval keeps the sweep frequent enough that an expired object does
 // not sit on disk for much longer than its TTL, without spinning on a very
