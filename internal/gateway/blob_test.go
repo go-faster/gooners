@@ -501,6 +501,10 @@ func TestBlobShareDescriptionNamesMounts(t *testing.T) {
 // [blob.s3] is a sub-table of [blob] while [[blob.mount]] is an array of them,
 // and the two have to coexist under one section.
 func TestBlobS3Decode(t *testing.T) {
+	// The mount dir is a path on this host and has to be absolute for the
+	// platform, hence absDir; a TOML literal string keeps a Windows volume from
+	// being read as an escape. The mount's own prefix is the upstream's
+	// namespace and stays slash-rooted.
 	cfg, err := Decode([]byte(`
 [[upstream]]
 name = "u1"
@@ -517,7 +521,7 @@ prefix = "tenants/alice"
 
 [[blob.mount]]
 name = "playwright"
-dir = "/mnt/playwright"
+dir = '` + absDir("/mnt/playwright") + `'
 prefix = "/videos"
 `))
 	require.NoError(t, err)
@@ -529,5 +533,6 @@ prefix = "/videos"
 	require.True(t, cfg.Blob.Enabled())
 	require.Equal(t, "15m", cfg.Blob.TTL)
 	require.Len(t, cfg.Blob.Mounts, 1)
+	require.Equal(t, absDir("/mnt/playwright"), cfg.Blob.Mounts[0].Dir)
 	require.Equal(t, "/videos", cfg.Blob.Mounts[0].Prefix, "the mount's prefix, not the bucket's")
 }
