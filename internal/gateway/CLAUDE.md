@@ -52,6 +52,12 @@ writes to a directory the gateway sees through a bind mount. Upstreams need no c
 - **`[blob.s3]` and `addr`/`base_url`/`dir` are two backends, and configuring both is an error.**
   `BlobConfig.validate` refuses it at startup rather than letting one silently win. Credentials are
   never config: they come from the environment, so the config file stays non-secret-bearing.
+- **An unreachable bucket must not stop the gateway from starting.** `cmdutil.setupS3` builds the
+  store through a `lazyStore`: the build is attempted once so a misconfiguration is in the logs
+  immediately, and a failure is logged rather than returned, so only `blob_share` degrades while
+  every proxied upstream keeps working. The next call rebuilds, so recovery needs no restart. This
+  is the same rule as "nothing an upstream does may block the gateway from listening" — do not make
+  it fatal again for the sake of a cleaner error path.
 - **`blob_share` returns the id as well as the URL.** They are for different readers — the agent
   fetches the URL, another server holding the same bucket credentials reads the object by id. That
   second half is what carries a file to a consuming server without the agent moving the bytes, and it

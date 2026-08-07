@@ -249,6 +249,11 @@ one prefix is shared — the gateway is one process serving all of its clients.
 Objects are uploaded rather than served in place, so they occupy the bucket after `ttl` expires the
 URL. Set a lifecycle rule on the prefix; the gateway does not delete anything.
 
+**An unreachable bucket does not stop the gateway.** The store is built once at startup so a wrong
+bucket or credential is logged immediately, but a failure only disables `blob_share` — every proxied
+upstream keeps serving. The store is rebuilt on the next call, so once the endpoint is back the tool
+starts working without a restart.
+
 ## Config reload
 
 The gateway reloads `-config` in place on `SIGHUP`, and — when `-config-watch-interval` is set —

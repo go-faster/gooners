@@ -144,18 +144,32 @@ func (flags BlobFlags) setupS3(ctx context.Context, opts BlobOptions) (blob.Atta
 	if flags.S3Bucket == "" {
 		return nil, errors.New("-blob-s3-endpoint needs -blob-s3-bucket")
 	}
-	store, err := s3.New(ctx, s3.Options{
-		Endpoint:  flags.S3Endpoint,
-		Bucket:    flags.S3Bucket,
-		Namespace: opts.Name,
-		Prefix:    flags.S3Prefix,
-		Region:    flags.S3Region,
-		URLTTL:    flags.TTL,
-		Logger:    opts.Logger,
-	})
-	if err != nil {
-		return nil, errors.Wrap(err, "create S3 blob store")
+	store := &lazyStore{build: func(ctx context.Context) (blob.Attacher, error) {
+		return s3.New(ctx, s3.Options{
+			Endpoint:  flags.S3Endpoint,
+			Bucket:    flags.S3Bucket,
+			Namespace: opts.Name,
+			Prefix:    flags.S3Prefix,
+			Region:    flags.S3Region,
+			URLTTL:    flags.TTL,
+			Logger:    opts.Logger,
+		})
+	}}
+
+	// Build it now so a wrong bucket or a bad credential is in the logs at
+	// startup, but do not let that stop the process: everything else this
+	// binary serves is unrelated to blobs, and the store rebuilds itself on the
+	// next call once the endpoint is back.
+	if _, err := store.get(ctx); err != nil {
+		opts.Logger.Error("blob store is not usable yet; blob tools will fail until it is",
+			"backend", "s3",
+			"endpoint", flags.S3Endpoint,
+			"bucket", flags.S3Bucket,
+			"err", err,
+		)
+		return store, nil
 	}
+
 	opts.Logger.Info("blob store enabled",
 		"backend", "s3",
 		"endpoint", flags.S3Endpoint,
