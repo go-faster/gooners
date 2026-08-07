@@ -298,11 +298,6 @@ func TestRestartRequired(t *testing.T) {
 			want: []string{"auth"},
 		},
 		{
-			name: "telemetry",
-			next: func() *Config { c := base(); c.Telemetry.Enabled = true; return c },
-			want: []string{"telemetry"},
-		},
-		{
 			name: "lazy toggled on",
 			next: func() *Config { c := base(); c.Server.LazyTools = true; return c },
 			want: []string{"server", "tools.lazy"},

@@ -219,9 +219,6 @@ func restartRequired(oldCfg, newCfg *Config) []string {
 	if !reflect.DeepEqual(oldCfg.Auth, newCfg.Auth) {
 		out = append(out, "auth")
 	}
-	if oldCfg.Telemetry != newCfg.Telemetry {
-		out = append(out, "telemetry")
-	}
 	if oldCfg.anyLazy() != newCfg.anyLazy() {
 		out = append(out, "tools.lazy")
 	}

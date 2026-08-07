@@ -31,8 +31,11 @@ not its problem. Keep the split:
   clients keep their session and learn the new tool set through `listChanged`. Detaching an upstream
   therefore syncs it against an empty feature set (the normal removal path) instead of rebuilding.
 - A config section that cannot be applied in place goes in `restartRequired`, never silently
-  ignored. Anything captured once at startup (server identity, HTTP middleware, telemetry exporters,
-  whether the lazy middleware is installed) is in that category.
+  ignored. Anything captured once at startup (server identity, HTTP middleware, whether the lazy
+  middleware is installed) is in that category.
+- **Telemetry is not config.** Exporters come from `OTEL_*` env via `go-faster/sdk`'s `app.Run`, so
+  there is no `[telemetry]` section — one existed, was validated, and was never read by the binary.
+  Do not reintroduce it: a config section the process ignores reads as working configuration.
 - Reloadable state on `Gateway` (`cfg`, `resolver`, `upstreams`) is guarded by `stateMu`; read it
   through `config()`/`secretResolver()`/`upstreamList()`, never the field directly.
 
@@ -49,6 +52,12 @@ writes to a directory the gateway sees through a bind mount. Upstreams need no c
 - **`[blob.s3]` and `addr`/`base_url`/`dir` are two backends, and configuring both is an error.**
   `BlobConfig.validate` refuses it at startup rather than letting one silently win. Credentials are
   never config: they come from the environment, so the config file stays non-secret-bearing.
+- **An unreachable bucket must not stop the gateway from starting.** `cmdutil.setupS3` builds the
+  store through a `lazyStore`: the build is attempted once so a misconfiguration is in the logs
+  immediately, and a failure is logged rather than returned, so only `blob_share` degrades while
+  every proxied upstream keeps working. The next call rebuilds, so recovery needs no restart. This
+  is the same rule as "nothing an upstream does may block the gateway from listening" — do not make
+  it fatal again for the sake of a cleaner error path.
 - **`blob_share` returns the id as well as the URL.** They are for different readers — the agent
   fetches the URL, another server holding the same bucket credentials reads the object by id. That
   second half is what carries a file to a consuming server without the agent moving the bytes, and it

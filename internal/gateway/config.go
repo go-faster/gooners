@@ -3,8 +3,6 @@ package gateway
 
 import (
 	"fmt"
-	"net"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -21,7 +19,6 @@ type Config struct {
 	Upstreams []UpstreamConfig `toml:"upstream"`
 	Secrets   []SecretConfig   `toml:"secret"`
 	Auth      AuthConfig       `toml:"auth"`
-	Telemetry TelemetryConfig  `toml:"telemetry"`
 	Redact    RedactConfig     `toml:"redact"`
 	Blob      BlobConfig       `toml:"blob"`
 }
@@ -176,7 +173,7 @@ func (c BlobConfig) validate() error {
 	return nil
 }
 
-// setDefaults applies server name and telemetry defaults, and resolves the
+// setDefaults applies the server name default and resolves the
 // per-upstream lazy flag against the server-wide default. It is idempotent.
 func (c *Config) setDefaults() {
 	if c.Server.Name == "" {
@@ -309,13 +306,6 @@ type SecretConfig struct {
 	Env     string `toml:"env"`
 	File    string `toml:"file"`
 	Command string `toml:"command"`
-}
-
-// TelemetryConfig configures optional OTLP telemetry export.
-type TelemetryConfig struct {
-	Enabled      bool   `toml:"enabled"`
-	OTLPEndpoint string `toml:"otlp_endpoint"`
-	MetricsAddr  string `toml:"metrics_addr"`
 }
 
 // RedactConfig configures output secret redaction applied to all tool text content.
@@ -467,25 +457,6 @@ func (c *Config) Validate() error {
 	if c.Redact.Enabled && len(c.Redact.Patterns) > 0 {
 		if _, err := NewRedactor(c.Redact.Patterns, c.Redact.MinEntropy); err != nil {
 			return errors.Wrap(err, "compile redact patterns")
-		}
-	}
-	if c.Telemetry.Enabled {
-		if c.Telemetry.OTLPEndpoint == "" && c.Telemetry.MetricsAddr == "" {
-			return fmt.Errorf("telemetry: enabled but no otlp_endpoint or metrics_addr configured")
-		}
-		if c.Telemetry.OTLPEndpoint != "" {
-			u, err := url.Parse(c.Telemetry.OTLPEndpoint)
-			if err != nil {
-				return fmt.Errorf("telemetry: invalid otlp_endpoint %q: %w", c.Telemetry.OTLPEndpoint, err)
-			}
-			if u.Scheme == "" || u.Host == "" {
-				return fmt.Errorf("telemetry: otlp_endpoint %q must be a full URL with scheme and host", c.Telemetry.OTLPEndpoint)
-			}
-		}
-		if c.Telemetry.MetricsAddr != "" {
-			if _, _, err := net.SplitHostPort(c.Telemetry.MetricsAddr); err != nil {
-				return fmt.Errorf("telemetry: invalid metrics_addr %q: %w", c.Telemetry.MetricsAddr, err)
-			}
 		}
 	}
 	return nil

@@ -249,6 +249,11 @@ one prefix is shared — the gateway is one process serving all of its clients.
 Objects are uploaded rather than served in place, so they occupy the bucket after `ttl` expires the
 URL. Set a lifecycle rule on the prefix; the gateway does not delete anything.
 
+**An unreachable bucket does not stop the gateway.** The store is built once at startup so a wrong
+bucket or credential is logged immediately, but a failure only disables `blob_share` — every proxied
+upstream keeps serving. The store is rebuilt on the next call, so once the endpoint is back the tool
+starts working without a restart.
+
 ## Config reload
 
 The gateway reloads `-config` in place on `SIGHUP`, and — when `-config-watch-interval` is set —
@@ -276,7 +281,7 @@ values keep running:
 
 - `[server]` — the gateway's MCP identity is handed to the transport at startup
 - `[auth]` — the HTTP middleware chain is built once
-- `[telemetry]` — exporters are wired at startup
+- telemetry — exporters are wired at startup from the environment (see below)
 - toggling `tools.lazy` on or off across the whole config, which decides whether the discovery tools
   and lazy middleware are installed on the server
 - `[blob]` and `[blob.s3]` except the mounts — the store is built once, from a listener and a
@@ -331,9 +336,25 @@ atomic rename, ConfigMap symlink swap, and editor save-with-backup, while a rewr
 bytes does not churn upstream connections. A `SIGHUP` reloads unconditionally, since the secrets the
 file references may have changed even when the file did not.
 
+## Telemetry
+
+Traces and metrics are configured **entirely from the environment**, by `go-faster/sdk`'s
+`app.Run`. There is no `[telemetry]` section in the config file; one written there is ignored, since
+unknown TOML keys are not an error.
+
+```bash
+OTEL_SERVICE_NAME=mcpgateway            # without it the SDK falls back to its own default,
+                                        # and the gateway is unidentifiable in the backend
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otelcol:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_INSECURE=true
+```
+
+Every proxied tool call is wrapped in a span and counted, per upstream. The gateway also exports the
+reload and upstream metrics listed under [Config reload](#config-reload).
+
 ## Limitations
 
-- Telemetry middleware is a no-op span stub; exporter wiring is minimal
 - Collision detection happens at Build time; duplicate final names after prefixing are fatal
 
 ## Secrets
