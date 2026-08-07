@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/go-faster/errors"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/go-faster/gooners/blob"
 )
@@ -35,7 +33,7 @@ func (flags *BlobFlags) Register(fs *flag.FlagSet) {
 	fs.StringVar(&flags.BaseURL, "blob-base-url", "", "externally reachable URL prefix for served files, e.g. https://mcp.example.com/blob; the blob store is disabled when unset")
 	fs.StringVar(&flags.Addr, "blob-addr", "", "listen address for the blob store; enables it with a base URL derived from the address when -blob-base-url is unset and the address is local")
 	fs.StringVar(&flags.Dir, "blob-dir", "", "directory holding served files; defaults to a per-binary directory under the system temp directory")
-	fs.DurationVar(&flags.TTL, "blob-ttl", blob.DefaultTTL, "how long a served file stays fetchable; its URL is a credential, so keep it short")
+	fs.DurationVar(&flags.TTL, "blob-ttl", blob.DefaultTTL, "how long a served file stays fetchable; a URL outlives the tool call in the transcript and the logs, so keep it short")
 }
 
 // BlobOptions configures [BlobFlags.Setup].
@@ -102,50 +100,9 @@ func (flags BlobFlags) Setup(opts BlobOptions) (blob.Attacher, func(context.Cont
 	opts.Logger.Info("blob store enabled", "url", baseURL, "addr", flags.Addr, "dir", dir, "ttl", flags.TTL)
 
 	run := func(ctx context.Context) error {
-		g, ctx := errgroup.WithContext(ctx)
-		g.Go(func() error {
-			store.Run(ctx)
-			return nil
-		})
-		g.Go(func() error {
-			srv := &http.Server{
-				Addr:              flags.Addr,
-				Handler:           store,
-				ReadHeaderTimeout: 10 * time.Second,
-			}
-			return serveUntilDone(ctx, srv, opts.Logger)
-		})
-		return g.Wait()
+		return store.Serve(ctx, blob.ServeOptions{Addr: flags.Addr, Logger: opts.Logger})
 	}
 	return store, run, nil
-}
-
-// serveUntilDone runs srv until ctx is done, then shuts it down.
-func serveUntilDone(ctx context.Context, srv *http.Server, lg *slog.Logger) error {
-	ln, err := net.Listen("tcp", srv.Addr)
-	if err != nil {
-		return errors.Wrapf(err, "listen %s", srv.Addr)
-	}
-
-	parentCtx := ctx
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		<-ctx.Done()
-		shutCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		return srv.Shutdown(shutCtx)
-	})
-	g.Go(func() error {
-		if err := srv.Serve(ln); err != nil {
-			if errors.Is(err, http.ErrServerClosed) && parentCtx.Err() != nil {
-				lg.Info("blob server closed gracefully")
-				return nil
-			}
-			return errors.Wrap(err, "blob server")
-		}
-		return nil
-	})
-	return g.Wait()
 }
 
 // localBaseURL derives a base URL from a listen address, but only for an
