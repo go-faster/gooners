@@ -44,6 +44,10 @@ type ServerConfig struct {
 	// LazyTools is the default for every upstream's tools.lazy, which an
 	// upstream may still override in either direction.
 	LazyTools bool `toml:"lazy_tools"`
+	// DrainTimeout bounds how long a closing upstream waits for its in-flight
+	// calls, on both reload and shutdown. Empty uses [defaultDrainTimeout];
+	// negative disables draining.
+	DrainTimeout string `toml:"drain_timeout"`
 }
 
 // UpstreamConfig describes one upstream MCP server to proxy.
@@ -58,6 +62,11 @@ type UpstreamConfig struct {
 	Tools        ToolsConfig       `toml:"tools"`
 	Route        RouteConfig       `toml:"route"`
 	Reconnect    *ReconnectConfig  `toml:"reconnect"`
+	// CallTimeout bounds a single request to this upstream. Empty means no
+	// limit, which is what an upstream with genuinely long-running tools needs.
+	// It is unrelated to [ServerConfig.DrainTimeout]: that one bounds shutdown,
+	// and applies however long a call is allowed to run.
+	CallTimeout string `toml:"call_timeout"`
 	// Redact overrides the global redact config when present; nil inherits the global [redact] section.
 	Redact *RedactConfig `toml:"redact"`
 }
@@ -164,12 +173,17 @@ type RedactConfig struct {
 	MinEntropy float64  `toml:"min_entropy"`
 }
 
-// Load reads a TOML file, decodes it, applies defaults and validates.
+// Load reads a TOML file and decodes it via [Decode].
 func Load(cfgPath string) (*Config, error) {
 	data, err := os.ReadFile(cfgPath) //nolint:gosec // G304: operator-controlled config file path
 	if err != nil {
 		return nil, errors.Wrap(err, "read config")
 	}
+	return Decode(data)
+}
+
+// Decode decodes TOML, applies defaults and validates.
+func Decode(data []byte) (*Config, error) {
 	var c Config
 	if _, err := toml.Decode(string(data), &c); err != nil {
 		return nil, errors.Wrap(err, "decode toml")
@@ -185,6 +199,9 @@ func Load(cfgPath string) (*Config, error) {
 func (c *Config) Validate() error {
 	if len(c.Upstreams) == 0 {
 		return errors.New("at least one upstream required")
+	}
+	if _, err := parseOptionalDuration(c.Server.DrainTimeout); err != nil {
+		return fmt.Errorf("server: drain_timeout: %w", err)
 	}
 	seenUp := map[string]bool{}
 	for i, u := range c.Upstreams {
@@ -210,6 +227,9 @@ func (c *Config) Validate() error {
 			if err := validateReconnectConfig(u.Name, u.Reconnect); err != nil {
 				return err
 			}
+		}
+		if _, err := parseOptionalDuration(u.CallTimeout); err != nil {
+			return fmt.Errorf("upstream %q: call_timeout: %w", u.Name, err)
 		}
 		if err := validateRouteConfig(u.Name, u.Route); err != nil {
 			return err

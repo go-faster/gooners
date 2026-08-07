@@ -86,6 +86,39 @@ call site — enforces policy. This is a security invariant, not a style prefere
 - A binary declares what it may touch by what it passes to `session.NewPool`. `ssh-mcp` passes
   `LocalFS: effect.Root(cwd)`.
 
+### mcpgateway config reload (issue #26)
+
+`Gateway.Reload` applies a new `*Config` to the running gateway; *where that config comes from* is
+not its problem. Keep the split:
+
+- **`Source` supplies configs, `Reloader` decides when and reports the outcome, `Gateway` only
+  applies.** Do not add file paths, poll intervals, signal handling, or reload metrics to `Gateway`
+  — that state belongs in `FileSource`/`Reloader`, which are testable without a gateway.
+- **Reload must never take the running config down.** Validate, build the secret resolver, the
+  redactor and every new `*Upstream` *before* mutating live state, so a bad config leaves the
+  previous one serving. A reload that half-applies is worse than one that is refused.
+- **Do not swap `g.server`.** Downstream sessions are bound to it; the whole point of reload is that
+  clients keep their session and learn the new tool set through `listChanged`. Detaching an upstream
+  therefore syncs it against an empty feature set (the normal removal path) instead of rebuilding.
+- A config section that cannot be applied in place goes in `restartRequired`, never silently
+  ignored. Anything captured once at startup (server identity, HTTP middleware, telemetry exporters,
+  whether the lazy middleware is installed) is in that category.
+- Reloadable state on `Gateway` (`cfg`, `resolver`, `upstreams`) is guarded by `stateMu`; read it
+  through `config()`/`secretResolver()`/`upstreamList()`, never the field directly.
+
+### mcpgateway startup
+
+- **Nothing an upstream does may block the gateway from listening.** The transport starts before
+  `Build`, and `Build` runs alongside it; the reloader is sequenced *after* `Build` so a SIGHUP
+  cannot race the registration it would replace.
+- **Every pre-serving upstream request is bounded.** `withCallTimeout` is for tool calls and is
+  deliberately unlimited by default; feature listings use `withListTimeout`, which falls back to the
+  connect timeout. Switching a `List*` method back to `withCallTimeout` reintroduces a gateway that
+  never starts when an upstream stalls after the handshake — `TestListTimeoutBoundsListing` guards it.
+- **`/health` is liveness, `Gateway.Ready` behind `/readyz` is readiness.** Readiness means the
+  initial `Build` finished, nothing more. Do not make it depend on upstreams being connected: they
+  reconnect on their own, and one broken dependency must not pull a working gateway out of rotation.
+
 ## Key Dependencies
 
 - `github.com/modelcontextprotocol/go-sdk` — MCP server/tool SDK; all tool registrations call `mcp.NewServer` and pass a `session.Pool` or local state.

@@ -95,7 +95,7 @@ func TestBuild_HTTPMultiTokenInterpolation(t *testing.T) {
 	cl := sct.HTTPClient
 	require.NotNil(t, cl.Transport)
 	require.Zero(t, cl.Timeout)
-	hrt, ok := cl.Transport.(*headerRT)
+	hrt, ok := cl.Transport.(*upstreamRoundTripper)
 	require.True(t, ok)
 
 	req := httptest.NewRequest(http.MethodGet, srv.URL, http.NoBody)
@@ -129,7 +129,7 @@ func TestBuild_HTTPStripHeaders(t *testing.T) {
 	require.NoError(t, err)
 	sct, ok := tr.(*mcp.StreamableClientTransport)
 	require.True(t, ok)
-	hrt, ok := sct.HTTPClient.Transport.(*headerRT)
+	hrt, ok := sct.HTTPClient.Transport.(*upstreamRoundTripper)
 	require.True(t, ok)
 
 	req := httptest.NewRequest(http.MethodGet, srv.URL, http.NoBody)

@@ -96,10 +96,39 @@ become reserved names — an upstream tool that resolves to either is skipped wi
 ## Flags
 
 - `-config` path to TOML (default `gateway.toml`)
+- `-config-watch-interval` poll the config file for changes at this interval; `0` (default) reloads on `SIGHUP` only
 - Standard `-log-*` and `-transport` flags from cmdutil
 - HTTP TLS flags: `-tls-cert-file`, `-tls-key-file`, and optional `-tls-client-ca-file` for mTLS
 
-For `streamable-http`/`sse` transports, a `/health` endpoint is also served on the same address for liveness checks.
+## Startup, `/health` and `/readyz`
+
+The HTTP transport starts **before** upstreams are connected, so one slow or unresponsive upstream
+cannot keep the gateway from answering at all. Until the initial build finishes, the gateway serves
+an empty tool set; clients that connect early learn the real one through `listChanged`.
+
+For `streamable-http`/`sse` transports, two probe endpoints are served on the same address:
+
+| Endpoint | Answers | Fails when | Act on it by |
+|---|---|---|---|
+| `/health` | is the process up? | it stops listening | restarting |
+| `/readyz` | can it serve its tools? | the initial build has not finished | keeping it out of rotation |
+
+```jsonc
+// 503 while starting
+{"status": "not_ready", "server": "mcpgateway", "reason": "initial build has not finished"}
+// 200 once built
+{"status": "ready", "server": "mcpgateway"}
+```
+
+An upstream that is configured but currently unreachable does **not** make the gateway unready: its
+supervisor keeps retrying and its tools appear when it returns. Failing readiness for it would take
+a working gateway out of service over one broken dependency.
+
+Startup is bounded even when an upstream misbehaves. Connecting is capped at 10s, and each feature
+listing is capped too — by `call_timeout` when set, otherwise by the same 10s. That second bound
+matters: `call_timeout` defaults to no limit, and an upstream that completes the handshake and then
+never answers `tools/list` would otherwise park startup forever. Such an upstream is skipped with a
+warning and retried in the background.
 
 When an upstream has `[upstream.route]`, requests matching `host` and/or `path` are served by a per-upstream MCP server. Requests that do not match a route use the default aggregate gateway server.
 
@@ -109,6 +138,85 @@ Example HTTPS gateway with routed upstreams:
 ./mcpgateway -config gateway.toml -transport streamable-http -addr :8443 \
   -tls-cert-file server.crt -tls-key-file server.key
 ```
+
+## Config reload
+
+The gateway reloads `-config` in place on `SIGHUP`, and — when `-config-watch-interval` is set —
+whenever the file's contents change. Downstream clients keep their sessions: the gateway applies the
+new config to the running MCP server and lets the usual `listChanged` notifications carry the new
+tool set, so no client has to reconnect.
+
+```bash
+kill -HUP $(pidof mcpgateway)                              # reload now
+./mcpgateway -config gateway.toml -config-watch-interval 10s  # reload on change
+```
+
+What a reload does:
+
+- **Invalid config is rejected before anything changes.** A config that does not parse or does not
+  validate leaves the running one serving; the failure is logged and counted.
+- **Unchanged upstreams keep their live session.** An upstream is closed and reconnected only when
+  its own `[[upstream]]` section changed, when a `{secret:...}` it interpolates changed, or when the
+  global `[redact]` section it inherits changed — all three are baked in at connect time.
+- **Added upstreams connect, removed upstreams are unregistered** along with their route. An added
+  upstream that is unreachable right now is still adopted; its supervisor retries in the background.
+
+What a reload does **not** apply — these are reported in the logs as needing a restart, and the old
+values keep running:
+
+- `[server]` — the gateway's MCP identity is handed to the transport at startup
+- `[auth]` — the HTTP middleware chain is built once
+- `[telemetry]` — exporters are wired at startup
+- toggling `tools.lazy` on or off across the whole config, which decides whether the discovery tools
+  and lazy middleware are installed on the server
+
+Metrics:
+
+| Metric | Type | Attributes |
+|---|---|---|
+| `mcpgateway.config.reload` | counter | `result` = `success` \| `failure` |
+| `mcpgateway.config.reload.last_success_timestamp` | gauge (unix seconds) | — |
+| `mcpgateway.upstreams` | gauge | `state` = `connected` \| `disconnected` |
+
+`last_success_timestamp` is seeded at startup, so `now() - last_success_timestamp` is a usable
+staleness alert from the first scrape — a gateway stuck on a config it cannot replace looks stale
+rather than merely quiet. `mcpgateway.upstreams` separates "not configured" from "configured but
+unreachable", since a disconnected upstream is still being retried by its supervisor.
+
+## Graceful shutdown
+
+Closing an upstream — on removal, on restart, or at process shutdown — drains it first: it stops
+accepting new calls, waits for the in-flight ones to finish, and only then tears the session down.
+Upstreams close concurrently, so a reload removing several waits out one drain rather than their sum.
+
+Two independent timeouts are involved, and they are deliberately not the same knob:
+
+| Setting | Scope | Default | Bounds |
+|---|---|---|---|
+| `[[upstream]] call_timeout` | per upstream | unset = no limit | one request to that upstream |
+| `[server] drain_timeout` | gateway | `5s` | each phase of closing an upstream |
+
+A feature listing is the one request that is never unbounded: it falls back to the connect timeout
+(10s) when `call_timeout` is unset, because it runs during startup and after every reconnect, before
+the gateway can serve anything.
+
+An upstream with genuinely long-running tools sets no `call_timeout` and still gets a bounded
+shutdown: `drain_timeout` does not depend on calls being short. Set `call_timeout` only where you
+want a call itself capped. A negative `drain_timeout` disables draining and cuts in-flight calls off
+immediately.
+
+`drain_timeout` also bounds the session close, not just the wait before it. The MCP SDK's session
+close waits for outstanding calls, so an upstream that never answers would otherwise hang shutdown
+forever regardless of the timeout. When it stalls, the close is abandoned and the transport is torn
+down underneath it: for stdio the child process is killed, and for http/sse the in-flight requests
+are canceled. Without that last part an http upstream that accepts a request and never answers
+would leak the request, its goroutine and its connection for the life of the process, since these
+clients carry no timeout by design (both transports stream).
+
+Polling compares a content hash rather than mtime or inotify events, which is what makes it work for
+atomic rename, ConfigMap symlink swap, and editor save-with-backup, while a rewrite with identical
+bytes does not churn upstream connections. A `SIGHUP` reloads unconditionally, since the secrets the
+file references may have changed even when the file did not.
 
 ## Limitations
 

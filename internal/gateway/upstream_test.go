@@ -4,6 +4,7 @@ package gateway
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -43,7 +44,7 @@ func TestUpstream_InMemory(t *testing.T) {
 	})
 	go srv.Run(context.Background(), st)
 
-	u := &Upstream{cfg: UpstreamConfig{Name: "u1"}}
+	u := &Upstream{cfg: UpstreamConfig{Name: "u1"}, logger: slog.Default(), drainTimeout: defaultDrainTimeout}
 	// wire in-memory directly
 	u.client = mcp.NewClient(&mcp.Implementation{Name: "c", Version: "0"}, nil)
 	sess, err := u.client.Connect(t.Context(), ct, nil)

@@ -2,6 +2,7 @@ package cmdutil
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -65,6 +66,43 @@ func TestHealthHandler(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, `{"status":"ok","server":"srv"}`, rec.Body.String())
+}
+
+// TestReadyHandler: /readyz answers a different question than /health, and a
+// server that is up but not usable must say so with a 503 rather than a 200.
+func TestReadyHandler(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		ready func() error
+		want  int
+		body  string
+	}{
+		{
+			name: "NilIsReady",
+			want: http.StatusOK,
+			body: `{"status":"ready","server":"srv"}`,
+		},
+		{
+			name:  "Ready",
+			ready: func() error { return nil },
+			want:  http.StatusOK,
+			body:  `{"status":"ready","server":"srv"}`,
+		},
+		{
+			name:  "NotReady",
+			ready: func() error { return errors.New("initial build has not finished") },
+			want:  http.StatusServiceUnavailable,
+			body:  `{"status":"not_ready","server":"srv","reason":"initial build has not finished"}`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			readyHandler("srv", tt.ready).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", http.NoBody))
+
+			require.Equal(t, tt.want, rec.Code)
+			require.JSONEq(t, tt.body, rec.Body.String())
+		})
+	}
 }
 
 func TestTransportFlags_ApplyExposeDefaults(t *testing.T) {

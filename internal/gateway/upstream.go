@@ -17,6 +17,11 @@ import (
 	gwtransport "github.com/go-faster/gooners/internal/gateway/transport"
 )
 
+// defaultConnectTimeout bounds the MCP handshake, and with it every feature
+// listing that has no explicit call_timeout. Both happen before the gateway can
+// serve anything, so neither may be unbounded.
+const defaultConnectTimeout = 10 * time.Second
+
 // TransportBuilder constructs an mcp.Transport for an upstream and returns an
 // optional cleanup function to call after the session closes.
 type TransportBuilder func(ctx context.Context, cfg UpstreamConfig, r SecretResolver) (mcp.Transport, func() error, error)
@@ -61,6 +66,13 @@ type Upstream struct {
 	supervisorCancel context.CancelFunc
 	supervisorDone   chan struct{}
 	closed           bool
+	// inflight counts calls currently holding the session; drained is signaled
+	// when it reaches zero while [Upstream.Close] is waiting.
+	inflight int
+	drained  chan struct{}
+
+	drainTimeout time.Duration
+	callTimeout  time.Duration
 }
 
 // UpstreamOptions configures optional dependencies for an Upstream.
@@ -82,6 +94,13 @@ type UpstreamOptions struct {
 	ReconnectMax     time.Duration
 	// Redactor is the per-upstream redactor. If nil, no redaction is applied.
 	Redactor *Redactor
+	// DrainTimeout bounds how long Close waits for in-flight calls to finish
+	// before closing the session out from under them. Negative disables
+	// draining.
+	DrainTimeout time.Duration
+	// CallTimeout bounds a single request to this upstream. Zero means no
+	// limit, for upstreams with genuinely long-running tools.
+	CallTimeout time.Duration
 }
 
 func (o *UpstreamOptions) setDefaults() {
@@ -103,6 +122,9 @@ func (o *UpstreamOptions) setDefaults() {
 	if o.ReconnectMax == 0 {
 		o.ReconnectMax = 30 * time.Second
 	}
+	if o.DrainTimeout == 0 {
+		o.DrainTimeout = defaultDrainTimeout
+	}
 }
 
 // NewUpstream creates an Upstream from config. It does not connect.
@@ -120,6 +142,8 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 		onReconnect:      opts.OnReconnect,
 		buildTransport:   opts.TransportBuilder,
 		redactor:         opts.Redactor,
+		drainTimeout:     opts.DrainTimeout,
+		callTimeout:      opts.CallTimeout,
 	}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
@@ -200,7 +224,7 @@ func (u *Upstream) connectOnce(ctx context.Context) (rerr error) {
 
 	timeout := u.connectTimeout
 	if timeout == 0 {
-		timeout = 10 * time.Second
+		timeout = defaultConnectTimeout
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -333,6 +357,15 @@ func (u *Upstream) currentSession() *mcp.ClientSession {
 	return u.session
 }
 
+// closeSessionResources closes the session and then the transport.
+//
+// The session close is bounded: mcp.ClientSession.Close waits for outstanding
+// calls, so an upstream that never answers would otherwise hang shutdown
+// forever — the drain timeout above would bound nothing. When it stalls, the
+// close is abandoned to its goroutine and the transport is torn down anyway,
+// which for stdio kills the process and drops the pipe, letting the abandoned
+// close finish. For http/sse there is nothing to kill, so that goroutine lives
+// until the upstream answers or its connection dies.
 func (u *Upstream) closeSessionResources() {
 	u.mu.Lock()
 	sess := u.session
@@ -343,7 +376,15 @@ func (u *Upstream) closeSessionResources() {
 	u.mu.Unlock()
 
 	if sess != nil {
-		_ = sess.Close()
+		closed := make(chan struct{})
+		go func() {
+			defer close(closed)
+			_ = sess.Close()
+		}()
+		if !waitTimeout(closed, u.drainTimeout) {
+			u.logger.Warn("session close stalled; tearing down transport underneath it",
+				"timeout", u.drainTimeout)
+		}
 	}
 	if cleanup != nil {
 		_ = cleanup()
@@ -352,7 +393,7 @@ func (u *Upstream) closeSessionResources() {
 
 // newUpstreamWithTransport is a test helper that injects a ready transport.
 func newUpstreamWithTransport(cfg UpstreamConfig, tr mcp.Transport, cl func() error) *Upstream {
-	return &Upstream{cfg: cfg, transport: tr, cleanup: cl, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second, buildTransport: defaultTransportBuilder}
+	return &Upstream{cfg: cfg, transport: tr, cleanup: cl, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second, drainTimeout: defaultDrainTimeout, buildTransport: defaultTransportBuilder}
 }
 
 // newUpstreamWithInMemoryClient constructs Upstream with mcp.Client wired to call handlerOnListChanged on tool list changed.
@@ -371,7 +412,7 @@ type upstreamCallbacks struct {
 
 // newUpstreamWithInMemoryClientWithCallbacks constructs Upstream with mcp.Client wired to call the provided callbacks.
 func newUpstreamWithInMemoryClientWithCallbacks(cfg UpstreamConfig, clientTr mcp.Transport, cb upstreamCallbacks) *Upstream {
-	u := &Upstream{cfg: cfg, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second, onReconnect: cb.OnReconnect, buildTransport: defaultTransportBuilder}
+	u := &Upstream{cfg: cfg, logger: slog.Default(), reconnectInitial: time.Second, reconnectMax: 30 * time.Second, drainTimeout: defaultDrainTimeout, onReconnect: cb.OnReconnect, buildTransport: defaultTransportBuilder}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
 		Logger: slog.Default(),
@@ -426,6 +467,16 @@ func (u *Upstream) Close(_ context.Context) error {
 	cancel := u.supervisorCancel
 	done := u.supervisorDone
 	u.mu.Unlock()
+
+	// Order matters: closed is already set, so no new call can claim the
+	// session, but the in-flight ones still need it. Draining has to happen
+	// before the supervisor is canceled, because canceling closes the session
+	// out from under them.
+	if !u.drain(u.drainTimeout) {
+		u.logger.Warn("timed out draining upstream; closing with calls in flight",
+			"timeout", u.drainTimeout)
+	}
+
 	if cancel != nil {
 		cancel()
 	}
@@ -444,29 +495,38 @@ func (u *Upstream) Close(_ context.Context) error {
 
 // ListTools calls the upstream.
 func (u *Upstream) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
-	sess := u.currentSession()
-	if sess == nil {
-		return nil, errors.New("not connected")
+	sess, err := u.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer u.leave()
+	ctx, cancel := u.withListTimeout(ctx)
+	defer cancel()
 	return collectSeq(sess.Tools(ctx, &mcp.ListToolsParams{}))
 }
 
 // CallTool forwards the call to the upstream session.
 func (u *Upstream) CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
-	sess := u.currentSession()
-	if sess == nil {
-		return nil, errors.New("not connected")
+	sess, err := u.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	return sess.CallTool(ctx, params)
 }
 
 // ListPrompts calls the upstream. Upstreams that don't declare the prompts
 // capability are treated as having none, rather than failing the gateway.
 func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
-	sess := u.currentSession()
-	if sess == nil {
-		return nil, errors.New("not connected")
+	sess, err := u.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer u.leave()
+	ctx, cancel := u.withListTimeout(ctx)
+	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Prompts == nil {
 		return nil, nil
 	}
@@ -475,10 +535,13 @@ func (u *Upstream) ListPrompts(ctx context.Context) ([]*mcp.Prompt, error) {
 
 // GetPrompt forwards the call to the upstream session.
 func (u *Upstream) GetPrompt(ctx context.Context, params *mcp.GetPromptParams) (*mcp.GetPromptResult, error) {
-	sess := u.currentSession()
-	if sess == nil {
-		return nil, errors.New("not connected")
+	sess, err := u.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	return sess.GetPrompt(ctx, params)
 }
 
@@ -486,10 +549,13 @@ func (u *Upstream) GetPrompt(ctx context.Context, params *mcp.GetPromptParams) (
 // resources capability are treated as having none, rather than failing the
 // gateway.
 func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
-	sess := u.currentSession()
-	if sess == nil {
-		return nil, errors.New("not connected")
+	sess, err := u.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer u.leave()
+	ctx, cancel := u.withListTimeout(ctx)
+	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Resources == nil {
 		return nil, nil
 	}
@@ -500,10 +566,13 @@ func (u *Upstream) ListResources(ctx context.Context) ([]*mcp.Resource, error) {
 // resources capability are treated as having none, rather than failing the
 // gateway.
 func (u *Upstream) ListResourceTemplates(ctx context.Context) ([]*mcp.ResourceTemplate, error) {
-	sess := u.currentSession()
-	if sess == nil {
-		return nil, errors.New("not connected")
+	sess, err := u.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer u.leave()
+	ctx, cancel := u.withListTimeout(ctx)
+	defer cancel()
 	if res := sess.InitializeResult(); res == nil || res.Capabilities == nil || res.Capabilities.Resources == nil {
 		return nil, nil
 	}
@@ -523,10 +592,13 @@ func collectSeq[T any](seq iter.Seq2[T, error]) ([]T, error) {
 
 // ReadResource forwards the call to the upstream session.
 func (u *Upstream) ReadResource(ctx context.Context, params *mcp.ReadResourceParams) (*mcp.ReadResourceResult, error) {
-	sess := u.currentSession()
-	if sess == nil {
-		return nil, errors.New("not connected")
+	sess, err := u.enter()
+	if err != nil {
+		return nil, err
 	}
+	defer u.leave()
+	ctx, cancel := u.withCallTimeout(ctx)
+	defer cancel()
 	return sess.ReadResource(ctx, params)
 }
 

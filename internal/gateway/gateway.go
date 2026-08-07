@@ -12,7 +12,9 @@ import (
 	"maps"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-faster/errors"
@@ -39,10 +41,23 @@ type Gateway struct {
 	registry   upstreamRegistry
 	registryMu sync.RWMutex
 	routeMu    sync.RWMutex
+	// stateMu guards the reloadable state: cfg, resolver, redactor and the
+	// upstreams slice. Reload swaps them while requests are in flight.
+	stateMu sync.RWMutex
+	// reloadMu serializes Reload calls so two concurrent reloads cannot
+	// interleave their detach/attach phases.
+	reloadMu sync.Mutex
+
+	transportBuilder TransportBuilder
 
 	// discovery reports whether the gateway's own search/describe tools are
 	// registered, which also makes their names reserved against upstreams.
 	discovery bool
+
+	// built records that the initial Build finished, which is what readiness
+	// reports. It is only ever set, never cleared: a reload replaces features
+	// on a gateway that is already serving.
+	built atomic.Bool
 
 	promptRegistry           featureRegistry[*mcp.Prompt]
 	resourceRegistry         featureRegistry[*mcp.Resource]
@@ -69,12 +84,35 @@ type upstreamRegistry struct {
 }
 
 func (g *Gateway) upstreamByName(name string) *Upstream {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
 	for _, u := range g.upstreams {
 		if u.cfg.Name == name {
 			return u
 		}
 	}
 	return nil
+}
+
+// upstreamList returns a snapshot safe to range over while a reload runs.
+func (g *Gateway) upstreamList() []*Upstream {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
+	return slices.Clone(g.upstreams)
+}
+
+// config returns the currently active configuration.
+func (g *Gateway) config() *Config {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
+	return g.cfg
+}
+
+// secretResolver returns the resolver built from the active [Config.Secrets].
+func (g *Gateway) secretResolver() SecretResolver {
+	g.stateMu.RLock()
+	defer g.stateMu.RUnlock()
+	return g.resolver
 }
 
 func toolEqual(a, b *mcp.Tool) bool {
@@ -146,6 +184,9 @@ type Options struct {
 	TracerProvider trace.TracerProvider
 	Logger         *zap.Logger
 	Slogger        *slog.Logger
+	// TransportBuilder builds the transport for every upstream, including ones
+	// created by [Gateway.Reload]. Nil uses the production stdio/http/sse builder.
+	TransportBuilder TransportBuilder
 }
 
 func (o *Options) setDefaults() {
@@ -185,8 +226,9 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 	}
 
 	g := &Gateway{
-		cfg:      cfg,
-		resolver: res,
+		cfg:              cfg,
+		resolver:         res,
+		transportBuilder: opts.TransportBuilder,
 		registry: upstreamRegistry{
 			finalToUpstream:    make(map[string]string),
 			upstreamRegistered: make(map[string]map[string]struct{}),
@@ -209,35 +251,7 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		}
 	}
 	for _, uc := range cfg.Upstreams {
-		uopts := UpstreamOptions{
-			Logger:                opts.Slogger.With("upstream", uc.Name),
-			Resolver:              res,
-			OnToolListChanged:     g.onToolListChanged,
-			OnPromptListChanged:   g.onPromptListChanged,
-			OnResourceListChanged: g.onResourceListChanged,
-			OnResourceUpdated:     g.onResourceUpdated,
-			OnReconnect:           g.onUpstreamReconnect,
-		}
-
-		uopts.Redactor = redactor
-		if uc.Redact != nil {
-			if uc.Redact.Enabled {
-				r, err := NewRedactor(uc.Redact.Patterns, uc.Redact.MinEntropy)
-				if err != nil {
-					return nil, errors.Wrapf(err, "upstream %q: create redactor", uc.Name)
-				}
-				uopts.Redactor = r
-			} else {
-				uopts.Redactor = nil
-			}
-		}
-
-		if uc.Reconnect != nil {
-			if err := applyReconnectConfig(uc.Reconnect, &uopts); err != nil {
-				return nil, errors.Wrapf(err, "parse reconnect config for upstream %s", uc.Name)
-			}
-		}
-		u, err := NewUpstream(uc, uopts)
+		u, err := g.newUpstream(uc, cfg, res, redactor)
 		if err != nil {
 			return nil, err
 		}
@@ -255,6 +269,53 @@ func New(cfg *Config, opts Options) (*Gateway, error) {
 		g.registerDiscoveryTools()
 	}
 	return g, nil
+}
+
+// newUpstream builds one upstream against the given config, resolver and global
+// redactor, wiring the gateway's notification callbacks. It does not connect and
+// does not register the upstream on the gateway.
+//
+// cfg is passed rather than read from g, because a reload builds its upstreams
+// before the new config is installed.
+func (g *Gateway) newUpstream(uc UpstreamConfig, cfg *Config, res SecretResolver, globalRedactor *Redactor) (*Upstream, error) {
+	drainTimeout, err := parseOptionalDuration(cfg.Server.DrainTimeout)
+	if err != nil {
+		return nil, errors.Wrap(err, "server: drain_timeout")
+	}
+	callTimeout, err := parseOptionalDuration(uc.CallTimeout)
+	if err != nil {
+		return nil, errors.Wrapf(err, "upstream %q: call_timeout", uc.Name)
+	}
+	uopts := UpstreamOptions{
+		Logger:                g.slogger.With("upstream", uc.Name),
+		Resolver:              res,
+		TransportBuilder:      g.transportBuilder,
+		DrainTimeout:          drainTimeout,
+		CallTimeout:           callTimeout,
+		OnToolListChanged:     g.onToolListChanged,
+		OnPromptListChanged:   g.onPromptListChanged,
+		OnResourceListChanged: g.onResourceListChanged,
+		OnResourceUpdated:     g.onResourceUpdated,
+		OnReconnect:           g.onUpstreamReconnect,
+		Redactor:              globalRedactor,
+	}
+	if uc.Redact != nil {
+		if uc.Redact.Enabled {
+			r, err := NewRedactor(uc.Redact.Patterns, uc.Redact.MinEntropy)
+			if err != nil {
+				return nil, errors.Wrapf(err, "upstream %q: create redactor", uc.Name)
+			}
+			uopts.Redactor = r
+		} else {
+			uopts.Redactor = nil
+		}
+	}
+	if uc.Reconnect != nil {
+		if err := applyReconnectConfig(uc.Reconnect, &uopts); err != nil {
+			return nil, errors.Wrapf(err, "parse reconnect config for upstream %s", uc.Name)
+		}
+	}
+	return NewUpstream(uc, uopts)
 }
 
 func (g *Gateway) onToolListChanged(ctx context.Context, upstreamName string) error {
@@ -521,7 +582,7 @@ func (g *Gateway) Build(ctx context.Context) error {
 	}
 	var listedItems []listed
 
-	for _, u := range g.upstreams {
+	for _, u := range g.upstreamList() {
 		if err := u.Connect(ctx); err != nil {
 			g.logger.Warn("upstream unavailable during build; will retry in background", zap.String("upstream", u.cfg.Name), zap.Error(err))
 			continue
@@ -625,6 +686,26 @@ func (g *Gateway) Build(ctx context.Context) error {
 		if u.hasRoute() {
 			g.setRouteServer(u, g.newUpstreamRouteServer(u, lt.tools, lt.prompts, lt.resources, lt.templates))
 		}
+	}
+	g.built.Store(true)
+	return nil
+}
+
+// Ready reports whether the gateway can serve its aggregated feature set,
+// returning why not when it cannot.
+//
+// It is not liveness: the HTTP transport starts before [Gateway.Build], so that
+// a slow or hung upstream cannot keep the process from answering at all. That
+// makes a window where the gateway is up and reachable but still has an empty
+// tool set, and this is what distinguishes the two.
+//
+// An upstream that is configured but currently unreachable does not make the
+// gateway unready. Its supervisor is retrying and its tools appear over
+// listChanged when it comes back; failing readiness for it would take a
+// working gateway out of service over one broken dependency.
+func (g *Gateway) Ready() error {
+	if !g.built.Load() {
+		return errors.New("initial build has not finished")
 	}
 	return nil
 }
@@ -737,7 +818,7 @@ func (g *Gateway) setRouteServer(u *Upstream, server *mcp.Server) {
 func (g *Gateway) newUpstreamRouteServer(u *Upstream, tools []*mcp.Tool, prompts []*mcp.Prompt, resources []*mcp.Resource, templates []*mcp.ResourceTemplate) *mcp.Server {
 	s := mcputil.NewServer(mcputil.ServerConfig{
 		Name:         u.cfg.Name,
-		Instructions: g.cfg.Server.Instructions,
+		Instructions: g.config().Server.Instructions,
 		Logger:       g.slogger.With("component", "route-server", "upstream", u.cfg.Name),
 	})
 	s.AddReceivingMiddleware(g.scopeMiddleware(u))
@@ -1101,11 +1182,9 @@ func (g *Gateway) RegisteredResourceTemplates() map[string]string {
 	return out
 }
 
-// Close closes all upstreams.
+// Close drains and closes all upstreams concurrently.
 func (g *Gateway) Close(ctx context.Context) error {
-	for _, u := range g.upstreams {
-		_ = u.Close(ctx)
-	}
+	closeUpstreams(ctx, g.upstreamList())
 	g.registryMu.Lock()
 	clear(g.registry.finalToUpstream)
 	clear(g.registry.upstreamRegistered)
