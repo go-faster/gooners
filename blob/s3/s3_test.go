@@ -194,3 +194,21 @@ func TestParseEndpoint(t *testing.T) {
 		require.Error(t, err, in)
 	}
 }
+
+// TestAmbientCredentials covers the default chain, and pins the property that
+// makes it safe to build one without asking: it reads the environment and the
+// shared credentials file, and never reaches the instance metadata service.
+// That address is link-local, which the egress policy blocks by default, and a
+// store quietly reaching for it is what the policy exists to prevent.
+func TestAmbientCredentials(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "AKIAEXAMPLE")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "secret")
+
+	creds := ambientCredentials()
+	require.NotNil(t, creds)
+
+	got, err := creds.GetWithContext(nil)
+	require.NoError(t, err)
+	require.Equal(t, "AKIAEXAMPLE", got.AccessKeyID)
+	require.Equal(t, "secret", got.SecretAccessKey)
+}

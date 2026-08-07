@@ -150,3 +150,54 @@ func fetchURL(ctx context.Context, url string) (*http.Response, error) {
 	}
 	return http.DefaultClient.Do(req)
 }
+
+// TestBlobFlagsSetupS3Validation: the S3 backend is selected by its endpoint,
+// and picking it half-way has to fail at startup rather than at the first tool
+// call.
+func TestBlobFlagsSetupS3Validation(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		flags BlobFlags
+	}{
+		{
+			name:  "EndpointWithoutBucket",
+			flags: BlobFlags{S3Endpoint: "s3.example.com"},
+		},
+		{
+			name:  "BothBackendsViaAddr",
+			flags: BlobFlags{S3Endpoint: "s3.example.com", S3Bucket: "b", Addr: ":9000"},
+		},
+		{
+			name:  "BothBackendsViaBaseURL",
+			flags: BlobFlags{S3Endpoint: "s3.example.com", S3Bucket: "b", BaseURL: "https://example.com/blob"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := tt.flags.Setup(t.Context(), BlobOptions{Name: "test-mcp", Logger: testLogger()})
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestBlobFlagsRegisterS3 keeps the flag names stable: they are an operator
+// interface, and four binaries now share them.
+func TestBlobFlagsRegisterS3(t *testing.T) {
+	var flags BlobFlags
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	flags.Register(fs)
+
+	for _, name := range []string{"blob-s3-endpoint", "blob-s3-bucket", "blob-s3-prefix", "blob-s3-region"} {
+		require.NotNil(t, fs.Lookup(name), "flag %q must be registered", name)
+	}
+
+	require.NoError(t, fs.Parse([]string{
+		"-blob-s3-endpoint", "s3.example.com",
+		"-blob-s3-bucket", "blobs",
+		"-blob-s3-prefix", "tenants/alice",
+		"-blob-s3-region", "eu-central-1",
+	}))
+	require.Equal(t, "s3.example.com", flags.S3Endpoint)
+	require.Equal(t, "blobs", flags.S3Bucket)
+	require.Equal(t, "tenants/alice", flags.S3Prefix)
+	require.Equal(t, "eu-central-1", flags.S3Region)
+}
