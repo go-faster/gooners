@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/go-faster/gooners/blob"
 )
 
 const minTransferSampleInterval = 500 * time.Millisecond
@@ -408,6 +410,9 @@ type transferSnapshot struct {
 	done            bool
 	status          TransferStatus
 	err             error
+	// result is what a Sink download stored. Read under the job's lock like
+	// everything else here, since the transfer goroutine writes it.
+	result blob.Blob
 }
 
 func newTransferSnapshot(job *TransferJob) transferSnapshot {
@@ -449,6 +454,7 @@ func newTransferSnapshot(job *TransferJob) transferSnapshot {
 		done:            job.Done,
 		status:          job.Status,
 		err:             job.Err,
+		result:          job.Result,
 	}
 }
 
@@ -494,15 +500,19 @@ func (p *Pool) handleDownload(st *poolState, r DownloadRequest) {
 		return
 	}
 	// See handleUpload: p.localFS gates the write regardless; this just fails
-	// fast on a destination it would refuse.
-	if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
-		r.resp <- DownloadResponse{Err: err}
-		return
+	// fast on a destination it would refuse. A Sink download has no local
+	// destination — nothing of this host's is written.
+	if r.Sink == nil {
+		if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
+			r.resp <- DownloadResponse{Err: err}
+			return
+		}
 	}
 	evict(st.downloads, p.jobRetention, time.Now())
 
 	downloadID := fmt.Sprintf("download-%d", time.Now().UnixNano())
 	job, dCtx := newTransferJob(s.ctx, downloadID, r.SessionID, r.LocalPath, r.RemotePath)
+	job.Sink, job.SinkName = r.Sink, r.SinkName
 	st.downloads[downloadID] = job
 	go runDownload(dCtx, s.client, p.localFS, job)
 	r.resp <- DownloadResponse{DownloadID: downloadID}
@@ -531,6 +541,7 @@ func downloadStatus(job *TransferJob) DownloadStatusResponse {
 		Done:            s.done,
 		Status:          s.status,
 		Err:             s.err,
+		Blob:            s.result,
 	}
 }
 

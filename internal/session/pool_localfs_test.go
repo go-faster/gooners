@@ -2,13 +2,17 @@ package session
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/effect"
 )
 
@@ -135,4 +139,55 @@ func TestPoolOpenSpoolReadsThroughSpoolFS(t *testing.T) {
 	_, err = f.Read(data)
 	require.NoError(t, err)
 	require.Equal(t, "spool content", string(data))
+}
+
+// closeTracker reports whether the pool closed the reader it was handed.
+type closeTracker struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (c *closeTracker) Close() error {
+	c.closed.Store(true)
+	return nil
+}
+
+// TestPoolBlobTransferBypassesLocalFS: a blob transfer names no local path, so
+// the filesystem gate has nothing to say about it.
+//
+// Without this, a server whose LocalFS denies everything could not exchange
+// files with another server at all — and denying host file access is exactly
+// the deployment the blob route exists for.
+func TestPoolBlobTransferBypassesLocalFS(t *testing.T) {
+	p, sessionID, _ := newSpoolPool(t, nil, "")
+	ctx := context.Background()
+
+	store, err := blob.NewHTTP(blob.HTTPOptions{
+		BaseURL: "http://blob.invalid/files",
+		FS:      blob.Dir(t.TempDir()),
+	})
+	require.NoError(t, err)
+
+	src := &closeTracker{Reader: strings.NewReader("payload")}
+	uploadID, err := p.UploadFrom(ctx, sessionID, src, 7, "/tmp/remote.txt")
+	require.NoError(t, err, "the filesystem gate must not refuse a transfer with no local path")
+	require.NotEmpty(t, uploadID)
+
+	downloadID, err := p.DownloadTo(ctx, sessionID, "/tmp/remote.txt", "f.txt", store)
+	require.NoError(t, err)
+	require.NotEmpty(t, downloadID)
+}
+
+// TestPoolUploadFromClosesSourceWhenItNeverStarts is the ownership contract on
+// [UploadRequest.Source]: the pool closes it however the request ends, so a
+// session that vanished first does not leak a reader for the life of the
+// process.
+func TestPoolUploadFromClosesSourceWhenItNeverStarts(t *testing.T) {
+	p, _, _ := newSpoolPool(t, nil, "")
+	ctx := context.Background()
+
+	src := &closeTracker{Reader: strings.NewReader("payload")}
+	_, err := p.UploadFrom(ctx, "no-such-session", src, 7, "/tmp/remote.txt")
+	require.Error(t, err)
+	require.True(t, src.closed.Load(), "the pool owns the reader and must close it")
 }

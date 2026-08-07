@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/go-faster/gooners/blob"
 )
 
 // Request is the base interface for all session manager messages.
@@ -157,9 +159,15 @@ type UploadCancelRequest struct {
 func (UploadCancelRequest) isRequest() {}
 
 // DownloadRequest is a request to download a file from an existing SSH session.
+//
+// Exactly one of LocalPath and Sink says where the bytes go. A Sink download
+// writes nothing to this host, which is the point when the agent cannot read
+// this host anyway.
 type DownloadRequest struct {
 	SessionID  string
 	LocalPath  string
+	Sink       blob.Store
+	SinkName   string
 	RemotePath string
 	resp       chan<- DownloadResponse
 }
@@ -194,6 +202,9 @@ type DownloadStatusResponse struct {
 	Done            bool
 	Status          TransferStatus
 	Err             error
+	// Blob is what a Sink download stored, zero until it finishes and for a
+	// download to a local path.
+	Blob blob.Blob
 }
 
 // DownloadWaitRequest is a request to wait for an ongoing download to complete.

@@ -3,10 +3,12 @@ package session
 import (
 	"context"
 	"io"
+	"path"
 
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/effect"
 )
 
@@ -88,8 +90,32 @@ func uploadSource(localFS effect.FS, job *TransferJob) (io.ReadCloser, int64, er
 	return src, stat.Size(), nil
 }
 
-// runDownload streams the remote file into job.LocalPath. As in [runUpload],
-// localFS is the gate: the destination is whatever the agent asked for.
+// downloadToSink streams the remote file into a store instead of onto this
+// host. The store owns the copy, so progress is counted on the way in rather
+// than by a writer of ours.
+//
+// A declared size lets the store refuse an oversized object before transferring
+// it, which is the whole transfer saved rather than discovered at the end.
+func downloadToSink(ctx context.Context, job *TransferJob, src io.Reader, size int64) error {
+	name := job.SinkName
+	if name == "" {
+		name = path.Base(job.RemotePath)
+	}
+
+	b, err := job.Sink.Put(ctx, &progressReader{r: src, ctx: ctx, job: job}, blob.PutOptions{
+		Name: name,
+		Size: size,
+	})
+	if err != nil {
+		return err
+	}
+	job.setResult(b)
+	return nil
+}
+
+// runDownload streams the remote file into job.LocalPath, or into job.Sink when
+// set. As in [runUpload], localFS is the gate: the destination is whatever the
+// agent asked for.
 func runDownload(ctx context.Context, client *ssh.Client, localFS effect.FS, job *TransferJob) {
 	job.finish(ctx, download(ctx, client, localFS, job))
 }
@@ -119,6 +145,10 @@ func download(ctx context.Context, client *ssh.Client, localFS effect.FS, job *T
 		return err
 	}
 	job.setTotal(stat.Size())
+
+	if job.Sink != nil {
+		return downloadToSink(ctx, job, src, stat.Size())
+	}
 
 	tmpPath := job.LocalPath + ".tmp"
 	dst, err := localFS.Create(tmpPath)

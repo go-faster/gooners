@@ -91,6 +91,24 @@ func copyToRemote(ctx context.Context, dst io.WriterAt, src io.Reader, job *Tran
 //
 // For a download the destination is the local file, so a byte counted here is a byte the
 // remote already sent — the count cannot run ahead of the transfer.
+// progressReader is [progressWriter] for a transfer whose destination consumes
+// a reader rather than being written to — a download into a blob store, where
+// the store owns the copy and there is no writer of ours in the middle.
+type progressReader struct {
+	r   io.Reader
+	ctx context.Context
+	job *TransferJob
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	if pr.ctx.Err() != nil {
+		return 0, context.Cause(pr.ctx)
+	}
+	n, err := pr.r.Read(p)
+	pr.job.add(int64(n))
+	return n, err
+}
+
 type progressWriter struct {
 	w   io.Writer
 	ctx context.Context

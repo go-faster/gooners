@@ -201,6 +201,25 @@ passes the id it got from the other tool's result:
 It is the same asynchronous job as a local upload, so `upload_id`, `upload_status`, `upload_wait`
 and `upload_cancel` all behave identically. `local_path` and `blob` are mutually exclusive.
 
+### Downloading a file the agent can fetch
+
+`download_file` takes `to_blob: true` instead of `local_path`, streaming the remote file straight
+into the store so nothing lands on this server:
+
+```jsonc
+{"session_id": "...", "remote_path": "/var/log/app.log", "to_blob": true}
+// -> {"download_id": "..."}
+// download_wait -> {"done": true, "blob": {"blob": "ssh-mcp/<uuid>", "url": "https://...", ...}}
+```
+
+The stored object appears on `download_status`/`download_wait`, not on `download_file`, because the
+transfer has not happened when that returns. `blob` is the id to hand to another tool; `url` is
+what to fetch — and `url` expires while the id does not.
+
+Because a blob transfer names no local path, it is not subject to the working-directory guard.
+There is nothing of this server's to guard: the bytes go straight between the remote host and the
+store.
+
 The id names an object in the bucket this server was configured with — there is no URL and no host
 in the argument, so nothing here can be pointed at a destination the operator did not choose.
 
@@ -212,7 +231,7 @@ in the argument, so nothing here can be pointed at a destination the operator di
 | `upload_status` | Check upload progress |
 | `upload_wait` | Wait for an upload to complete |
 | `upload_cancel` | Cancel an upload |
-| `download_file` | Start an asynchronous remote-to-local SFTP download and return `download_id` |
+| `download_file` | Start an asynchronous SFTP download to a local path or, with `to_blob`, to the blob store; returns `download_id` |
 | `download_status` | Check download progress |
 | `download_wait` | Wait for a download to complete |
 | `download_cancel` | Cancel a download |
