@@ -189,6 +189,21 @@ func TestMatchBlobMount(t *testing.T) {
 	}
 }
 
+// absDir makes a slash-rooted mount dir absolute for the platform the test runs
+// on. A mount's dir is a path on the gateway's own host and is validated with
+// [filepath.IsAbs], which on Windows means "fully qualified": /srv/m has no
+// volume there, so it names the current drive's root and is reported relative
+// (golang/go#8145, golang/go#56217 — working as intended, and frozen by the Go 1
+// compatibility promise). A mount's prefix is the upstream's slash-separated
+// namespace, which no filepath rule applies to, and stays as written.
+//
+// The volume is taken from a real path rather than hardcoded, since nothing
+// says CI runs on C:. [filepath.Join] cannot do this — it strips the leading
+// separator and would append to the whole working directory.
+func absDir(p string) string {
+	return filepath.VolumeName(os.TempDir()) + p
+}
+
 func TestBlobConfigValidate(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
@@ -198,12 +213,12 @@ func TestBlobConfigValidate(t *testing.T) {
 		{name: "Disabled"},
 		{
 			name:    "MountsWithoutAddr",
-			cfg:     BlobConfig{Mounts: []BlobMountConfig{{Name: "m", Dir: "/srv/m"}}},
+			cfg:     BlobConfig{Mounts: []BlobMountConfig{{Name: "m", Dir: absDir("/srv/m")}}},
 			wantErr: "nothing would serve them",
 		},
 		{
 			name: "Valid",
-			cfg:  BlobConfig{Addr: ":8090", Mounts: []BlobMountConfig{{Name: "m", Dir: "/srv/m"}}},
+			cfg:  BlobConfig{Addr: ":8090", Mounts: []BlobMountConfig{{Name: "m", Dir: absDir("/srv/m")}}},
 		},
 		{
 			name:    "BadTTL",
@@ -212,13 +227,13 @@ func TestBlobConfigValidate(t *testing.T) {
 		},
 		{
 			name:    "NoMountName",
-			cfg:     BlobConfig{Addr: ":8090", Mounts: []BlobMountConfig{{Dir: "/srv/m"}}},
+			cfg:     BlobConfig{Addr: ":8090", Mounts: []BlobMountConfig{{Dir: absDir("/srv/m")}}},
 			wantErr: "name is required",
 		},
 		{
 			name: "DuplicateMountName",
 			cfg: BlobConfig{Addr: ":8090", Mounts: []BlobMountConfig{
-				{Name: "m", Dir: "/srv/a"}, {Name: "m", Dir: "/srv/b"},
+				{Name: "m", Dir: absDir("/srv/a")}, {Name: "m", Dir: absDir("/srv/b")},
 			}},
 			wantErr: "duplicated",
 		},
@@ -234,7 +249,7 @@ func TestBlobConfigValidate(t *testing.T) {
 		},
 		{
 			name:    "RelativePrefix",
-			cfg:     BlobConfig{Addr: ":8090", Mounts: []BlobMountConfig{{Name: "m", Dir: "/srv/m", Prefix: "rel"}}},
+			cfg:     BlobConfig{Addr: ":8090", Mounts: []BlobMountConfig{{Name: "m", Dir: absDir("/srv/m"), Prefix: "rel"}}},
 			wantErr: "must be absolute",
 		},
 	} {
