@@ -31,8 +31,11 @@ not its problem. Keep the split:
   clients keep their session and learn the new tool set through `listChanged`. Detaching an upstream
   therefore syncs it against an empty feature set (the normal removal path) instead of rebuilding.
 - A config section that cannot be applied in place goes in `restartRequired`, never silently
-  ignored. Anything captured once at startup (server identity, HTTP middleware, telemetry exporters,
-  whether the lazy middleware is installed) is in that category.
+  ignored. Anything captured once at startup (server identity, HTTP middleware, whether the lazy
+  middleware is installed) is in that category.
+- **Telemetry is not config.** Exporters come from `OTEL_*` env via `go-faster/sdk`'s `app.Run`, so
+  there is no `[telemetry]` section — one existed, was validated, and was never read by the binary.
+  Do not reintroduce it: a config section the process ignores reads as working configuration.
 - Reloadable state on `Gateway` (`cfg`, `resolver`, `upstreams`) is guarded by `stateMu`; read it
   through `config()`/`secretResolver()`/`upstreamList()`, never the field directly.
 
