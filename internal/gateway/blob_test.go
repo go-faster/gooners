@@ -496,3 +496,38 @@ func TestBlobShareDescriptionNamesMounts(t *testing.T) {
 		require.NotContains(t, got, "/var/lib/first", "the old prefix must not still be advertised")
 	})
 }
+
+// TestBlobS3Decode pins the TOML shape, which the validate tests cannot see:
+// [blob.s3] is a sub-table of [blob] while [[blob.mount]] is an array of them,
+// and the two have to coexist under one section.
+func TestBlobS3Decode(t *testing.T) {
+	cfg, err := Decode([]byte(`
+[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["ignored"]
+
+[blob]
+ttl = "15m"
+
+[blob.s3]
+endpoint = "s3.example.com"
+bucket = "mcp-blobs"
+prefix = "tenants/alice"
+
+[[blob.mount]]
+name = "playwright"
+dir = "/mnt/playwright"
+prefix = "/videos"
+`))
+	require.NoError(t, err)
+	require.Equal(t, BlobS3Config{
+		Endpoint: "s3.example.com",
+		Bucket:   "mcp-blobs",
+		Prefix:   "tenants/alice",
+	}, cfg.Blob.S3)
+	require.True(t, cfg.Blob.Enabled())
+	require.Equal(t, "15m", cfg.Blob.TTL)
+	require.Len(t, cfg.Blob.Mounts, 1)
+	require.Equal(t, "/videos", cfg.Blob.Mounts[0].Prefix, "the mount's prefix, not the bucket's")
+}
