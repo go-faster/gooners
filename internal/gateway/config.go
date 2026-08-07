@@ -32,9 +32,14 @@ type Config struct {
 // host path. A path is useless to an agent that does not share that
 // filesystem; with the same directory bind-mounted into the gateway, the path
 // becomes a URL the agent can fetch.
+//
+// Either backend serves that: the built-in HTTP one on its own listener, or a
+// bucket via [BlobS3Config]. The bucket additionally makes the shared file
+// readable by other servers configured against it, which is what lets the file
+// go on to one of them without the agent carrying the bytes.
 type BlobConfig struct {
 	// Addr is the blob store's own listen address, e.g. ":8090". Empty
-	// disables blob_share entirely.
+	// disables blob_share entirely, unless s3 is configured.
 	Addr string `toml:"addr"`
 	// BaseURL is where the agent reaches Addr, e.g. https://gw.example.com/blob.
 	// Required unless Addr is unambiguously local, since only then does the
@@ -45,10 +50,40 @@ type BlobConfig struct {
 	Dir string `toml:"dir"`
 	// TTL is how long a URL keeps working. Empty means [blob.DefaultTTL].
 	TTL string `toml:"ttl"`
+	// S3 puts the objects in a bucket instead of behind a listener of the
+	// gateway's own.
+	S3 BlobS3Config `toml:"s3"`
 	// Mounts are the directories blob_share may serve from. A path outside
 	// every mount is refused: the mount list, not the caller, is the boundary.
 	Mounts []BlobMountConfig `toml:"mount"`
 }
+
+// BlobS3Config points the blob store at a bucket.
+//
+// It is the answer when the gateway and the servers that should read what it
+// shares are not on one machine: a listener of the gateway's own is reachable
+// only from where its address is, whereas anything holding bucket credentials
+// can read an object by id.
+//
+// Credentials are not config. They come from the environment (AWS_ACCESS_KEY_ID
+// and friends, or ~/.aws/credentials), so the file can be committed and so the
+// gateway's own read of it never has to be treated as secret-bearing.
+type BlobS3Config struct {
+	// Endpoint is the S3 endpoint, as host[:port] or an http(s) URL. Setting it
+	// selects this backend.
+	Endpoint string `toml:"endpoint"`
+	// Bucket holds the objects and must already exist.
+	Bucket string `toml:"bucket"`
+	// Prefix is the key prefix this gateway writes under. It is the tenancy
+	// boundary: no id can name an object outside it.
+	Prefix string `toml:"prefix"`
+	// Region is the bucket region. Optional for MinIO and for endpoints that
+	// encode it.
+	Region string `toml:"region"`
+}
+
+// Enabled reports whether the S3 backend was selected.
+func (c BlobS3Config) Enabled() bool { return c.Endpoint != "" }
 
 // BlobMountConfig is one directory the gateway may serve files from.
 type BlobMountConfig struct {
@@ -67,11 +102,28 @@ type BlobMountConfig struct {
 }
 
 // Enabled reports whether the blob store should be built at all.
-func (c BlobConfig) Enabled() bool { return c.Addr != "" }
+func (c BlobConfig) Enabled() bool { return c.Addr != "" || c.S3.Enabled() }
 
 // TTLDuration is the parsed [BlobConfig.TTL]; zero means the store's default.
 func (c BlobConfig) TTLDuration() (time.Duration, error) {
 	return parseOptionalDuration(c.TTL)
+}
+
+// validateBackend rejects a section naming two backends, or a bucket the store
+// could not address. Neither is a preference: the store is one or the other,
+// and half a bucket configuration would fail at the first blob_share call
+// instead of at startup.
+func (c BlobConfig) validateBackend() error {
+	if !c.S3.Enabled() {
+		return nil
+	}
+	if c.Addr != "" || c.BaseURL != "" || c.Dir != "" {
+		return errors.New("blob: s3.endpoint and addr/base_url/dir are two different backends: configure one or the other")
+	}
+	if c.S3.Bucket == "" {
+		return errors.New("blob: s3.endpoint needs s3.bucket")
+	}
+	return nil
 }
 
 // prefix is the path the mount answers to, defaulting to its own directory.
@@ -88,12 +140,15 @@ func (m BlobMountConfig) prefix() string {
 func (c BlobConfig) validate() error {
 	if !c.Enabled() {
 		if len(c.Mounts) > 0 {
-			return errors.New("blob: mounts are configured but addr is not, so nothing would serve them")
+			return errors.New("blob: mounts are configured but neither addr nor s3.endpoint is, so nothing would serve them")
 		}
 		return nil
 	}
 	if _, err := parseOptionalDuration(c.TTL); err != nil {
 		return fmt.Errorf("blob: ttl: %w", err)
+	}
+	if err := c.validateBackend(); err != nil {
+		return err
 	}
 
 	seen := map[string]bool{}

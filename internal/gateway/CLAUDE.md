@@ -41,9 +41,18 @@ not its problem. Keep the split:
 `blob_share` turns a host path an upstream reported into a URL, for the case where an upstream
 writes to a directory the gateway sees through a bind mount. Upstreams need no changes.
 
-- **The store is passed in through `Options.Blob`; the mounts come from config.** The store owns a
-  listener and mints URLs from `base_url`, which a live reload cannot move, so `[blob]` minus its
-  mounts is in `restartRequired`. `[[blob.mount]]` is a table the tool reads per call and reloads.
+- **The store is passed in through `Options.Blob`; the mounts come from config.** The store is built
+  once — a listener plus `base_url`, or a bucket it authenticated against — which a live reload
+  cannot move, so `[blob]` minus its mounts is in `restartRequired`. `blobStoreChanged` gets that by
+  `reflect.DeepEqual` on everything but `Mounts`, so a new backend field is covered by adding it.
+  `[[blob.mount]]` is a table the tool reads per call and reloads.
+- **`[blob.s3]` and `addr`/`base_url`/`dir` are two backends, and configuring both is an error.**
+  `BlobConfig.validate` refuses it at startup rather than letting one silently win. Credentials are
+  never config: they come from the environment, so the config file stays non-secret-bearing.
+- **`blob_share` returns the id as well as the URL.** They are for different readers — the agent
+  fetches the URL, another server holding the same bucket credentials reads the object by id. That
+  second half is what carries a file to a consuming server without the agent moving the bytes, and it
+  only means anything under the S3 backend; see `blob/ref.go` for the convention both halves follow.
 - **Nothing translates paths.** `prefix` is the only reason the gateway knows an upstream's
   `/var/lib/x/out.png` is its own `/mnt/x/out.png`. Do not add path guessing, and do not fall back to
   what happens to exist on the gateway's filesystem.

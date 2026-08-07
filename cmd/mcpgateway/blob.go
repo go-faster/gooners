@@ -27,6 +27,11 @@ func blobStoreFor(ctx context.Context, cfg *gateway.Config, lg *slog.Logger) (bl
 		Addr:    cfg.Blob.Addr,
 		Dir:     cfg.Blob.Dir,
 		TTL:     ttl,
+
+		S3Endpoint: cfg.Blob.S3.Endpoint,
+		S3Bucket:   cfg.Blob.S3.Bucket,
+		S3Prefix:   cfg.Blob.S3.Prefix,
+		S3Region:   cfg.Blob.S3.Region,
 	}.Setup(ctx, cmdutil.BlobOptions{
 		Name:   "mcpgateway",
 		Logger: lg.With("component", "blob"),
