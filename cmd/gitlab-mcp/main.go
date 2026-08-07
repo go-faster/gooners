@@ -116,7 +116,7 @@ func main() {
 
 	// Where a downloaded asset goes when the agent cannot read this server's
 	// filesystem. Unset leaves a store that refuses, naming the flag.
-	blobStore, runBlob, err := blobFlags.Setup(cmdutil.BlobOptions{
+	blobStore, runBlob, err := blobFlags.Setup(ctx, cmdutil.BlobOptions{
 		Name:   "gitlab-mcp",
 		Logger: logger.With("component", "blob"),
 	})

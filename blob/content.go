@@ -10,6 +10,8 @@ import (
 
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/go-faster/gooners/internal/blobutil"
 )
 
 // DefaultInlineLimit is the size below which [Content] keeps a payload in the
@@ -47,7 +49,7 @@ func Content(ctx context.Context, s Store, r io.Reader, opts ContentOptions) ([]
 		limit = 0
 	}
 
-	mimeType := contentType(opts.MIMEType, cleanName(opts.Name, "blob"))
+	mimeType := blobutil.ContentType(opts.MIMEType, blobutil.CleanName(opts.Name, "blob"))
 
 	// Read one byte past the limit: that is what distinguishes "fits" from
 	// "does not", and it is the head of the stream either way.

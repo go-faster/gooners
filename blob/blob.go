@@ -23,12 +23,27 @@
 // or a tunnel the advertised URL is not the bind address, and behind mcpgateway
 // it is the upstream's own address, which the gateway does not rewrite.
 //
-// # A URL is a credential
+// # Reaching an object
 //
-// The object id is unguessable and it is the only thing standing between the
-// world and the bytes. It also ends up in the tool result, the session
-// transcript and, for anyone running the OTLP exporters, the logs. Short
-// expiries are therefore mandatory rather than a nicety; see [DefaultTTL].
+// The object id is not an access control mechanism. It is unguessable because
+// that costs nothing, not because anything should rest on it.
+//
+// What guards the bytes is the deployment, in one of three shapes:
+//
+//   - [HTTP] bound to loopback or behind a firewall, up for as long as an agent
+//     is using it. No credential and no multitenancy: whatever the process can
+//     serve, the agent may have. This is the ordinary local case.
+//   - [HTTP] behind authentication the operator put there — a reverse proxy
+//     asking for Basic auth or a bearer token, with the fetching side configured
+//     through netrc or an equivalent. This package's job is to not get in the
+//     way of that, not to implement it.
+//   - A bucket-backed store, where the storage credentials are the boundary and
+//     the URL is a short-lived bearer token derived from them.
+//
+// Only the third makes a URL a credential in its own right. A URL nonetheless
+// outlives the tool call in the transcript and, for anyone running the OTLP
+// exporters, in the logs, so short expiries remain the default; see
+// [DefaultTTL].
 package blob
 
 import (

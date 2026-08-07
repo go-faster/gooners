@@ -6,6 +6,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"github.com/go-faster/gooners/blob"
 )
 
 // TransferStatus is the lifecycle state of a [TransferJob].
@@ -37,6 +39,25 @@ type TransferJob struct {
 	RemotePath string
 	StartedAt  time.Time
 
+	// Source, when set, is what an upload reads instead of LocalPath, and the
+	// job owns closing it. It is how bytes that never touch this host — a blob
+	// another server stored — reach the remote without a staging file.
+	//
+	// LocalPath is empty in that case, so nothing downstream should treat it as
+	// a path. SourceSize is the length if known, for progress reporting only.
+	Source     io.ReadCloser
+	SourceSize int64
+
+	// Sink, when set, is where a download's bytes go instead of LocalPath. The
+	// remote file streams straight into the store, so nothing is written to
+	// this host — which is the point when the agent cannot read this host
+	// anyway.
+	//
+	// LocalPath is empty in that case. SinkName is the file name to store it
+	// as; empty takes the remote path's base name.
+	Sink     blob.Store
+	SinkName string
+
 	// mu guards every field below.
 	mu           sync.Mutex
 	TotalBytes   int64
@@ -47,6 +68,8 @@ type TransferJob struct {
 	Status       TransferStatus
 	Err          error
 	Done         bool
+	// Result is what a Sink download stored, once it has.
+	Result blob.Blob
 
 	cancel  context.CancelCauseFunc
 	closer  io.Closer
@@ -67,6 +90,13 @@ func newTransferJob(parent context.Context, id, sessionID, localPath, remotePath
 		cancel:     cancel,
 		done:       make(chan struct{}),
 	}, ctx
+}
+
+// setResult records what a Sink download stored.
+func (j *TransferJob) setResult(b blob.Blob) {
+	j.mu.Lock()
+	j.Result = b
+	j.mu.Unlock()
 }
 
 func (j *TransferJob) setTotal(n int64) {

@@ -11,7 +11,7 @@ MCP (Model Context Protocol) servers, AI tools, and agent skills built on go-fas
 | [alertmanager-mcp](cmd/alertmanager-mcp) | MCP server for Alertmanager alerts, silences, receivers, and cluster status, plus PromQL validate/evaluate tools (Docker support included) |
 | [opencode-handoff-mcp](cmd/opencode-handoff-mcp) | MCP server for delegating coding tasks to opencode agents and monitoring their sessions |
 | [gitlab-mcp](cmd/gitlab-mcp) | MCP server for GitLab issues, merge requests, releases, and repository browsing; every tool takes a `project`, so no git checkout is required, and `-auth=client` lets each caller supply its own token |
-| [mcpgateway](cmd/mcpgateway) | MCP proxy that aggregates tools from multiple upstream MCP servers (stdio, streamable-http, sse) with per-upstream prefixes, allow/deny globs, description trim, output redaction, optional per-upstream host/path routes, lazy tool listing with `search_tools`/`describe_tools`, `blob_share` for turning an upstream's file path into a fetchable URL, and in-place config reload on SIGHUP or file change |
+| [mcpgateway](cmd/mcpgateway) | MCP proxy that aggregates tools from multiple upstream MCP servers (stdio, streamable-http, sse) with per-upstream prefixes, allow/deny globs, description trim, output redaction, optional per-upstream host/path routes, lazy tool listing with `search_tools`/`describe_tools`, `blob_share` for turning an upstream's file path into a fetchable URL, backed by its own listener or by S3, and in-place config reload on SIGHUP or file change |
 
 ## Packages
 
@@ -19,7 +19,7 @@ Exported packages any MCP server can import, in this repository or outside it.
 
 | Package | Description |
 |---------|-------------|
-| [blob](blob) | Returns files from MCP tools as a fetchable URL instead of loading them into the model's context. An HTTP store on its own listener, expiring unguessable URLs, and a helper that keeps small payloads inline |
+| [blob](blob) | Returns files from MCP tools as a fetchable URL instead of loading them into the model's context. An HTTP store on its own listener, an S3-backed store ([blob/s3](blob/s3)) that also lets one MCP server read what another wrote, expiring URLs, and a helper that keeps small payloads inline |
 
 ## Prompts
 

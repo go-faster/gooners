@@ -56,6 +56,10 @@ func TestBlobShare(t *testing.T) {
 	require.Equal(t, int64(len("image")), out.Size)
 	require.NotEmpty(t, out.ExpiresAt)
 	require.Contains(t, out.URL, "http://gw.invalid/blob/")
+	// The id is what another server reads the object by, so it is reported
+	// alongside the URL rather than only inside it.
+	require.NotEmpty(t, out.Blob)
+	require.Contains(t, out.URL, out.Blob)
 
 	link, ok := res.Content[0].(*mcp.ResourceLink)
 	require.True(t, ok, "got %T", res.Content[0])
@@ -252,6 +256,35 @@ func TestBlobConfigValidate(t *testing.T) {
 			cfg:     BlobConfig{Addr: ":8090", Mounts: []BlobMountConfig{{Name: "m", Dir: absDir("/srv/m"), Prefix: "rel"}}},
 			wantErr: "must be absolute",
 		},
+		{
+			name: "S3",
+			cfg: BlobConfig{
+				S3:     BlobS3Config{Endpoint: "minio:9000", Bucket: "b"},
+				Mounts: []BlobMountConfig{{Name: "m", Dir: absDir("/srv/m")}},
+			},
+		},
+		{
+			name:    "S3WithoutBucket",
+			cfg:     BlobConfig{S3: BlobS3Config{Endpoint: "minio:9000"}},
+			wantErr: "needs s3.bucket",
+		},
+		{
+			name:    "S3AndAddr",
+			cfg:     BlobConfig{Addr: ":8090", S3: BlobS3Config{Endpoint: "minio:9000", Bucket: "b"}},
+			wantErr: "two different backends",
+		},
+		{
+			name:    "S3AndDir",
+			cfg:     BlobConfig{Dir: "/var/tmp/gw", S3: BlobS3Config{Endpoint: "minio:9000", Bucket: "b"}},
+			wantErr: "two different backends",
+		},
+		{
+			// s3.bucket alone does not select the backend, so it is not half a
+			// configuration; it is a section that does nothing.
+			name:    "S3BucketWithoutEndpoint",
+			cfg:     BlobConfig{S3: BlobS3Config{Bucket: "b"}, Mounts: []BlobMountConfig{{Name: "m", Dir: absDir("/srv/m")}}},
+			wantErr: "nothing would serve them",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.cfg.validate()
@@ -318,11 +351,30 @@ func TestBlobRestartRequired(t *testing.T) {
 		{name: "Dir", next: BlobConfig{Addr: base.Addr, BaseURL: base.BaseURL, Dir: "/other", TTL: base.TTL}, want: true},
 		{name: "TTL", next: BlobConfig{Addr: base.Addr, BaseURL: base.BaseURL, Dir: base.Dir, TTL: "1h"}, want: true},
 		{name: "Disabled", next: BlobConfig{}, want: true},
+		{
+			// The bucket is authenticated against once, at startup.
+			name: "S3",
+			next: BlobConfig{S3: BlobS3Config{Endpoint: "minio:9000", Bucket: "b"}},
+			want: true,
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			require.Equal(t, tt.want, blobStoreChanged(base, tt.next))
 		})
 	}
+}
+
+// TestBlobRestartRequiredS3 covers the bucket fields against each other, which
+// the HTTP baseline in [TestBlobRestartRequired] cannot reach.
+func TestBlobRestartRequiredS3(t *testing.T) {
+	base := BlobConfig{S3: BlobS3Config{Endpoint: "minio:9000", Bucket: "b", Prefix: "tenants/alice"}}
+
+	same := base
+	require.False(t, blobStoreChanged(base, same))
+
+	moved := base
+	moved.S3.Prefix = "tenants/bob"
+	require.True(t, blobStoreChanged(base, moved), "the tenancy boundary is fixed at startup")
 }
 
 // TestBlobInstructions checks what a downstream client is actually told at
@@ -443,4 +495,44 @@ func TestBlobShareDescriptionNamesMounts(t *testing.T) {
 		require.Contains(t, got, "/var/lib/second")
 		require.NotContains(t, got, "/var/lib/first", "the old prefix must not still be advertised")
 	})
+}
+
+// TestBlobS3Decode pins the TOML shape, which the validate tests cannot see:
+// [blob.s3] is a sub-table of [blob] while [[blob.mount]] is an array of them,
+// and the two have to coexist under one section.
+func TestBlobS3Decode(t *testing.T) {
+	// The mount dir is a path on this host and has to be absolute for the
+	// platform, hence absDir; a TOML literal string keeps a Windows volume from
+	// being read as an escape. The mount's own prefix is the upstream's
+	// namespace and stays slash-rooted.
+	cfg, err := Decode([]byte(`
+[[upstream]]
+name = "u1"
+kind = "stdio"
+command = ["ignored"]
+
+[blob]
+ttl = "15m"
+
+[blob.s3]
+endpoint = "s3.example.com"
+bucket = "mcp-blobs"
+prefix = "tenants/alice"
+
+[[blob.mount]]
+name = "playwright"
+dir = '` + absDir("/mnt/playwright") + `'
+prefix = "/videos"
+`))
+	require.NoError(t, err)
+	require.Equal(t, BlobS3Config{
+		Endpoint: "s3.example.com",
+		Bucket:   "mcp-blobs",
+		Prefix:   "tenants/alice",
+	}, cfg.Blob.S3)
+	require.True(t, cfg.Blob.Enabled())
+	require.Equal(t, "15m", cfg.Blob.TTL)
+	require.Len(t, cfg.Blob.Mounts, 1)
+	require.Equal(t, absDir("/mnt/playwright"), cfg.Blob.Mounts[0].Dir)
+	require.Equal(t, "/videos", cfg.Blob.Mounts[0].Prefix, "the mount's prefix, not the bucket's")
 }

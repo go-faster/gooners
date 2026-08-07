@@ -225,8 +225,9 @@ func restartRequired(oldCfg, newCfg *Config) []string {
 	if oldCfg.anyLazy() != newCfg.anyLazy() {
 		out = append(out, "tools.lazy")
 	}
-	// The blob store owns a listener and its URLs are minted from base_url, both
-	// fixed when the process started. Its mount list is not here: that reloads.
+	// The blob store is built once, from a listener and a base_url or from a
+	// bucket it authenticated against at startup. Its mount list is not here:
+	// that reloads.
 	if blobStoreChanged(oldCfg.Blob, newCfg.Blob) {
 		out = append(out, "blob")
 	}

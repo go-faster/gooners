@@ -9,6 +9,8 @@ import (
 	"unicode/utf8"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/go-faster/gooners/blob"
 )
 
 const minTransferSampleInterval = 500 * time.Millisecond
@@ -277,22 +279,35 @@ func (p *Pool) handleList(st *poolState, r ListRequest) {
 }
 
 func (p *Pool) handleUpload(st *poolState, r UploadRequest) {
+	// The pool owns r.Source from here, so every path that does not start a job
+	// has to close it or the reader leaks for the life of the process.
+	fail := func(err error) {
+		if r.Source != nil {
+			_ = r.Source.Close()
+		}
+		r.resp <- UploadResponse{Err: err}
+	}
+
 	s, ok := st.sessions[r.SessionID]
 	if !ok {
-		r.resp <- UploadResponse{Err: fmt.Errorf("session not found: %s", r.SessionID)}
+		fail(fmt.Errorf("session not found: %s", r.SessionID))
 		return
 	}
 	// The upload itself goes through p.localFS and would refuse a disallowed
 	// path anyway; rejecting it here only turns an async job failure into an
-	// immediate, legible error.
-	if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
-		r.resp <- UploadResponse{Err: err}
-		return
+	// immediate, legible error. A Source has no local path to check: the bytes
+	// are not this host's.
+	if r.Source == nil {
+		if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
+			fail(err)
+			return
+		}
 	}
 	evict(st.uploads, p.jobRetention, time.Now())
 
 	uploadID := fmt.Sprintf("upload-%d", time.Now().UnixNano())
 	job, uCtx := newTransferJob(s.ctx, uploadID, r.SessionID, r.LocalPath, r.RemotePath)
+	job.Source, job.SourceSize = r.Source, r.SourceSize
 	st.uploads[uploadID] = job
 	go runUpload(uCtx, s.client, p.localFS, job)
 	r.resp <- UploadResponse{UploadID: uploadID}
@@ -395,6 +410,9 @@ type transferSnapshot struct {
 	done            bool
 	status          TransferStatus
 	err             error
+	// result is what a Sink download stored. Read under the job's lock like
+	// everything else here, since the transfer goroutine writes it.
+	result blob.Blob
 }
 
 func newTransferSnapshot(job *TransferJob) transferSnapshot {
@@ -436,6 +454,7 @@ func newTransferSnapshot(job *TransferJob) transferSnapshot {
 		done:            job.Done,
 		status:          job.Status,
 		err:             job.Err,
+		result:          job.Result,
 	}
 }
 
@@ -481,15 +500,19 @@ func (p *Pool) handleDownload(st *poolState, r DownloadRequest) {
 		return
 	}
 	// See handleUpload: p.localFS gates the write regardless; this just fails
-	// fast on a destination it would refuse.
-	if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
-		r.resp <- DownloadResponse{Err: err}
-		return
+	// fast on a destination it would refuse. A Sink download has no local
+	// destination — nothing of this host's is written.
+	if r.Sink == nil {
+		if _, err := p.localFS.Resolve(r.LocalPath); err != nil {
+			r.resp <- DownloadResponse{Err: err}
+			return
+		}
 	}
 	evict(st.downloads, p.jobRetention, time.Now())
 
 	downloadID := fmt.Sprintf("download-%d", time.Now().UnixNano())
 	job, dCtx := newTransferJob(s.ctx, downloadID, r.SessionID, r.LocalPath, r.RemotePath)
+	job.Sink, job.SinkName = r.Sink, r.SinkName
 	st.downloads[downloadID] = job
 	go runDownload(dCtx, s.client, p.localFS, job)
 	r.resp <- DownloadResponse{DownloadID: downloadID}
@@ -518,6 +541,7 @@ func downloadStatus(job *TransferJob) DownloadStatusResponse {
 		Done:            s.done,
 		Status:          s.status,
 		Err:             s.err,
+		Blob:            s.result,
 	}
 }
 

@@ -176,11 +176,19 @@ The agent reads the path out of the upstream's own reply and hands it back:
 ```
 example_mcp_get_file → "wrote /var/lib/example-mcp/out.png"
 blob_share {"path": "/var/lib/example-mcp/out.png"}
-  → https://gw.example.com/blob/<id>/out.png
+  → url:  https://gw.example.com/blob/<id>/out.png
+    blob: <id>
 ```
 
 Nothing is copied: the file is served in place, and the reference expiring never deletes it. The URL
-embeds an unguessable id, is the only thing guarding the bytes, and stops working after `ttl`.
+stops working after `ttl`; put the listener somewhere only the agent reaches, or behind a proxy that
+authenticates, since the id is not an access control mechanism.
+
+The result carries two references because it has two readers. `url` is for the agent, which has no
+storage credentials. `blob` is the object's id, which another server configured against the same
+store reads directly — that is what lets the file go on to, say, `ssh-mcp`'s `upload_file` without
+the agent fetching and re-uploading the bytes. With the built-in listener the id is only meaningful
+to this gateway; see the bucket backend below for the case where it is not.
 
 A few things worth knowing before relying on it:
 
@@ -200,6 +208,46 @@ A few things worth knowing before relying on it:
   the host.
 
 Without `[blob]` the tool is not registered at all, and the name stays available to upstreams.
+
+### Storing shared files in a bucket
+
+The listener above is reachable from wherever its address is, and its ids mean nothing outside this
+process. When the servers that should consume a shared file are not on the gateway's machine, point
+the store at S3 instead:
+
+```toml
+[blob]
+ttl = "15m"                                    # how long a presigned URL keeps working
+
+[blob.s3]
+endpoint = "minio.example.com:9000"            # host[:port] or an http(s) URL
+bucket = "mcp-blobs"                           # must already exist
+prefix = "tenants/alice"                       # key prefix; the tenancy boundary
+# region = "us-east-1"                         # optional for MinIO
+
+[[blob.mount]]
+name = "playwright"
+dir = "/mnt/playwright"
+prefix = "/videos"
+```
+
+`endpoint` selects the backend, so `addr`, `base_url` and `dir` must not also be set — they configure
+the other one, and the gateway refuses a section naming both. Credentials come from the environment
+(`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, `MINIO_ROOT_USER`/`MINIO_ROOT_PASSWORD`, or
+`~/.aws/credentials`), never from the config file. The bucket is checked at startup, so a wrong
+endpoint or a missing bucket fails to boot rather than at the first call.
+
+What changes for the agent: `url` is now a presigned URL and needs no listener of the gateway's, and
+`blob` is an id any server configured against the same bucket and prefix can read. That is the whole
+of the cross-machine case — a Playwright container writes a video to a volume the gateway mounts,
+`blob_share` uploads it, and a server on another host consumes the id.
+
+`prefix` is the boundary between tenants: a store configured on `tenants/alice` can neither read nor
+write outside it, whatever id it is handed. Give each user their own, and note that everything under
+one prefix is shared — the gateway is one process serving all of its clients.
+
+Objects are uploaded rather than served in place, so they occupy the bucket after `ttl` expires the
+URL. Set a lifecycle rule on the prefix; the gateway does not delete anything.
 
 ## Config reload
 
@@ -231,8 +279,9 @@ values keep running:
 - `[telemetry]` — exporters are wired at startup
 - toggling `tools.lazy` on or off across the whole config, which decides whether the discovery tools
   and lazy middleware are installed on the server
-- `[blob]` except its mounts — the store owns a listener and mints URLs from `base_url`, both fixed
-  at startup. `[[blob.mount]]` is not in this list: which directories are shared does reload
+- `[blob]` and `[blob.s3]` except the mounts — the store is built once, from a listener and a
+  `base_url` or from a bucket it authenticated against at startup. `[[blob.mount]]` is not in this
+  list: which directories are shared does reload
 
 Metrics:
 

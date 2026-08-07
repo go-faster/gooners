@@ -321,8 +321,12 @@ func TestHTTPNameHandling(t *testing.T) {
 	})
 }
 
-// TestHTTPIDsAreUnguessable: the id is the only credential guarding the bytes.
-func TestHTTPIDsAreUnguessable(t *testing.T) {
+// TestHTTPIDsAreDistinct: ids must not collide, since a repeat would serve one
+// caller's bytes to another. Unguessability is a second layer rather than the
+// boundary — see "Reaching an object" in the package documentation — but the
+// version nibble is asserted because a time-ordered UUID would make an id
+// partly predictable and would leak when it was minted.
+func TestHTTPIDsAreDistinct(t *testing.T) {
 	ctx := t.Context()
 	s, _, _ := newStore(t, blob.HTTPOptions{})
 
@@ -330,7 +334,8 @@ func TestHTTPIDsAreUnguessable(t *testing.T) {
 	for range 64 {
 		b, err := s.Put(ctx, strings.NewReader("x"), blob.PutOptions{Name: "s.txt"})
 		require.NoError(t, err)
-		require.Len(t, b.ID, 32, "128 bits, hex encoded")
+		require.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`,
+			b.ID, "a random (version 4) UUID")
 		require.NotContains(t, seen, b.ID)
 		seen[b.ID] = struct{}{}
 	}

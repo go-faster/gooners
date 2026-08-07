@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
@@ -26,6 +28,9 @@ type dummyPool struct {
 	// written through it, so it — not the handler — decides what is reachable.
 	// Nil denies everything, as a pool with no LocalFS configured does.
 	localFS effect.FS
+	// lastBlob is what the most recent DownloadTo stored, since the real pool
+	// reports it through download_status rather than returning it.
+	lastBlob blob.Blob
 }
 
 func (p *dummyPool) fs() effect.FS {
@@ -70,6 +75,21 @@ func (p *dummyPool) Upload(ctx context.Context, sessionID, localPath, remotePath
 	return "upload-123", nil
 }
 
+// UploadFrom mirrors [dummyPool.Upload] for bytes that are not a local file,
+// and closes src the way the real pool does.
+func (p *dummyPool) UploadFrom(_ context.Context, _ string, src io.ReadCloser, _ int64, remotePath string) (string, error) {
+	defer func() { _ = src.Close() }()
+
+	data, err := io.ReadAll(src)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(remotePath, data, 0o600); err != nil {
+		return "", err
+	}
+	return "upload-blob-123", nil
+}
+
 func (p *dummyPool) UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error) {
 	return session.UploadStatusResponse{
 		UploadID:      uploadID,
@@ -97,6 +117,32 @@ func (p *dummyPool) Download(ctx context.Context, sessionID, remotePath, localPa
 		return "", err
 	}
 	return "download-123", nil
+}
+
+// DownloadTo mirrors [dummyPool.Download] for a download that goes into a store
+// instead of onto this host.
+func (p *dummyPool) DownloadTo(ctx context.Context, _, remotePath, name string, sink blob.Store) (string, error) {
+	sftpClient, err := sftp.NewClient(p.client)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = sftpClient.Close() }()
+
+	src, err := sftpClient.Open(remotePath)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = src.Close() }()
+
+	if name == "" {
+		name = filepath.Base(remotePath)
+	}
+	b, err := sink.Put(ctx, src, blob.PutOptions{Name: name})
+	if err != nil {
+		return "", err
+	}
+	p.lastBlob = b
+	return "download-blob-123", nil
 }
 
 func (p *dummyPool) DownloadStatus(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error) {
@@ -378,7 +424,7 @@ func TestUploadFileHandler_Security(t *testing.T) {
 	defer cleanup()
 
 	tmpRoot := t.TempDir()
-	handler := uploadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)})
+	handler := uploadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)}, nil)
 
 	// Create a file OUTSIDE the allowed root
 	outsideFile := filepath.Join(t.TempDir(), "outside.txt")
@@ -439,7 +485,7 @@ func TestDownloadFileHandler(t *testing.T) {
 	defer cleanup()
 
 	tmpRoot := t.TempDir()
-	handler := downloadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)})
+	handler := downloadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)}, nil)
 
 	remotePath := filepath.Join(t.TempDir(), "remote.txt")
 	require.NoError(t, os.WriteFile(remotePath, []byte("remote content"), 0o644))
@@ -470,7 +516,7 @@ func TestDownloadFileHandler_Security(t *testing.T) {
 	defer cleanup()
 
 	tmpRoot := t.TempDir()
-	handler := downloadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)})
+	handler := downloadFileHandler(&dummyPool{client: client, localFS: effect.Root(tmpRoot)}, nil)
 
 	// Try to download OUTSIDE the allowed root
 	outsideFile := filepath.Join(t.TempDir(), "outside.txt")

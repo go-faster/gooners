@@ -52,13 +52,17 @@ type blobShareInput struct {
 }
 
 type blobShareOutput struct {
-	URL string `json:"url" jsonschema:"temporary URL to fetch the file from, e.g. with curl"`
+	// Blob is the stored object's id, which another server configured against
+	// the same store reads directly. It is what carries the file onward — to an
+	// upload tool, say — without the agent fetching and re-uploading it.
+	Blob string `json:"blob" jsonschema:"id of the stored file; pass it to another tool's blob argument to hand the file over without downloading it"`
+	URL  string `json:"url" jsonschema:"temporary URL to fetch the file from, e.g. with curl"`
 	// Mount names which shared directory answered, so an agent that guessed
 	// wrong can tell why it got the file it did.
 	Mount     string `json:"mount"`
 	Name      string `json:"name"`
 	Size      int64  `json:"size" jsonschema:"file size in bytes"`
-	ExpiresAt string `json:"expires_at" jsonschema:"RFC 3339 timestamp after which url stops working"`
+	ExpiresAt string `json:"expires_at" jsonschema:"RFC 3339 timestamp after which url stops working; the blob id may still be usable"`
 }
 
 // blobInstructions tells the model that a host path is not a dead end. A tool
@@ -131,6 +135,7 @@ func (g *Gateway) handleBlobShare(ctx context.Context, _ *mcp.CallToolRequest, i
 	}
 
 	out := blobShareOutput{
+		Blob:      b.ID,
 		URL:       b.URL,
 		Mount:     mount.name,
 		Name:      b.Name,

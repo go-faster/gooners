@@ -11,10 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/session"
 	"github.com/go-faster/gooners/internal/sshutil"
 	"github.com/go-faster/gooners/internal/tools/mcputil"
@@ -29,10 +31,12 @@ type SessionProvider interface {
 	Get(ctx context.Context, id string) (*ssh.Client, error)
 	SFTP(ctx context.Context, id string) (*sftp.Client, error)
 	Upload(ctx context.Context, sessionID, localPath, remotePath string) (string, error)
+	UploadFrom(ctx context.Context, sessionID string, src io.ReadCloser, size int64, remotePath string) (string, error)
 	UploadStatus(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
 	UploadWait(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
 	UploadCancel(ctx context.Context, sessionID, uploadID string) (session.UploadStatusResponse, error)
 	Download(ctx context.Context, sessionID, remotePath, localPath string) (string, error)
+	DownloadTo(ctx context.Context, sessionID, remotePath, name string, sink blob.Store) (string, error)
 	DownloadStatus(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
 	DownloadWait(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
 	DownloadCancel(ctx context.Context, sessionID, downloadID string) (session.DownloadStatusResponse, error)
@@ -40,7 +44,15 @@ type SessionProvider interface {
 	RunWithOptions(ctx context.Context, sessionID string, cmd string, opts sshutil.RunOptions) (sshutil.Result, error)
 }
 
-func Register(s *mcp.Server, p SessionProvider) {
+// Options configures the registrations in this package.
+type Options struct {
+	// Blob is the store upload_file resolves a blob id against. A nil store
+	// leaves the argument refusing with an error naming the missing flag, which
+	// is the same failure mode as a server started without one.
+	Blob blob.Store
+}
+
+func Register(s *mcp.Server, p SessionProvider, opts Options) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "ls", Description: "List directory contents on remote machine using SFTP (returns JSON) with shell fallback.", Flags: mcputil.ReadOnly}, lsHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "cat", Description: "Read file contents (truncated) from remote using SFTP with shell fallback.", Flags: mcputil.ReadOnly}, catHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "grep", Description: "Search file contents on remote.", Flags: mcputil.ReadOnly}, grepHandler(p))
@@ -49,7 +61,7 @@ func Register(s *mcp.Server, p SessionProvider) {
 	mcputil.Register(s, mcputil.ToolDef{Name: "du", Description: "Get directory or file size (disk usage).", Flags: mcputil.ReadOnly}, duHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "truncate", Description: "Truncate file to given size on remote via SFTP.", Flags: mcputil.Destructive}, truncateHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "write_file", Description: "Write or overwrite a file on remote via SFTP.", Flags: mcputil.Destructive}, writeFileHandler(p))
-	RegisterFileTransfer(s, p)
+	RegisterFileTransfer(s, p, opts)
 }
 
 // RegisterFileTransfer registers upload_file/download_file and their status
@@ -57,12 +69,12 @@ func Register(s *mcp.Server, p SessionProvider) {
 // [session.PoolOptions.LocalFS], not an argument here — a server that grants no
 // host file access gets tools that fail closed rather than tools that need a
 // root passed correctly.
-func RegisterFileTransfer(s *mcp.Server, p SessionProvider) {
-	mcputil.Register(s, mcputil.ToolDef{Name: "upload_file", Description: "Upload a local file asynchronously to remote path via SFTP. Local path must be within the server's working directory. Returns an upload_id."}, uploadFileHandler(p))
+func RegisterFileTransfer(s *mcp.Server, p SessionProvider, opts Options) {
+	mcputil.Register(s, mcputil.ToolDef{Name: "upload_file", Description: "Upload a file asynchronously to a remote path via SFTP, from either a local path within the server's working directory or a blob another tool stored. Returns an upload_id."}, uploadFileHandler(p, opts.Blob))
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_status", Description: "Check the status of an asynchronous file upload.", Flags: mcputil.ReadOnly}, uploadStatusHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_wait", Description: "Wait for an asynchronous file upload to complete and return its final status.", Flags: mcputil.ReadOnly}, uploadWaitHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "upload_cancel", Description: "Cancel an asynchronous file upload and return its final status.", Flags: mcputil.Destructive}, uploadCancelHandler(p))
-	mcputil.Register(s, mcputil.ToolDef{Name: "download_file", Description: "Download a remote file asynchronously to local path via SFTP. Local path must be within the server's working directory. Returns a download_id."}, downloadFileHandler(p))
+	mcputil.Register(s, mcputil.ToolDef{Name: "download_file", Description: "Download a remote file asynchronously via SFTP, to a local path within the server's working directory or, with to_blob, to the blob store as a fetchable URL. Returns a download_id."}, downloadFileHandler(p, opts.Blob))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_status", Description: "Check the status of an asynchronous file download.", Flags: mcputil.ReadOnly}, downloadStatusHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_wait", Description: "Wait for an asynchronous file download to complete and return its final status.", Flags: mcputil.ReadOnly}, downloadWaitHandler(p))
 	mcputil.Register(s, mcputil.ToolDef{Name: "download_cancel", Description: "Cancel an asynchronous file download and return its final status.", Flags: mcputil.Destructive}, downloadCancelHandler(p))
@@ -434,8 +446,10 @@ func writeFileHandler(p SessionProvider) mcp.ToolHandlerFor[writeFileParams, mcp
 }
 
 type uploadFileParams struct {
+	blob.Source
+
 	SessionID  string  `json:"session_id" jsonschema:"The ID of the SSH session"`
-	LocalPath  string  `json:"local_path" jsonschema:"Local path on the MCP server to upload from"`
+	LocalPath  string  `json:"local_path,omitempty" jsonschema:"Local path on the MCP server to upload from; give this or blob, not both"`
 	RemotePath string  `json:"remote_path" jsonschema:"Remote path to upload to"`
 	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds for queuing the request"`
 }
@@ -443,10 +457,21 @@ type uploadFileParams struct {
 // uploadFileHandler passes local_path to the pool unvalidated, by design: the
 // pool reads it through a confined filesystem that refuses anything outside its
 // root. See [session.PoolOptions.LocalFS].
-func uploadFileHandler(p SessionProvider) mcp.ToolHandlerFor[uploadFileParams, mcputil.UploadResult] {
+//
+// A blob id takes a different route entirely. It names an object in the store
+// this server was configured with, so there is no path and no host for the
+// caller to choose — which is what lets a file another server produced reach the
+// remote without ever landing on this one.
+func uploadFileHandler(p SessionProvider, store blob.Store) mcp.ToolHandlerFor[uploadFileParams, mcputil.UploadResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args uploadFileParams) (*mcp.CallToolResult, mcputil.UploadResult, error) {
-		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
-			return nil, mcputil.UploadResult{}, fmt.Errorf("session_id, local_path and remote_path are required")
+		if args.SessionID == "" || args.RemotePath == "" {
+			return nil, mcputil.UploadResult{}, fmt.Errorf("session_id and remote_path are required")
+		}
+		switch {
+		case args.LocalPath == "" && args.Blob == "":
+			return nil, mcputil.UploadResult{}, fmt.Errorf("one of local_path or blob is required")
+		case args.LocalPath != "" && args.Blob != "":
+			return nil, mcputil.UploadResult{}, fmt.Errorf("local_path and blob name two different sources: give one")
 		}
 		timeout := 60.0
 		if args.TimeoutSec > 0 {
@@ -454,7 +479,16 @@ func uploadFileHandler(p SessionProvider) mcp.ToolHandlerFor[uploadFileParams, m
 		}
 		uploadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		uploadID, err := p.Upload(uploadCtx, args.SessionID, args.LocalPath, args.RemotePath)
+
+		var (
+			uploadID string
+			err      error
+		)
+		if args.Blob != "" {
+			uploadID, err = uploadBlob(uploadCtx, p, store, args)
+		} else {
+			uploadID, err = p.Upload(uploadCtx, args.SessionID, args.LocalPath, args.RemotePath)
+		}
 		if err != nil {
 			return nil, mcputil.UploadResult{}, err
 		}
@@ -463,6 +497,16 @@ func uploadFileHandler(p SessionProvider) mcp.ToolHandlerFor[uploadFileParams, m
 			Content: []mcp.Content{&mcp.TextContent{Text: mustJSON(out)}},
 		}, out, nil
 	}
+}
+
+// uploadBlob resolves a blob id and hands the reader to the pool, which owns
+// closing it from that point on.
+func uploadBlob(ctx context.Context, p SessionProvider, store blob.Store, args uploadFileParams) (string, error) {
+	r, b, err := args.Source.Open(ctx, store)
+	if err != nil {
+		return "", err
+	}
+	return p.UploadFrom(ctx, args.SessionID, r, b.Size, args.RemotePath)
 }
 
 type uploadStatusParams struct {
@@ -547,16 +591,31 @@ func mustJSON(v any) string {
 type downloadFileParams struct {
 	SessionID  string  `json:"session_id" jsonschema:"The ID of the SSH session"`
 	RemotePath string  `json:"remote_path" jsonschema:"Remote path to download from"`
-	LocalPath  string  `json:"local_path" jsonschema:"Local path on the MCP server to download to"`
+	LocalPath  string  `json:"local_path,omitempty" jsonschema:"Local path on the MCP server to download to; give this or to_blob, not both"`
+	ToBlob     bool    `json:"to_blob,omitempty" jsonschema:"store the file in the blob store instead of on this server, and return an id and URL on download_status/download_wait; use it when you cannot read this server's filesystem"`
+	Name       string  `json:"name,omitempty" jsonschema:"file name to store it as with to_blob; defaults to the remote path's base name"`
 	TimeoutSec float64 `json:"timeout_s,omitempty" jsonschema:"Timeout in seconds for queuing the request"`
 }
 
 // downloadFileHandler passes local_path to the pool unvalidated. See
 // [uploadFileHandler].
-func downloadFileHandler(p SessionProvider) mcp.ToolHandlerFor[downloadFileParams, mcputil.DownloadResult] {
+//
+// to_blob has no local path at all: the remote file streams straight into the
+// store, so nothing lands on this host. The stored object appears on
+// download_status and download_wait rather than here, because the transfer has
+// not happened yet when this returns.
+func downloadFileHandler(p SessionProvider, store blob.Store) mcp.ToolHandlerFor[downloadFileParams, mcputil.DownloadResult] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, args downloadFileParams) (*mcp.CallToolResult, mcputil.DownloadResult, error) {
-		if args.SessionID == "" || args.LocalPath == "" || args.RemotePath == "" {
-			return nil, mcputil.DownloadResult{}, fmt.Errorf("session_id, local_path and remote_path are required")
+		if args.SessionID == "" || args.RemotePath == "" {
+			return nil, mcputil.DownloadResult{}, fmt.Errorf("session_id and remote_path are required")
+		}
+		switch {
+		case args.LocalPath == "" && !args.ToBlob:
+			return nil, mcputil.DownloadResult{}, fmt.Errorf("one of local_path or to_blob is required")
+		case args.LocalPath != "" && args.ToBlob:
+			return nil, mcputil.DownloadResult{}, fmt.Errorf("local_path and to_blob name two different destinations: give one")
+		case args.ToBlob && store == nil:
+			return nil, mcputil.DownloadResult{}, errors.Wrap(blob.ErrDenied, "this server was started without a blob store")
 		}
 		timeout := 60.0
 		if args.TimeoutSec > 0 {
@@ -564,7 +623,16 @@ func downloadFileHandler(p SessionProvider) mcp.ToolHandlerFor[downloadFileParam
 		}
 		downloadCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 		defer cancel()
-		downloadID, err := p.Download(downloadCtx, args.SessionID, args.RemotePath, args.LocalPath)
+
+		var (
+			downloadID string
+			err        error
+		)
+		if args.ToBlob {
+			downloadID, err = p.DownloadTo(downloadCtx, args.SessionID, args.RemotePath, args.Name, store)
+		} else {
+			downloadID, err = p.Download(downloadCtx, args.SessionID, args.RemotePath, args.LocalPath)
+		}
 		if err != nil {
 			return nil, mcputil.DownloadResult{}, err
 		}
@@ -641,6 +709,12 @@ func downloadStatusResult(status session.DownloadStatusResponse) mcputil.Downloa
 		ETASeconds:      status.ETASeconds,
 		Done:            status.Done,
 		Status:          string(status.Status),
+	}
+	// A to_blob download reports what it stored here rather than on
+	// download_file, which returns before the transfer has happened.
+	if status.Blob.ID != "" {
+		result := status.Blob.Result()
+		sr.Blob = &result
 	}
 	if status.Err != nil {
 		sr.Error = status.Err.Error()

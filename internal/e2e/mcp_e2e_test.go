@@ -108,7 +108,7 @@ func getSharedEnv(t *testing.T) *testEnv {
 		s := mcp.NewServer(&mcp.Implementation{Name: "ssh-mcp-e2e", Version: "test"}, nil)
 		uploadRoot := sharedUploadRoot
 		core.Register(s, p, core.RegisterOptions{})
-		fs.Register(s, p)
+		fs.Register(s, p, fs.Options{})
 		sysinfo.Register(s, p)
 		proc.Register(s, p)
 		disk.Register(s, p)

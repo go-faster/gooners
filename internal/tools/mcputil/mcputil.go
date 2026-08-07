@@ -8,6 +8,8 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/go-faster/gooners/blob"
+
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/session"
@@ -146,6 +148,9 @@ type DownloadStatusResult struct {
 	// Status is one of running, completed, failed, canceled.
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
+	// Blob is the stored object, for a download started with to_blob. It
+	// appears once the transfer completes.
+	Blob *blob.Result `json:"blob,omitempty"`
 }
 
 // PingResult for ssh_ping.
