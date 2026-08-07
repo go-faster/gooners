@@ -40,7 +40,7 @@ golangci-lint run ./...
 blob/                 ← THE ONLY EXPORTED PACKAGE. Turns tool output into a fetchable URL instead of
                         context. blob.Store is the interface; blob.NewHTTP serves objects from a
                         confined directory on its own listener; blob.Content keeps small payloads
-                        inline. See "blob package" below.
+                        inline. See `blob/CLAUDE.md`.
 cmd/ssh-mcp/          ← MCP server binary (go build ./cmd/ssh-mcp)
 cmd/grafana-dashboard-mcp/ ← MCP server binary (go build ./cmd/grafana-dashboard-mcp)
 cmd/alertmanager-mcp/ ← MCP server binary (go build ./cmd/alertmanager-mcp)
@@ -52,6 +52,8 @@ internal/
                         effect.OS() is unconfined and belongs only where paths are the operator's or a
                         test's. effect.NewHTTPClient(HTTPOptions) applies an egress HTTPPolicy on the
                         request, on redirects, and on the post-DNS resolved IP. See "effect providers" below.
+  gateway/            ← mcpgateway proxy: upstream supervision, feature registries, routing,
+                        config reload, blob_share. See internal/gateway/CLAUDE.md.
   mcputil/            ← Standardized MCP server config, prompts, and log streaming
   session/            ← SSH session pool & async upload tracking. PoolOptions.LocalFS is the one gate on
                         host files a tool can reach; PoolOptions.SpoolFS holds overflow output.
@@ -61,7 +63,7 @@ internal/
     core/             ← ssh_open, ssh_exec, ssh_close, ssh_once_exec, ssh_ping, ssh_read_output, ssh_save_output
     disk/             ← disk_df, disk_lsblk, disk_mounts
     fs/               ← ls, cat, find, grep, stat, du, truncate, upload_file, write_file
-    gitlab/           ← issue_*, mr_*, release_*, repo_* (see "gitlab-mcp" below)
+    gitlab/           ← issue_*, mr_*, release_*, repo_* (see internal/tools/gitlab/CLAUDE.md)
     grafana/          ← add_dashboard, add_panel, add_query, export_dashboard, etc.
     proc/             ← proc_list, proc_info, proc_lsof, proc_kill
     sysinfo/          ← sys_mem, sys_net_addrs, sys_os_info, sys_uptime
@@ -90,164 +92,24 @@ call site — enforces policy. This is a security invariant, not a style prefere
 - A binary declares what it may touch by what it passes to `session.NewPool`. `ssh-mcp` passes
   `LocalFS: effect.Root(cwd)`.
 
-### blob package (issue #67)
+### Component guides
 
-`blob` is the module's **only exported package**, so every change to it is a public API change that
-`gotd/tgmcp` and other outside servers depend on. Keep it that way:
+Rules that constrain one component live next to its code, and an assistant editing there picks them
+up automatically. Put a new rule in the narrowest file that covers it; this one is for what applies
+repo-wide.
 
-- **Nothing in `blob`'s exported API may name an `internal/` type.** `blob.FS` is a blob-owned
-  interface, not `effect.FS`, and `blob.Dir` returns it — an outside importer cannot import
-  `internal/effect` to construct one. `effect.FS` does *not* satisfy `blob.FS` automatically: Go
-  interface types are identical only when they are the same declaration, which is why `effectFS` in
-  `blob/dir.go` exists. Widen `blob.FS` and that adapter must grow with it.
-- **`blob` stays dependency-light** — stdlib, `go-faster/errors`, the MCP SDK, and `internal/effect`.
-  Every dependency it takes lands in the go.mod of everyone who imports it.
-- **A store that cannot advertise a reachable URL is `blob.Deny`, never a store minting URLs.**
-  `HTTPOptions.BaseURL` is required for exactly this reason. Returning an unreachable URL is the
-  plausible-wrong-answer failure the package exists to remove, so it must be an error naming the flag.
-- **The object id is the only credential.** 128 bits from `crypto/rand`, short TTL, and unknown /
-  expired / malformed ids all return the same 404 — distinguishing them is an oracle. A URL also
-  outlives the call in the transcript and the logs, so lengthening the default TTL needs a reason.
-- **The store serves attacker-influenced bytes on the operator's origin.** `attachment`, `nosniff`,
-  and a downgrade of types a browser executes are not optional; `Range` support is, and it stays,
-  because resuming a large fetch is half the point.
-- **Do not add a `ReadDir` to `effect.FS` for the sweep.** The index is in memory and `objectsDir` is
-  cleared at startup, which is what lets the store stay inside the existing filesystem interface.
-- A tool that produces bytes calls `blob.Content`, which decides inline vs link. Do not reimplement
-  that threshold in a handler, and do not put it inside a `Store`: storage is not content policy.
-- **`Attach` borrows bytes; `Put` owns them.** An attached object's file belongs to whoever wrote it,
-  so expiry, `Delete` and shutdown drop the reference only. A sweep that removes an attached file
-  would empty the volume a gateway was serving — `object.attached` is what prevents that.
-
-### mcpgateway blob_share
-
-`blob_share` turns a host path an upstream reported into a URL, for the case where an upstream
-writes to a directory the gateway sees through a bind mount. Upstreams need no changes.
-
-- **The store is passed in through `Options.Blob`; the mounts come from config.** The store owns a
-  listener and mints URLs from `base_url`, which a live reload cannot move, so `[blob]` minus its
-  mounts is in `restartRequired`. `[[blob.mount]]` is a table the tool reads per call and reloads.
-- **Nothing translates paths.** `prefix` is the only reason the gateway knows an upstream's
-  `/var/lib/x/out.png` is its own `/mnt/x/out.png`. Do not add path guessing, and do not fall back to
-  what happens to exist on the gateway's filesystem.
-- **Do not rewrite paths out of tool results.** It was considered and rejected: matching paths in
-  prose rewrites them inside error messages and code snippets, and misses upstreams that never print
-  one. If this is ever added, it must key off declared structured-content fields, never a regex.
-- `reservedTool` gates each gateway tool name on its own feature. A gateway without a blob store must
-  not reserve `blob_share` against an upstream that happens to use the name.
-- **The mount list belongs in the tool description, not in the instructions.** Instructions are handed
-  to the transport once at startup while `[[blob.mount]]` reloads in place, so a list embedded there
-  goes stale; `blobShareDescription` builds it and `Reload` re-registers the tool when the mounts
-  change, which emits `listChanged`. `blobInstructions` stays a fixed pointer sentence naming no
-  path — keep it that way.
-
-### mcpgateway config reload (issue #26)
-
-`Gateway.Reload` applies a new `*Config` to the running gateway; *where that config comes from* is
-not its problem. Keep the split:
-
-- **`Source` supplies configs, `Reloader` decides when and reports the outcome, `Gateway` only
-  applies.** Do not add file paths, poll intervals, signal handling, or reload metrics to `Gateway`
-  — that state belongs in `FileSource`/`Reloader`, which are testable without a gateway.
-- **Reload must never take the running config down.** Validate, build the secret resolver, the
-  redactor and every new `*Upstream` *before* mutating live state, so a bad config leaves the
-  previous one serving. A reload that half-applies is worse than one that is refused.
-- **Do not swap `g.server`.** Downstream sessions are bound to it; the whole point of reload is that
-  clients keep their session and learn the new tool set through `listChanged`. Detaching an upstream
-  therefore syncs it against an empty feature set (the normal removal path) instead of rebuilding.
-- A config section that cannot be applied in place goes in `restartRequired`, never silently
-  ignored. Anything captured once at startup (server identity, HTTP middleware, telemetry exporters,
-  whether the lazy middleware is installed) is in that category.
-- Reloadable state on `Gateway` (`cfg`, `resolver`, `upstreams`) is guarded by `stateMu`; read it
-  through `config()`/`secretResolver()`/`upstreamList()`, never the field directly.
-
-### mcpgateway startup
-
-- **Nothing an upstream does may block the gateway from listening.** The transport starts before
-  `Build`, and `Build` runs alongside it; the reloader is sequenced *after* `Build` so a SIGHUP
-  cannot race the registration it would replace.
-- **Every pre-serving upstream request is bounded.** `withCallTimeout` is for tool calls and is
-  deliberately unlimited by default; feature listings use `withListTimeout`, which falls back to the
-  connect timeout. Switching a `List*` method back to `withCallTimeout` reintroduces a gateway that
-  never starts when an upstream stalls after the handshake — `TestListTimeoutBoundsListing` guards it.
-- **`/health` is liveness, `Gateway.Ready` behind `/readyz` is readiness.** Readiness means the
-  initial `Build` finished, nothing more. Do not make it depend on upstreams being connected: they
-  reconnect on their own, and one broken dependency must not pull a working gateway out of rotation.
+| File | Covers |
+|---|---|
+| `blob/CLAUDE.md` | the module's only exported package: API surface, credentials, `Attach` vs `Put` |
+| `internal/gateway/CLAUDE.md` | mcpgateway internals: startup ordering, config reload, `blob_share` |
+| `cmd/mcpgateway/CLAUDE.md` | the gateway binary and its operator-facing docs |
+| `internal/tools/gitlab/CLAUDE.md` | gitlab-mcp tool design: `project`, summary types, credentials |
+| `cmd/<name>/CLAUDE.md` | how to build and run each binary |
 
 ## Key Dependencies
 
 - `github.com/modelcontextprotocol/go-sdk` — MCP server/tool SDK; all tool registrations call `mcp.NewServer` and pass a `session.Pool` or local state.
 - `github.com/grafana/grafana-foundation-sdk/go` — Official Go SDK for Grafana dashboard schema definitions and builders.
-
-## ssh-mcp Build
-
-```bash
-go build ./cmd/ssh-mcp
-# Run with default stdio transport (for Claude Code / Claude Desktop):
-./ssh-mcp
-# Or HTTP transport with debug logging:
-./ssh-mcp -transport streamable-http -addr :8080 -log-file /tmp/ssh-mcp.log
-```
-
-## grafana-dashboard-mcp Build
-
-```bash
-go build ./cmd/grafana-dashboard-mcp
-# Run with default stdio transport:
-./grafana-dashboard-mcp
-# Or HTTP transport with debug logging and custom session dir:
-./grafana-dashboard-mcp -transport streamable-http -addr :8081 -sessions-dir /tmp/sessions -log-file /tmp/grafana-mcp.log
-```
-
-## alertmanager-mcp Build
-
-```bash
-go build ./cmd/alertmanager-mcp
-# Run with default stdio transport:
-./alertmanager-mcp
-# Or HTTP transport with debug logging:
-./alertmanager-mcp -transport streamable-http -addr :8082 -log-file /tmp/alertmanager-mcp.log
-```
-
-## gitlab-mcp Build
-
-```bash
-go build ./cmd/gitlab-mcp
-# Run with default stdio transport (credentials come from the glab CLI config):
-./gitlab-mcp
-# Pin a default project and enable the release asset tools:
-./gitlab-mcp -project mygroup/myproject -assets-dir ./assets
-# Or HTTP transport with debug logging:
-./gitlab-mcp -transport streamable-http -addr :8083 -log-file /tmp/gitlab-mcp.log
-# Shared server where each caller sends its own token on PRIVATE-TOKEN/Authorization:
-./gitlab-mcp -transport streamable-http -addr :8083 -auth client -tls-cert-file c.pem -tls-key-file k.pem
-```
-
-`gitlab-mcp` deliberately does **not** wrap the `glab` CLI. It calls
-`gitlab.com/gitlab-org/api/client-go` directly, which is what lets every tool take a `project`
-argument; glab's own MCP server hides `--repo` from its tool schemas and so requires a checkout.
-Keep this property when adding tools:
-
-- **Every tool takes `project`**, optional only when `Config.DefaultProject` is set. Never resolve a
-  project from the working directory or a git remote.
-- **Return a compact summary type, not the API struct.** `gl.Issue` has ~40 fields; `IssueSummary` has
-  the ones an agent uses. Cap anything unbounded (descriptions, file contents, diffs) and set an
-  explicit `*_truncated` field rather than silently cutting.
-- Do not add merge, approve, or delete tools. The absence is the design.
-- **The credential may vary per session; the instance URL may not.** `-auth=client` takes each caller's
-  token off a `PRIVATE-TOKEN`/`Authorization` header and `ClientSet` builds a `Client` per token. Never
-  extend this to let a caller choose the host: the server would then send its own token, or another
-  user's, to an attacker-named destination. `effect.AllowHostOf(cfg.BaseURL)` is what pins it.
-- A tool handler must take its `*Client` from the closure it was registered with — that is the session's
-  credential. Do not reach for a package-level or `Config`-level token inside a handler.
-- Release asset tools reach host files only via `Config.FS`; a nil FS means `effect.Deny`. Asset
-  downloads follow a URL that project content chose, so they rely on the HTTP client's allowlist.
-- `release_asset_download` writes to `path` when given and to `Config.Blob` when not. A host path is
-  useless to an agent that does not share this filesystem, so neither destination is the default and
-  a missing store is an error naming `-blob-addr`. Its MIME type is guessed from the asset name, not
-  taken from the response: the type decides how a client renders bytes that project content supplied.
-- Test fixtures for issues **must include `"id"`**: `gl.Issue.UnmarshalJSON` calls
-  `reflect.TypeOf(raw["id"]).Kind()` unguarded and panics without it.
 
 ## Skills
 
@@ -312,7 +174,8 @@ func NewFoo(ctx context.Context, opts FooOptions) *Foo {
 
 - Keep `README.md` up to date whenever a tool or skill is added, removed, or renamed.
 - Don't forget to update `README.md` in subdirectories (like `cmd/ssh-mcp/README.md`) when making changes to tools or skills.
-- Update `CLAUDE.md` with any new instructions or guidelines for AI coding assistants.
+- Update `CLAUDE.md` with any new instructions or guidelines for AI coding assistants — the one
+  next to the code the rule constrains, not the root file, unless it applies repo-wide.
 - Tools go in the **Tools** table; skills go in the **Skills** table.
 - Keep the **Tools** and **Skills** tables accurate and comprehensive.
 
