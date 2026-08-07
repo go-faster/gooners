@@ -31,10 +31,10 @@ require (
 	github.com/testcontainers/testcontainers-go v0.43.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	gitlab.com/gitlab-org/api/client-go/v2 v2.55.1
-	go.opentelemetry.io/otel v1.44.0
-	go.opentelemetry.io/otel/metric v1.44.0
+	go.opentelemetry.io/otel v1.45.0
+	go.opentelemetry.io/otel/metric v1.45.0
 	go.opentelemetry.io/otel/sdk/metric v1.44.0
-	go.opentelemetry.io/otel/trace v1.44.0
+	go.opentelemetry.io/otel/trace v1.45.0
 	go.uber.org/zap v1.28.0
 	go.uber.org/zap/exp v0.3.0
 	golang.ngrok.com/ngrok v1.13.0
