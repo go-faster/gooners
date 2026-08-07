@@ -38,4 +38,35 @@ Guidance for `github.com/go-faster/gooners/blob`. Repo-wide rules are in the roo
   so expiry, `Delete` and shutdown drop the reference only. A sweep that removes an attached file
   would empty the volume a gateway was serving — `object.attached` is what prevents that.
 
+## `blob/s3` (issue #75)
+
+A bucket-backed `Attacher`, for a deployment whose servers are not on one machine. It is a
+subpackage rather than part of `blob` so that importers using `blob.HTTP` do not link minio-go.
+
+- **`Open` is the ingest half of the package, not an implementation detail.** It is how one server
+  consumes what another wrote: tgmcp stores a file, the agent passes the **id**, ssh-mcp calls
+  `Open`. Two consumers, two references — the agent gets the presigned URL because it has no bucket
+  credentials, another server gets the id because it does. Never build ingest as "fetch a URL the
+  agent supplied": that is request forgery with extra steps, and it also breaks when the presign
+  expires mid-transfer, which async uploads make likely.
+- **The prefix is the tenant; the namespace is the server.** Reads span namespaces deliberately and
+  cannot span prefixes at all. Do not widen a prefix to make two users' servers see each other.
+- **`ParseID` is the gate between a model-supplied string and a bucket key.** An id arrives in tool
+  *output*, so it is attacker-influenced; loosening that regex is a tenancy change, not a parsing
+  change.
+- **One tenant per process**, which is what these servers are anyway. A process serving several
+  users derives a store per tenant with `WithTenant` rather than sharing one — see issue #71, where
+  session-scoped state would move the boundary from the process to the session.
+- **`Attach` uploads.** A bucket cannot serve bytes that are only on someone's disk, so unlike
+  `blob.HTTP.Attach` this is a real copy; `MaxSize` is what bounds it. It is what makes an
+  uncontrolled upstream usable from another machine.
+- **The instance metadata service is not in the default credential chain.** It is a link-local
+  address the egress policy blocks by default, and a store reaching for it silently is the thing
+  that policy exists to prevent. An operator on an instance role passes `credentials.NewIAM("")`.
+- S3 cannot set `nosniff` on a GET, so the stored `Content-Type` is downgraded at *put* time and
+  `Content-Disposition: attachment` carries the rest. Do not drop either.
+- Object lifetime is the bucket's job (a lifecycle rule); `ExpiresAt` is when the **URL** stops
+  working. There is no sweep, and adding one would mean listing a bucket shared with every other
+  server.
+
 See also `internal/gateway/CLAUDE.md` for `blob_share`, the gateway tool built on `Attacher`.

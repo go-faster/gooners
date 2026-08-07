@@ -19,7 +19,7 @@ Exported packages any MCP server can import, in this repository or outside it.
 
 | Package | Description |
 |---------|-------------|
-| [blob](blob) | Returns files from MCP tools as a fetchable URL instead of loading them into the model's context. An HTTP store on its own listener, expiring unguessable URLs, and a helper that keeps small payloads inline |
+| [blob](blob) | Returns files from MCP tools as a fetchable URL instead of loading them into the model's context. An HTTP store on its own listener, an S3-backed store ([blob/s3](blob/s3)) that also lets one MCP server read what another wrote, expiring URLs, and a helper that keeps small payloads inline |
 
 ## Prompts
 
