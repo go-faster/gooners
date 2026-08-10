@@ -11,7 +11,6 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/session"
@@ -21,13 +20,14 @@ import (
 	"github.com/go-faster/gooners/internal/tools/proc"
 	"github.com/go-faster/gooners/internal/tools/sysinfo"
 	"github.com/go-faster/gooners/internal/tools/systemd"
+	"github.com/go-faster/gooners/mcpcmd"
 )
 
 func main() {
 	var (
-		logging   cmdutil.LoggingFlags
-		transport cmdutil.TransportFlags
-		blobFlags cmdutil.BlobFlags
+		logging   mcpcmd.LoggingFlags
+		transport mcpcmd.TransportFlags
+		blobFlags mcpcmd.BlobFlags
 	)
 	logging.Register(flag.CommandLine)
 	transport.Register(flag.CommandLine)
@@ -111,7 +111,7 @@ func main() {
 	// The store upload_file reads a blob id from, so a file another server
 	// produced can reach the remote host without ever landing on this one.
 	// Unset leaves a store that refuses, naming the flag.
-	blobStore, runBlob, err := blobFlags.Setup(ctx, cmdutil.BlobOptions{
+	blobStore, runBlob, err := blobFlags.Setup(ctx, mcpcmd.BlobOptions{
 		Name:   "ssh-mcp",
 		Logger: logger.With("component", "blob"),
 	})
@@ -151,7 +151,7 @@ func main() {
 	}
 	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "disable_specialized_tools", *disableSpecializedTools, "upload_root", uploadRoot)
 
-	if err := transport.Run(ctx, cmdutil.RunOptions{
+	if err := transport.Run(ctx, mcpcmd.RunOptions{
 		Name:   "ssh-mcp",
 		Server: s,
 		Logger: logger.With("component", "transport"),

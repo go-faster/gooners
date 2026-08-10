@@ -12,15 +12,15 @@ import (
 	"go.uber.org/zap/exp/zapslog"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/gateway"
+	"github.com/go-faster/gooners/mcpcmd"
 )
 
 func main() {
 	cfgPath := flag.String("config", "gateway.toml", "path to gateway.toml")
 	watchInterval := flag.Duration("config-watch-interval", 0,
 		"poll the config file for changes at this interval; 0 reloads on SIGHUP only")
-	transport := cmdutil.TransportFlags{}
+	transport := mcpcmd.TransportFlags{}
 	transport.Register(flag.CommandLine)
 	flag.Parse()
 
@@ -77,7 +77,7 @@ func main() {
 		// finishes the gateway serves an empty tool set, which is what /readyz
 		// reports; clients learn the real one through listChanged.
 		grp.Go(func() error {
-			return transport.Run(ctx, cmdutil.RunOptions{
+			return transport.Run(ctx, mcpcmd.RunOptions{
 				Name:       "mcpgateway",
 				Handler:    gw.ServerForRequest,
 				Middleware: gw.HTTPMiddleware(),

@@ -14,10 +14,10 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/common/model"
 
-	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/grafana"
+	"github.com/go-faster/gooners/mcpcmd"
 )
 
 //go:embed design-dashboard.md
@@ -25,8 +25,8 @@ var designDashboardPrompt string
 
 func main() {
 	var (
-		logging   cmdutil.LoggingFlags
-		transport cmdutil.TransportFlags
+		logging   mcpcmd.LoggingFlags
+		transport mcpcmd.TransportFlags
 	)
 	logging.Register(flag.CommandLine)
 	transport.Register(flag.CommandLine)
@@ -118,7 +118,7 @@ func main() {
 	go sm.StartCleanupLoop(ctx, time.Duration(sessionTTL))
 	grafana.Register(s, sm, gc, grafana.RegisterOptions{LocalFS: effect.Root(workDir)})
 
-	if err := transport.Run(ctx, cmdutil.RunOptions{
+	if err := transport.Run(ctx, mcpcmd.RunOptions{
 		Name:   "grafana-dashboard-mcp",
 		Server: s,
 		Logger: logger.With("component", "transport"),

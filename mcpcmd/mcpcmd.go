@@ -1,5 +1,5 @@
-// Package cmdutil provides shared command-line helpers for MCP binaries.
-package cmdutil
+// Package mcpcmd provides shared command-line helpers for MCP binaries.
+package mcpcmd
 
 import (
 	"context"
@@ -14,13 +14,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/go-faster/gooners/internal/tunnel"
+	"github.com/go-faster/gooners/tunnel"
 )
 
 // LoggingFlags are common flags for configuring slog output.
@@ -115,6 +116,45 @@ type RunOptions struct {
 	// It is deliberately separate from /health: a process that is up but not
 	// yet usable should be kept out of a load balancer without being restarted.
 	Ready func() error
+	// Routes are mounted on the same listener as the MCP endpoint, keyed by
+	// [http.ServeMux] pattern. They are not wrapped in Middleware: a server
+	// pairing tool results with the files they refer to needs those files
+	// fetchable by a client that never speaks MCP.
+	//
+	// Patterns that would shadow "/", "/health" or "/readyz" are rejected
+	// rather than silently losing to them.
+	Routes map[string]http.Handler
+}
+
+// reservedRoutes are the patterns Run mounts itself.
+var reservedRoutes = []string{"/", "/health", "/readyz"}
+
+// mux builds the request router: the MCP handler at the root, the two probes,
+// and whatever the caller mounted alongside.
+func (o *RunOptions) mux(h http.Handler) (*http.ServeMux, error) {
+	mux := http.NewServeMux()
+	mux.Handle("/health", healthHandler(o.Name))
+	mux.Handle("/readyz", readyHandler(o.Name, o.Ready))
+	mux.Handle("/", h)
+
+	for pattern, handler := range o.Routes {
+		if slices.Contains(reservedRoutes, pattern) {
+			return nil, fmt.Errorf("route %q is served by the MCP server itself", pattern)
+		}
+		mux.Handle(pattern, handler)
+	}
+
+	return mux, nil
+}
+
+// httpServer wraps the router in a server that will not hold a connection open
+// on an unfinished request header, which is all it takes to exhaust one.
+func (flags TransportFlags) httpServer(mux *http.ServeMux) *http.Server {
+	return &http.Server{
+		Addr:              flags.Addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 }
 
 func (o *RunOptions) setDefaults() error {
@@ -166,12 +206,12 @@ func (flags TransportFlags) Run(ctx context.Context, opts RunOptions) error {
 		if opts.Middleware != nil {
 			h = opts.Middleware(h)
 		}
-		mux := http.NewServeMux()
-		mux.Handle("/health", healthHandler(opts.Name))
-		mux.Handle("/readyz", readyHandler(opts.Name, opts.Ready))
-		mux.Handle("/", h)
+		mux, err := opts.mux(h)
+		if err != nil {
+			return err
+		}
 		opts.Logger.Info("starting MCP server on streamable-http transport", "server", opts.Name, "at", fmt.Sprintf("%s://%s/mcp", scheme, flags.Addr))
-		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, opts.Logger) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
+		return flags.runHTTPServer(ctx, flags.httpServer(mux), opts.Logger)
 
 	case "sse":
 		scheme := flags.httpScheme()
@@ -182,12 +222,12 @@ func (flags TransportFlags) Run(ctx context.Context, opts RunOptions) error {
 		if opts.Middleware != nil {
 			h = opts.Middleware(h)
 		}
-		mux := http.NewServeMux()
-		mux.Handle("/health", healthHandler(opts.Name))
-		mux.Handle("/readyz", readyHandler(opts.Name, opts.Ready))
-		mux.Handle("/", h)
+		mux, err := opts.mux(h)
+		if err != nil {
+			return err
+		}
 		opts.Logger.Info("starting MCP server on SSE transport", "server", opts.Name, "at", fmt.Sprintf("%s://%s", scheme, flags.Addr))
-		return flags.runHTTPServer(ctx, &http.Server{Addr: flags.Addr, Handler: mux}, opts.Logger) //nolint:gosec // G114: local/trusted MCP usage follows existing repo pattern.
+		return flags.runHTTPServer(ctx, flags.httpServer(mux), opts.Logger)
 
 	default:
 		return fmt.Errorf("unknown transport: %q", flags.Transport)

@@ -54,7 +54,7 @@ func (o *SessionServerOptions) setDefaults() {
 }
 
 // NewSessionServer returns the getServer function for
-// [cmdutil.RunOptions.Handler]. It runs once per MCP session, so a session's
+// [mcpcmd.RunOptions.Handler]. It runs once per MCP session, so a session's
 // credential is fixed for its lifetime rather than re-read per tool call. That
 // makes the session ID as sensitive as the token: a later request on the same
 // session runs as whoever opened it, whatever header it carries.
