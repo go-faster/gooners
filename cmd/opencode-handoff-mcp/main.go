@@ -16,9 +16,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/opencode"
+	"github.com/go-faster/gooners/mcpcmd"
+	_ "github.com/go-faster/gooners/tunnel/all"
 )
 
 const defaultLocalOpencodeURL = "http://localhost:4096"
@@ -36,8 +37,8 @@ func (f *repeatFlag) Set(value string) error {
 
 func main() {
 	var (
-		logging   cmdutil.LoggingFlags
-		transport cmdutil.TransportFlags
+		logging   mcpcmd.LoggingFlags
+		transport mcpcmd.TransportFlags
 		ocode     opencodeCfg
 	)
 	logging.Register(flag.CommandLine)
@@ -74,7 +75,7 @@ func main() {
 	})
 	opencode.Register(s, client, mgr)
 
-	if err := transport.Run(ctx, cmdutil.RunOptions{
+	if err := transport.Run(ctx, mcpcmd.RunOptions{
 		Name:   "opencode-handoff-mcp",
 		Server: s,
 		Logger: logger.WithGroup("transport"),

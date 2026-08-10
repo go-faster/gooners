@@ -11,15 +11,16 @@ import (
 
 	"github.com/prometheus/common/model"
 
-	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/alertmanager"
+	"github.com/go-faster/gooners/mcpcmd"
+	_ "github.com/go-faster/gooners/tunnel/all"
 )
 
 func main() {
 	var (
-		logging   cmdutil.LoggingFlags
-		transport cmdutil.TransportFlags
+		logging   mcpcmd.LoggingFlags
+		transport mcpcmd.TransportFlags
 	)
 	logging.Register(flag.CommandLine)
 	transport.Register(flag.CommandLine)
@@ -86,7 +87,7 @@ func main() {
 
 	alertmanager.Register(s, c)
 
-	if err := transport.Run(ctx, cmdutil.RunOptions{
+	if err := transport.Run(ctx, mcpcmd.RunOptions{
 		Name:   "alertmanager-mcp",
 		Server: s,
 		Logger: logger.With("component", "transport"),

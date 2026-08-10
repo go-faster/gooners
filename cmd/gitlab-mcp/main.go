@@ -11,17 +11,18 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/go-faster/gooners/internal/cmdutil"
 	"github.com/go-faster/gooners/internal/effect"
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/gitlab"
+	"github.com/go-faster/gooners/mcpcmd"
+	_ "github.com/go-faster/gooners/tunnel/all"
 )
 
 func main() {
 	var (
-		logging   cmdutil.LoggingFlags
-		transport cmdutil.TransportFlags
-		blobFlags cmdutil.BlobFlags
+		logging   mcpcmd.LoggingFlags
+		transport mcpcmd.TransportFlags
+		blobFlags mcpcmd.BlobFlags
 	)
 	logging.Register(flag.CommandLine)
 	transport.Register(flag.CommandLine)
@@ -116,7 +117,7 @@ func main() {
 
 	// Where a downloaded asset goes when the agent cannot read this server's
 	// filesystem. Unset leaves a store that refuses, naming the flag.
-	blobStore, runBlob, err := blobFlags.Setup(ctx, cmdutil.BlobOptions{
+	blobStore, runBlob, err := blobFlags.Setup(ctx, mcpcmd.BlobOptions{
 		Name:   "gitlab-mcp",
 		Logger: logger.With("component", "blob"),
 	})
@@ -163,7 +164,7 @@ func main() {
 	g.Go(func() error { return runBlob(ctx) })
 	g.Go(func() error {
 		defer cancel()
-		return transport.Run(ctx, cmdutil.RunOptions{
+		return transport.Run(ctx, mcpcmd.RunOptions{
 			Name:    "gitlab-mcp",
 			Handler: handler,
 			Logger:  logger.With("component", "transport"),
