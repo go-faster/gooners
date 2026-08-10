@@ -179,17 +179,17 @@ func (o *oauthState) handleAuthorizePost(secret SecretResolver, w http.ResponseW
 		return
 	}
 	if q.Get("response_type") != "code" {
-		o.redirectOAuthError(w, q, "unsupported_response_type")
+		o.redirectOAuthError(w, q, redirectURI, "unsupported_response_type")
 
 		return
 	}
 	if !o.validClient(q.Get("client_id")) {
-		o.redirectOAuthError(w, q, "unauthorized_client")
+		o.redirectOAuthError(w, q, redirectURI, "unauthorized_client")
 
 		return
 	}
 	if q.Get("code_challenge") == "" {
-		o.redirectOAuthError(w, q, "invalid_request")
+		o.redirectOAuthError(w, q, redirectURI, "invalid_request")
 
 		return
 	}
@@ -240,9 +240,15 @@ func (o *oauthState) handleAuthorizePost(secret SecretResolver, w http.ResponseW
 	http.Redirect(w, r, redir.String(), http.StatusFound) //nolint:gosec // G710: redirectURI is checked against o.cfg.RedirectURIs above
 }
 
-func (o *oauthState) redirectOAuthError(w http.ResponseWriter, q url.Values, code string) {
-	redirectURI := q.Get("redirect_uri")
-	if redirectURI == "" {
+// redirectOAuthError reports an OAuth error to the client by redirecting to it.
+//
+// redirectURI is re-checked against the allowlist rather than trusted from the
+// caller. Every caller does validate it first, but nothing in a signature taking
+// the raw query said so, and an error path that redirects anywhere the request
+// asks is exactly how authorization codes get exfiltrated. The check is cheap
+// and makes the guarantee local.
+func (o *oauthState) redirectOAuthError(w http.ResponseWriter, q url.Values, redirectURI, code string) {
+	if redirectURI == "" || !o.validRedirectURI(redirectURI) {
 		http.Error(w, code, http.StatusBadRequest)
 
 		return
