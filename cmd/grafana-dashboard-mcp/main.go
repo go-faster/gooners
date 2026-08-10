@@ -18,6 +18,7 @@ import (
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/grafana"
 	"github.com/go-faster/gooners/mcpcmd"
+	_ "github.com/go-faster/gooners/tunnel/all"
 )
 
 //go:embed design-dashboard.md

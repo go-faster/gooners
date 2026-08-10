@@ -1,17 +1,18 @@
 // Package tunnel provides tunneling listeners.
+//
+// Providers register themselves, so a binary links only the ones it imports.
+// The alternative, one package knowing every provider, would put an SDK the
+// size of ngrok's into every binary that wanted a cloudflared subprocess.
 package tunnel
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
-	"net/url"
-	"os/exec"
-
-	"golang.ngrok.com/ngrok"
-	ngrokcfg "golang.ngrok.com/ngrok/config"
-	ngroklog "golang.ngrok.com/ngrok/log"
+	"slices"
+	"sync"
 )
 
 // Options configuration for the tunnel listener.
@@ -31,156 +32,56 @@ func (opts *Options) setDefaults() {
 	}
 }
 
-// Listen creates a net.Listener that exposes a local port via the specified provider.
-func Listen(ctx context.Context, provider string, opts Options) (_ net.Listener, rerr error) {
+// ListenFunc opens a listener reachable through one provider.
+type ListenFunc func(ctx context.Context, opts Options) (net.Listener, error)
+
+var (
+	mu        sync.RWMutex
+	providers = map[string]ListenFunc{}
+)
+
+// Register makes a provider available to [Listen] under every name given,
+// so a provider can keep an alias without the dispatch knowing about it.
+//
+// It is meant for a provider package's init and panics on a duplicate name:
+// two implementations answering to one name is a build mistake, not a
+// condition to resolve at runtime.
+func Register(fn ListenFunc, names ...string) {
+	mu.Lock()
+	defer mu.Unlock()
+
+	for _, name := range names {
+		if _, ok := providers[name]; ok {
+			panic("tunnel: provider " + name + " registered twice")
+		}
+		providers[name] = fn
+	}
+}
+
+// Providers lists the registered provider names, sorted.
+func Providers() []string {
+	mu.RLock()
+	defer mu.RUnlock()
+
+	return slices.Sorted(maps.Keys(providers))
+}
+
+// Listen creates a [net.Listener] that exposes a local port via the named
+// provider.
+//
+// A provider that exists but was not imported reads as unknown here, so the
+// error names what is actually linked in rather than what the code could
+// support.
+func Listen(ctx context.Context, provider string, opts Options) (net.Listener, error) {
 	opts.setDefaults()
 
-	switch provider {
-	case "ngrok":
-		var endpoint ngrokcfg.Tunnel
-		switch opts.Type {
-		case "http", "":
-			endpoint = ngrokcfg.HTTPEndpoint()
-		case "tcp":
-			endpoint = ngrokcfg.TCPEndpoint()
-		default:
-			return nil, fmt.Errorf("unsupported ngrok type %q", opts.Type)
-		}
-		return ngrok.Listen(ctx, endpoint,
-			ngrok.WithAuthtokenFromEnv(),
-			ngrok.WithLogger(&ngrokLogger{logger: opts.Logger}),
-		)
+	mu.RLock()
+	fn, ok := providers[provider]
+	mu.RUnlock()
 
-	case "cloudflare", "cloudflared":
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			return nil, fmt.Errorf("listen local: %w", err)
-		}
-		defer func() {
-			if rerr != nil {
-				_ = ln.Close()
-			}
-		}()
-
-		// cloudflared does not provide a native net.Listener cleanly.
-		// we run it as a subprocess and wrap the listener.
-		u := url.URL{
-			Scheme: "http",
-			Host:   ln.Addr().String(),
-		}
-
-		args := []string{"tunnel", "--no-autoupdate", "--management-diagnostics=false"}
-		if opts.Config != "" {
-			args = append(args, "--config", opts.Config)
-		}
-
-		if opts.Config != "" || opts.Name != "" {
-			args = append(args, "run", "--url", u.String())
-			if opts.Name != "" {
-				args = append(args, opts.Name)
-			}
-		} else {
-			args = append(args, "--url", u.String())
-		}
-
-		stdoutWriter := &slogioWriter{
-			logger: opts.Logger,
-			level:  slog.LevelDebug,
-		}
-		stderrWriter := &slogioWriter{
-			logger: opts.Logger,
-			level:  slog.LevelDebug,
-		}
-
-		opts.Logger.Info("starting cloudflared subprocess", "args", args)
-		cmd := exec.CommandContext(ctx, "cloudflared", args...) //nolint:gosec // local trusted execution
-		cmd.Stdout = stdoutWriter
-		cmd.Stderr = stderrWriter
-
-		if err := cmd.Start(); err != nil {
-			return nil, fmt.Errorf("start cloudflared: %w", err)
-		}
-
-		opts.Logger.Info("cloudflared subprocess started", "pid", cmd.Process.Pid)
-		waitDone := make(chan struct{})
-		go func() {
-			defer close(waitDone)
-			defer func() {
-				_ = stdoutWriter.Close()
-				_ = stderrWriter.Close()
-			}()
-
-			err := cmd.Wait()
-			if err != nil {
-				if ctx.Err() != nil {
-					opts.Logger.Info("cloudflared subprocess stopped (context canceled)", "error", err)
-				} else {
-					opts.Logger.Error("cloudflared subprocess exited", "error", err)
-				}
-			} else {
-				opts.Logger.Info("cloudflared subprocess exited gracefully")
-			}
-		}()
-
-		return &cfListener{
-			Listener: ln,
-			cmd:      cmd,
-			waitDone: waitDone,
-		}, nil
-
-	default:
-		return nil, fmt.Errorf("unknown expose provider %q", provider)
+	if !ok {
+		return nil, fmt.Errorf("unknown expose provider %q, have %v", provider, Providers())
 	}
-}
 
-type cfListener struct {
-	net.Listener
-	cmd      *exec.Cmd
-	waitDone chan struct{}
-}
-
-func (l *cfListener) Close() error {
-	err := l.Listener.Close()
-	if l.cmd != nil && l.cmd.Process != nil {
-		_ = l.cmd.Process.Kill()
-	}
-	if l.waitDone != nil {
-		<-l.waitDone
-	}
-	return err
-}
-
-type ngrokLogger struct {
-	logger *slog.Logger
-}
-
-var _ ngroklog.Logger = (*ngrokLogger)(nil)
-
-// Log implements the [ngroklog.Logger] interface.
-func (l *ngrokLogger) Log(ctx context.Context, level ngroklog.LogLevel, msg string, data map[string]any) {
-	var lvl slog.Level
-	switch level {
-	case ngroklog.LogLevelDebug:
-		lvl = slog.LevelDebug
-	case ngroklog.LogLevelInfo:
-		lvl = slog.LevelInfo
-	case ngroklog.LogLevelWarn:
-		lvl = slog.LevelWarn
-	case ngroklog.LogLevelError:
-		lvl = slog.LevelError
-	default:
-		lvl = slog.LevelInfo
-	}
-	l.logger.LogAttrs(ctx, lvl, msg, dataToAttrs(data)...)
-}
-
-func dataToAttrs(data map[string]any) []slog.Attr {
-	if len(data) == 0 {
-		return nil
-	}
-	attrs := make([]slog.Attr, 0, len(data))
-	for k, v := range data {
-		attrs = append(attrs, slog.Any(k, v))
-	}
-	return attrs
+	return fn(ctx, opts)
 }

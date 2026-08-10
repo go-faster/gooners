@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-faster/gooners/internal/gateway"
 	"github.com/go-faster/gooners/mcpcmd"
+	_ "github.com/go-faster/gooners/tunnel/all"
 )
 
 func main() {

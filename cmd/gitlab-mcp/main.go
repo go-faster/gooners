@@ -15,6 +15,7 @@ import (
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/gitlab"
 	"github.com/go-faster/gooners/mcpcmd"
+	_ "github.com/go-faster/gooners/tunnel/all"
 )
 
 func main() {

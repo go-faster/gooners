@@ -1,4 +1,4 @@
-package tunnel
+package cloudflared
 
 import (
 	"context"
