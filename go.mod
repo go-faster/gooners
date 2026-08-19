@@ -31,7 +31,7 @@ require (
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.43.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
-	gitlab.com/gitlab-org/api/client-go/v2 v2.56.0
+	gitlab.com/gitlab-org/api/client-go/v2 v2.58.0
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/metric v1.45.0
 	go.opentelemetry.io/otel/sdk/metric v1.45.0
