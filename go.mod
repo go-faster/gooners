@@ -22,7 +22,7 @@ require (
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/minio/minio-go/v7 v7.2.1
-	github.com/modelcontextprotocol/go-sdk v1.6.1
+	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/ogen-go/ogen v1.24.0
 	github.com/pkg/sftp v1.13.11
 	github.com/prometheus/alertmanager v0.33.1
