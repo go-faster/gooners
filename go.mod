@@ -28,7 +28,7 @@ require (
 	github.com/prometheus/alertmanager v0.33.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/common v0.70.1
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/yosida95/uritemplate/v3 v3.0.2
 	gitlab.com/gitlab-org/api/client-go/v2 v2.58.0
