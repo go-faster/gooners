@@ -84,6 +84,10 @@ call site — enforces policy. This is a security invariant, not a style prefere
 - **Never construct an `http.Client` inline.** Take an `effect.Doer`, or build one with
   `effect.NewHTTPClient`, whose `HTTPPolicy` allowlist is derived from the configured upstream
   (`effect.AllowHostOf`). The zero-value policy allows nothing, so an unconfigured client fails closed.
+- **Do not wrap a client with `otelhttp` at the call site.** `effect.NewHTTPClient` already traces
+  every request, records client metrics, and injects the trace context. It also wraps the tracer
+  provider with `sdk/otelattr` so `url.full` keeps `scheme://host` alone — a request URL here holds
+  blob keys, project ids and presigned S3 signatures. Wrapping again re-adds the full URL.
 - **Do not add a path check to a tool handler.** A handler passes the agent's path straight to the pool;
   `session.PoolOptions.LocalFS` decides whether it is reachable. A per-handler check is how the
   `ssh_save_output` arbitrary-write bug happened: `upload_file`/`download_file` remembered to call the old
