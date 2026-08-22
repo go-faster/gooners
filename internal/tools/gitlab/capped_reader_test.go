@@ -1,55 +1,80 @@
 package gitlab
 
 import (
+	"bytes"
 	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
 
+	"github.com/go-faster/errors"
 	"github.com/stretchr/testify/require"
 )
 
-// eofWithData returns its last bytes together with io.EOF, which is what a
-// net/http body does and what makes an overrun invisible to a consumer that
-// stops at the first EOF.
-type eofWithData struct {
-	data []byte
-}
-
-func (r *eofWithData) Read(p []byte) (int, error) {
-	n := copy(p, r.data)
-	r.data = r.data[n:]
-	if len(r.data) == 0 {
-		return n, io.EOF
-	}
-	return n, nil
-}
-
 func TestCappedReader(t *testing.T) {
-	const limit = 4
+	const limit = 8
 
-	tests := []struct {
+	// A capped reader has to hold whatever shape the reader underneath it
+	// hands back: one byte at a time, short reads, and — the case that made an
+	// oversized asset invisible — the final bytes arriving together with
+	// io.EOF, which is what a net/http body does.
+	wrappers := []struct {
+		name string
+		wrap func(io.Reader) io.Reader
+	}{
+		{"plain", func(r io.Reader) io.Reader { return r }},
+		{"one byte", iotest.OneByteReader},
+		{"half", iotest.HalfReader},
+		{"data err", iotest.DataErrReader},
+		{"one byte data err", func(r io.Reader) io.Reader { return iotest.OneByteReader(iotest.DataErrReader(r)) }},
+	}
+	sizes := []struct {
 		name    string
-		reader  func(size int) io.Reader
 		size    int
 		wantErr bool
 	}{
-		{"under the limit", func(n int) io.Reader { return strings.NewReader(strings.Repeat("x", n)) }, limit - 1, false},
-		{"at the limit", func(n int) io.Reader { return strings.NewReader(strings.Repeat("x", n)) }, limit, false},
-		{"over the limit", func(n int) io.Reader { return strings.NewReader(strings.Repeat("x", n)) }, limit + 1, true},
-		{"at the limit, eof with data", func(n int) io.Reader { return &eofWithData{data: []byte(strings.Repeat("x", n))} }, limit, false},
-		{"over the limit, eof with data", func(n int) io.Reader { return &eofWithData{data: []byte(strings.Repeat("x", n))} }, limit + 1, true},
+		{"under the limit", limit - 1, false},
+		{"at the limit", limit, false},
+		{"one byte over", limit + 1, true},
+		{"far over", limit * 4, true},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			c := &cappedReader{r: tt.reader(tt.size), n: limit + 1, name: "asset"}
 
-			n, err := io.Copy(io.Discard, c)
-			if tt.wantErr {
-				require.ErrorContains(t, err, "over the")
-				return
-			}
-			require.NoError(t, err)
-			require.Equal(t, int64(tt.size), n)
-		})
+	for _, w := range wrappers {
+		for _, s := range sizes {
+			t.Run(w.name+", "+s.name, func(t *testing.T) {
+				data := strings.Repeat("x", s.size)
+				c := &cappedReader{r: w.wrap(strings.NewReader(data)), n: limit + 1, name: "asset"}
+
+				var out bytes.Buffer
+				_, err := io.Copy(&out, c)
+				if s.wantErr {
+					require.ErrorContains(t, err, "over the")
+					require.LessOrEqual(t, out.Len(), limit+1, "no more than the allowance is handed on")
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, data, out.String())
+			})
+		}
 	}
+}
+
+// An error from the asset transfer is the caller's to see, not something the
+// cap turns into its own message.
+func TestCappedReaderPropagatesError(t *testing.T) {
+	errBroken := errors.New("broken")
+	c := &cappedReader{r: iotest.ErrReader(errBroken), n: 8, name: "asset"}
+
+	_, err := io.Copy(io.Discard, c)
+	require.ErrorIs(t, err, errBroken)
+}
+
+// The under-limit path must behave like any other reader.
+func TestCappedReaderIsWellBehaved(t *testing.T) {
+	const limit = 8
+
+	require.NoError(t, iotest.TestReader(
+		&cappedReader{r: strings.NewReader(strings.Repeat("x", limit)), n: limit + 1, name: "asset"},
+		[]byte(strings.Repeat("x", limit)),
+	))
 }
