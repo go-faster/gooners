@@ -219,7 +219,7 @@ func summarizePromMatrix(series []promMatrixSeries, now time.Time) *QuerySummary
 	}
 	if intervalCount > 0 {
 		avgSec := intervalSum / float64(intervalCount)
-		s.AvgInterval = (time.Duration(avgSec * float64(time.Second))).Round(time.Second).String()
+		s.AvgInterval = time.Duration(avgSec * float64(time.Second)).Round(time.Second).String()
 	}
 	if countVal > 0 {
 		s.Values = buildValueStats(minVal, maxVal, sumVal/float64(countVal), lastVals)

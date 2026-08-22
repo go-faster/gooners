@@ -435,14 +435,25 @@ func newCappedReader(r io.Reader, name string) *cappedReader {
 
 func (c *cappedReader) Read(p []byte) (int, error) {
 	if c.n <= 0 {
-		return 0, errors.Errorf("asset %q is over the %d byte limit", c.name, maxAssetSize)
+		return 0, c.overrun()
 	}
 	if int64(len(p)) > c.n {
 		p = p[:c.n]
 	}
 	n, err := c.r.Read(p)
 	c.n -= int64(n)
+	// Exhausting the allowance already proves the asset is over the limit, so
+	// the overrun is reported here rather than on the next Read: a net/http
+	// body returns its last bytes together with io.EOF, and a consumer that
+	// stops there would store an oversized asset without ever seeing this.
+	if c.n <= 0 {
+		return n, c.overrun()
+	}
 	return n, err
+}
+
+func (c *cappedReader) overrun() error {
+	return errors.Errorf("asset %q is over the %d byte limit", c.name, maxAssetSize)
 }
 
 func registerReleaseTools(s *mcp.Server, c *Client) {
