@@ -14,6 +14,11 @@ import (
 
 	"github.com/kballard/go-shellquote"
 	"github.com/pkg/sftp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/go-faster/gooners/blob"
@@ -101,6 +106,12 @@ type Pool struct {
 	spoolFS effect.FS
 
 	logger *slog.Logger
+
+	tracer  trace.Tracer
+	metrics poolMetrics
+	// liveSessions mirrors the event loop's session map for the metrics
+	// callback, which runs on the collector's goroutine.
+	liveSessions atomic.Int64
 }
 
 // PoolOptions contains configuration for a new Pool.
@@ -133,6 +144,11 @@ type PoolOptions struct {
 	// SpoolFS stores output too large to hold in memory. Defaults to a
 	// per-process directory under [os.TempDir].
 	SpoolFS effect.FS
+	// TracerProvider and MeterProvider instrument sessions and commands. Nil
+	// means the global provider, which is a no-op until a binary installs an
+	// SDK.
+	TracerProvider trace.TracerProvider
+	MeterProvider  metric.MeterProvider
 }
 
 func (opts *PoolOptions) setDefaults() {
@@ -160,11 +176,17 @@ func (opts *PoolOptions) setDefaults() {
 	if opts.SpoolFS == nil {
 		opts.SpoolFS = effect.Root(filepath.Join(os.TempDir(), "ssh-mcp", "sessions"))
 	}
+	if opts.TracerProvider == nil {
+		opts.TracerProvider = otel.GetTracerProvider()
+	}
+	if opts.MeterProvider == nil {
+		opts.MeterProvider = otel.GetMeterProvider()
+	}
 }
 
 func NewPool(opts PoolOptions) *Pool {
 	opts.setDefaults()
-	return &Pool{
+	p := &Pool{
 		reqCh:        make(chan Request),
 		onDisconnect: opts.OnDisconnect,
 
@@ -178,7 +200,12 @@ func NewPool(opts PoolOptions) *Pool {
 		spoolFS:           opts.SpoolFS,
 
 		logger: opts.Logger,
+
+		tracer:  opts.TracerProvider.Tracer(instrumentationName),
+		metrics: initMetrics(opts.MeterProvider, opts.Logger),
 	}
+	p.registerLiveSessions(opts.MeterProvider, opts.Logger)
+	return p
 }
 
 // LocalFS is the host filesystem the pool may touch for a tool. Tools that
@@ -629,6 +656,16 @@ func (p *Pool) cleanupExec(spoolCtx context.Context, sess *ssh.Session, r ExecRe
 }
 
 func (p *Pool) Exec(ctx context.Context, r ExecRequest) ExecResponse {
+	ctx, span := p.tracer.Start(ctx, "ssh.exec",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			attribute.String("ssh.session.id", r.SessionID),
+			attribute.Bool("ssh.sudo", r.Sudo),
+		),
+	)
+	start := time.Now()
+	defer func() { span.End() }()
+
 	respCh := make(chan ExecResponse, 1)
 	r.resp = respCh
 
@@ -638,12 +675,12 @@ func (p *Pool) Exec(ctx context.Context, r ExecRequest) ExecResponse {
 	select {
 	case p.reqCh <- r:
 	case <-ctx.Done():
-		return ExecResponse{Err: ctx.Err()}
+		return p.recordExec(ctx, span, start, ExecResponse{Err: ctx.Err()})
 	}
 
 	select {
 	case res := <-respCh:
-		return res
+		return p.recordExec(ctx, span, start, res)
 	case <-ctx.Done():
 		ctxErr := ctx.Err()
 		close(cancelCh)
@@ -651,8 +688,44 @@ func (p *Pool) Exec(ctx context.Context, r ExecRequest) ExecResponse {
 		if res.Err == nil {
 			res.Err = ctxErr
 		}
-		return res
+		return p.recordExec(ctx, span, start, res)
 	}
+}
+
+// recordExec describes what a command did, without saying what it was: sizes,
+// where the output went, and how it ended.
+func (p *Pool) recordExec(ctx context.Context, span trace.Span, start time.Time, res ExecResponse) ExecResponse {
+	elapsed := time.Since(start)
+	spooled := res.StdoutSpoolID != "" || res.StderrSpoolID != ""
+
+	span.SetAttributes(
+		attribute.Int("ssh.exit_code", res.ExitCode),
+		attribute.Int64("ssh.stdout_bytes", res.StdoutSize),
+		attribute.Int64("ssh.stderr_bytes", res.StderrSize),
+		attribute.Bool("ssh.spooled", spooled),
+	)
+	if res.Err != nil {
+		span.RecordError(res.Err)
+		span.SetStatus(codes.Error, res.Err.Error())
+	}
+
+	status := statusAttr(res.Err)
+	p.metrics.ExecDuration.Record(ctx, elapsed.Seconds(), metric.WithAttributes(status))
+	p.metrics.ExecOutput.Add(ctx, res.StdoutSize, metric.WithAttributes(attribute.String("stream", "stdout")))
+	p.metrics.ExecOutput.Add(ctx, res.StderrSize, metric.WithAttributes(attribute.String("stream", "stderr")))
+	if spooled {
+		// Only the spilled streams count: an in-memory result never touched
+		// the spool filesystem.
+		var spilled int64
+		if res.StdoutSpoolID != "" {
+			spilled += res.StdoutSize
+		}
+		if res.StderrSpoolID != "" {
+			spilled += res.StderrSize
+		}
+		p.metrics.ExecSpooled.Add(ctx, spilled)
+	}
+	return res
 }
 
 func (p *Pool) Open(ctx context.Context, machine string) (OpenResult, error) {
@@ -663,14 +736,26 @@ func (p *Pool) OpenCfg(ctx context.Context, cfg Config) (OpenResult, error) {
 	if cfg.HomeDir == "" {
 		cfg.HomeDir = p.homeDir
 	}
+	ctx, span := p.tracer.Start(ctx, "ssh.open",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("ssh.machine", cfg.Machine)),
+	)
+
 	respCh := make(chan OpenResponse, 1)
 	resp, ok := send(ctx, p.reqCh, OpenRequest{Config: cfg, resp: respCh}, respCh)
 	if !ok {
+		endSpan(span, ctx.Err())
 		return OpenResult{}, ctx.Err()
 	}
 	if resp.Err != nil {
+		endSpan(span, resp.Err)
 		return OpenResult{}, resp.Err
 	}
+	span.SetAttributes(
+		attribute.String("ssh.session.id", resp.ID),
+		attribute.String("ssh.platform", resp.Platform),
+	)
+	endSpan(span, nil)
 	return OpenResult{
 		ID:        resp.ID,
 		UserAgent: resp.UserAgent,
@@ -684,7 +769,13 @@ func (p *Pool) Close(ctx context.Context, id string) error {
 }
 
 // closeWithCause closes a session and records cause as the reason its transfers ended.
-func (p *Pool) closeWithCause(ctx context.Context, id string, cause error) error {
+func (p *Pool) closeWithCause(ctx context.Context, id string, cause error) (err error) {
+	ctx, span := p.tracer.Start(ctx, "ssh.close",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("ssh.session.id", id)),
+	)
+	defer func() { endSpan(span, err) }()
+
 	respCh := make(chan error, 1)
 	err, ok := send(ctx, p.reqCh, CloseRequest{ID: id, Cause: cause, resp: respCh}, respCh)
 	if !ok {
