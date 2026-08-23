@@ -17,6 +17,10 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/go-faster/gooners/blob"
 	s3store "github.com/go-faster/gooners/blob/s3"
@@ -339,4 +343,82 @@ func TestNewRefusesAMissingBucket(t *testing.T) {
 		Credentials: credentials.NewStaticV4(minioUser, minioSecret, ""),
 	})
 	require.Error(t, err, "a misconfigured bucket fails at startup, not on the first tool call")
+}
+
+// spanNames returns the names of the spans ended so far, in order.
+func spanNames(spans []sdktrace.ReadOnlySpan) []string {
+	names := make([]string, len(spans))
+	for i, s := range spans {
+		names[i] = s.Name()
+	}
+	return names
+}
+
+func spanAttr(t *testing.T, span sdktrace.ReadOnlySpan, key attribute.Key) attribute.Value {
+	t.Helper()
+
+	for _, kv := range span.Attributes() {
+		if kv.Key == key {
+			return kv.Value
+		}
+	}
+	t.Fatalf("span %q has no attribute %q, got %v", span.Name(), key, span.Attributes())
+	return attribute.Value{}
+}
+
+// A store operation is one span, whatever number of requests it takes, and it
+// says which object in which bucket it touched.
+func TestOperationsAreTraced(t *testing.T) {
+	prefix := tenant(t)
+
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { require.NoError(t, tp.Shutdown(context.Background())) })
+
+	s := newStore(t, "tgmcp", prefix, s3store.Options{TracerProvider: tp})
+	require.Equal(t, []string{"blob.s3.bucket_exists"}, spanNames(rec.Ended()),
+		"a store verifies its bucket as it is built")
+
+	const payload = "frame-bytes"
+	b, err := s.Put(t.Context(), strings.NewReader(payload), blob.PutOptions{Name: "frame.png"})
+	require.NoError(t, err)
+
+	rc, _, err := s.Open(t.Context(), b.ID)
+	require.NoError(t, err)
+	require.NoError(t, rc.Close())
+	require.NoError(t, s.Delete(t.Context(), b.ID))
+
+	require.Equal(t, []string{
+		"blob.s3.bucket_exists", "blob.s3.put", "blob.s3.open", "blob.s3.delete",
+	}, spanNames(rec.Ended()))
+
+	put := rec.Ended()[1]
+	require.Equal(t, testBucket, spanAttr(t, put, "aws.s3.bucket").AsString())
+	require.Equal(t, "tgmcp", spanAttr(t, put, "blob.namespace").AsString())
+	require.Equal(t, b.ID, spanAttr(t, put, "blob.id").AsString())
+	require.Equal(t, int64(len(payload)), spanAttr(t, put, "blob.size").AsInt64())
+
+	// The file name and the declared type come from a tool, so they stay off
+	// the span however useful they would be.
+	for _, kv := range put.Attributes() {
+		require.NotContains(t, kv.Value.Emit(), "frame.png")
+	}
+}
+
+// A failed operation is a failed span, so a store that cannot serve an id is
+// visible without correlating logs.
+func TestFailureIsTraced(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { require.NoError(t, tp.Shutdown(context.Background())) })
+
+	s := newStore(t, "tgmcp", tenant(t), s3store.Options{TracerProvider: tp})
+
+	_, _, err := s.Open(t.Context(), "tgmcp/00000000-0000-0000-0000-000000000000")
+	require.ErrorIs(t, err, blob.ErrNotFound)
+
+	ended := rec.Ended()
+	open := ended[len(ended)-1]
+	require.Equal(t, "blob.s3.open", open.Name())
+	require.Equal(t, codes.Error, open.Status().Code)
 }

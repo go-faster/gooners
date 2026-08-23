@@ -77,6 +77,9 @@ import (
 	"github.com/go-faster/errors"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/go-faster/gooners/blob"
 	"github.com/go-faster/gooners/internal/blobutil"
@@ -139,6 +142,10 @@ type Options struct {
 	Now func() time.Time
 	// Logger reports uploads and cleanup failures.
 	Logger *slog.Logger
+	// TracerProvider traces every store operation. Nil means the global
+	// provider, which a binary installs at startup and which is a no-op until
+	// it does.
+	TracerProvider trace.TracerProvider
 }
 
 // maxURLTTL is the longest expiry SigV4 presigning allows.
@@ -176,6 +183,9 @@ func (o *Options) setDefaults() error {
 	if o.Logger == nil {
 		o.Logger = slog.Default()
 	}
+	if o.TracerProvider == nil {
+		o.TracerProvider = otel.GetTracerProvider()
+	}
 	return nil
 }
 
@@ -189,6 +199,7 @@ type Store struct {
 	maxSize   int64
 	now       func() time.Time
 	lg        *slog.Logger
+	tracer    trace.Tracer
 }
 
 var _ blob.Attacher = (*Store)(nil)
@@ -229,7 +240,12 @@ func New(ctx context.Context, opts Options) (*Store, error) {
 		return nil, errors.Wrapf(err, "connect to %q", opts.Endpoint)
 	}
 
+	ctx, span := opts.TracerProvider.Tracer(tracerName).Start(ctx, "blob.s3.bucket_exists",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(attribute.String("aws.s3.bucket", opts.Bucket)),
+	)
 	ok, err := client.BucketExists(ctx, opts.Bucket)
+	end(span, &err)
 	if err != nil {
 		return nil, errors.Wrapf(err, "check bucket %q", opts.Bucket)
 	}
@@ -246,6 +262,7 @@ func New(ctx context.Context, opts Options) (*Store, error) {
 		maxSize:   opts.MaxSize,
 		now:       opts.Now,
 		lg:        opts.Logger,
+		tracer:    opts.TracerProvider.Tracer(tracerName),
 	}, nil
 }
 
@@ -261,7 +278,10 @@ func ambientCredentials() *credentials.Credentials {
 }
 
 // Put uploads r and returns a reference to it.
-func (s *Store) Put(ctx context.Context, r io.Reader, opts blob.PutOptions) (blob.Blob, error) {
+func (s *Store) Put(ctx context.Context, r io.Reader, opts blob.PutOptions) (_ blob.Blob, err error) {
+	ctx, span := s.start(ctx, "blob.s3.put")
+	defer end(span, &err)
+
 	if opts.Size > 0 && opts.Size > s.maxSize {
 		return blob.Blob{}, errors.Wrapf(blob.ErrTooLarge, "%d bytes, limit is %d", opts.Size, s.maxSize)
 	}
@@ -269,6 +289,7 @@ func (s *Store) Put(ctx context.Context, r io.Reader, opts blob.PutOptions) (blo
 	if err != nil {
 		return blob.Blob{}, err
 	}
+	span.SetAttributes(attribute.String("blob.id", id))
 
 	// A size the caller did not know is the normal case when streaming from a
 	// remote host, and it is also the one the limit cannot be checked before
@@ -283,7 +304,10 @@ func (s *Store) Put(ctx context.Context, r io.Reader, opts blob.PutOptions) (blo
 // upstream usable — a server colocated with it sees its output directory and
 // puts the file in the bucket, where every other server can read it. [Options.MaxSize]
 // is what bounds the transfer.
-func (s *Store) Attach(ctx context.Context, src blob.FS, name string, opts blob.PutOptions) (blob.Blob, error) {
+func (s *Store) Attach(ctx context.Context, src blob.FS, name string, opts blob.PutOptions) (_ blob.Blob, err error) {
+	ctx, span := s.start(ctx, "blob.s3.attach")
+	defer end(span, &err)
+
 	if src == nil {
 		return blob.Blob{}, errors.New("attach: src filesystem is required")
 	}
@@ -315,6 +339,7 @@ func (s *Store) Attach(ctx context.Context, src blob.FS, name string, opts blob.
 	if err != nil {
 		return blob.Blob{}, err
 	}
+	span.SetAttributes(attribute.String("blob.id", id))
 	if opts.Name == "" {
 		opts.Name = path.Base(name)
 	}
@@ -358,6 +383,7 @@ func (s *Store) upload(ctx context.Context, id string, r io.Reader, size int64, 
 	if err != nil {
 		return blob.Blob{}, err
 	}
+	trace.SpanFromContext(ctx).SetAttributes(attribute.Int64("blob.size", info.Size))
 	s.lg.Debug("stored blob", "id", id, "name", name, "size", info.Size)
 	return b, nil
 }
@@ -371,7 +397,10 @@ func (s *Store) upload(ctx context.Context, id string, r io.Reader, size int64, 
 // each its own store rather than sharing one, or this becomes a cross-tenant
 // read that prompt injection can reach — an id is a string, and strings arrive
 // in tool output. See https://github.com/go-faster/gooners/issues/71.
-func (s *Store) Open(ctx context.Context, id string) (io.ReadSeekCloser, blob.Blob, error) {
+func (s *Store) Open(ctx context.Context, id string) (_ io.ReadSeekCloser, _ blob.Blob, err error) {
+	ctx, span := s.start(ctx, "blob.s3.open", attribute.String("blob.id", id))
+	defer end(span, &err)
+
 	key, err := s.parse(id)
 	if err != nil {
 		return nil, blob.Blob{}, err
@@ -395,12 +424,16 @@ func (s *Store) Open(ctx context.Context, id string) (io.ReadSeekCloser, blob.Bl
 		_ = obj.Close()
 		return nil, blob.Blob{}, err
 	}
+	span.SetAttributes(attribute.Int64("blob.size", info.Size))
 	return obj, b, nil
 }
 
 // Delete removes an object. Deleting an unknown id is not an error, and an id
 // this store could not have minted is refused rather than silently ignored.
-func (s *Store) Delete(ctx context.Context, id string) error {
+func (s *Store) Delete(ctx context.Context, id string) (err error) {
+	ctx, span := s.start(ctx, "blob.s3.delete", attribute.String("blob.id", id))
+	defer end(span, &err)
+
 	key, err := s.parse(id)
 	if err != nil {
 		return err
