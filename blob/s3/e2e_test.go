@@ -401,7 +401,7 @@ func TestOperationsAreTraced(t *testing.T) {
 	// The file name and the declared type come from a tool, so they stay off
 	// the span however useful they would be.
 	for _, kv := range put.Attributes() {
-		require.NotContains(t, kv.Value.Emit(), "frame.png")
+		require.NotContains(t, kv.Value.String(), "frame.png")
 	}
 }
 

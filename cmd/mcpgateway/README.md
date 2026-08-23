@@ -295,11 +295,17 @@ Metrics:
 | `mcpgateway.config.reload` | counter | `result` = `success` \| `failure` |
 | `mcpgateway.config.reload.last_success_timestamp` | gauge (unix seconds) | — |
 | `mcpgateway.upstreams` | gauge | `state` = `connected` \| `disconnected` |
+| `mcpgateway.upstream.connects` | counter | `mcp.upstream`, `status` = `ok` \| `error` |
+| `mcpgateway.upstream.connect.duration` | histogram (seconds) | `mcp.upstream`, `status` |
+| `mcpgateway.upstream.reconnects` | counter | `mcp.upstream`, `status` |
 
 `last_success_timestamp` is seeded at startup, so `now() - last_success_timestamp` is a usable
 staleness alert from the first scrape — a gateway stuck on a config it cannot replace looks stale
 rather than merely quiet. `mcpgateway.upstreams` separates "not configured" from "configured but
-unreachable", since a disconnected upstream is still being retried by its supervisor.
+unreachable", since a disconnected upstream is still being retried by its supervisor, and the
+`upstream.*` instruments say how hard that retrying is working: `reconnects` counts only the
+attempts made after a drop, so it separates a gateway that reconnected once from one that is
+flapping.
 
 ## Graceful shutdown
 
@@ -350,8 +356,11 @@ OTEL_EXPORTER_OTLP_PROTOCOL=grpc
 OTEL_EXPORTER_OTLP_INSECURE=true
 ```
 
-Every proxied tool call is wrapped in a span and counted, per upstream. The gateway also exports the
-reload and upstream metrics listed under [Config reload](#config-reload).
+Every proxied tool call is wrapped in a `tool.call` span and counted, both carrying `mcp.upstream`.
+The forwarded request is a child `upstream.call_tool` span, which is what separates the time an
+upstream took from the time the gateway spent reaching it — routing, waiting on a reconnect, or
+blocking on a drain. The gateway also exports the reload and upstream metrics listed under
+[Config reload](#config-reload).
 
 ## Limitations
 

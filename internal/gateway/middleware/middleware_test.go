@@ -7,9 +7,11 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
+	"go.uber.org/zap"
 )
 
 func TestChain_Order(t *testing.T) {
@@ -109,4 +111,47 @@ func assertCounter(t *testing.T, rm metricdata.ResourceMetrics, status string, w
 		}
 	}
 	require.True(t, found, "expected status=%s", status)
+}
+
+// The upstream is a metric attribute as well as a span attribute: a dashboard
+// must be able to answer "which upstream is slow" on its own.
+func TestTelemetryLabelsMetricsByUpstream(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { require.NoError(t, mp.Shutdown(context.Background())) })
+
+	h, err := NewTelemetry(func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return &mcp.CallToolResult{}, nil
+	}, TelemetryOptions{
+		Upstream:      "grafana",
+		MeterProvider: mp,
+		Logger:        zap.NewNop(),
+	})
+	require.NoError(t, err)
+
+	_, err = h(context.Background(), &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Name: "add_panel"}})
+	require.NoError(t, err)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	want := attribute.NewSet(
+		attribute.String("status", "ok"),
+		attribute.String("mcp.upstream", "grafana"),
+	)
+	var found bool
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != "mcpgateway.tool_calls.total" {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			require.True(t, ok, "got %T", m.Data)
+			require.Len(t, sum.DataPoints, 1)
+			require.True(t, sum.DataPoints[0].Attributes.Equals(&want),
+				"got %v", sum.DataPoints[0].Attributes)
+			found = true
+		}
+	}
+	require.True(t, found, "mcpgateway.tool_calls.total was not exported")
 }
