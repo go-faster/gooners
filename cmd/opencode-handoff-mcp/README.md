@@ -61,7 +61,7 @@ A `/health` endpoint is also served on the same address (e.g. `http://localhost:
 | `-wait-timeout` | | `10m` | Default `handoff_run` / `handoff_wait` timeout |
 | `-transport` | | `stdio` | `stdio`, `streamable-http`, or `sse` |
 | `-addr` | | `:8080` | HTTP transport listen address |
-| `-log-file` | | empty | Write logs to a file instead of stdout |
+| `-log-file` | | empty | Write logs to a file instead of stderr |
 | `-log-format` | | `text` | `text` or `json` |
 | `-log-level` | | `info` | `debug`, `info`, `warn`, or `error` |
 
@@ -100,3 +100,24 @@ Use `handoff_fire` for background delegation, then call `handoff_check` or `hand
 ## Security
 
 This server delegates to opencode, which may edit files or run shell commands depending on opencode agent permissions. The MCP server does not auto-approve permissions. Use `handoff_permissions` and `handoff_permission_reply` to inspect and answer permission requests explicitly.
+
+## Telemetry
+
+Traces and metrics are configured entirely from the environment, by `go-faster/sdk`'s `app.Run`.
+Telemetry is **opt-in**: with neither an endpoint nor an exporter named, every signal is turned off,
+so a server started where no collector runs neither retries a refused connection nor stalls on
+shutdown flushing it.
+
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otelcol:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_INSECURE=true
+```
+
+Every outbound HTTP request is traced and counted, and carries the trace context to the upstream.
+
+On the stdio transport, stdout is the MCP session: `OTEL_TRACES_EXPORTER=stdout` (or the metrics or
+logs equivalent, or `-log-file` pointing at stdout) would corrupt the protocol stream, so the server
+refuses to start and says so. Use `stderr`, `otlp` or `none`. Logs go to stderr unless `-log-file`
+names a file.

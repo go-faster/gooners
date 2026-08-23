@@ -9,6 +9,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/go-faster/errors"
+	"github.com/go-faster/sdk/app"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/go-faster/gooners/internal/effect"
@@ -44,120 +46,111 @@ func main() {
 	)
 	flag.Parse()
 
-	cleanup, logger, err := logging.Setup()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%+v\n", err)
-		os.Exit(1)
-	}
-	defer cleanup()
+	mcpcmd.Run(mcpcmd.AppOptions{
+		Name:      "ssh-mcp",
+		Logging:   logging,
+		Transport: transport,
+	}, func(ctx context.Context, logger *slog.Logger, _ *app.Telemetry) error {
+		uploadRoot, err := os.Getwd()
+		if err != nil {
+			return errors.Wrap(err, "get working directory")
+		}
 
-	uploadRoot, err := os.Getwd()
-	if err != nil {
-		slog.Error("getting working directory", "err", err)
-		os.Exit(1)
-	}
+		var passwords core.PasswordProvider
+		switch {
+		case *passwordFile != "":
+			passwords = &core.FilePasswordProvider{Path: *passwordFile}
+			logger.Info("configured password provider", "type", "file", "path", *passwordFile)
+		case *passwordEnv != "":
+			passwords = &core.EnvPasswordProvider{VarName: *passwordEnv}
+			logger.Info("configured password provider", "type", "env", "var", *passwordEnv)
+		case *passwordConfig != "":
+			passwords = &core.ConfigFilePasswordProvider{Path: *passwordConfig}
+			logger.Info("configured password provider", "type", "config", "path", *passwordConfig)
+		case *passwordCmd != "":
+			passwords = &core.CommandPasswordProvider{Command: *passwordCmd}
+			logger.Info("configured password provider", "type", "command")
+		default:
+			logger.Debug("no password provider configured")
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	var passwords core.PasswordProvider
-	switch {
-	case *passwordFile != "":
-		passwords = &core.FilePasswordProvider{Path: *passwordFile}
-		logger.Info("configured password provider", "type", "file", "path", *passwordFile)
-	case *passwordEnv != "":
-		passwords = &core.EnvPasswordProvider{VarName: *passwordEnv}
-		logger.Info("configured password provider", "type", "env", "var", *passwordEnv)
-	case *passwordConfig != "":
-		passwords = &core.ConfigFilePasswordProvider{Path: *passwordConfig}
-		logger.Info("configured password provider", "type", "config", "path", *passwordConfig)
-	case *passwordCmd != "":
-		passwords = &core.CommandPasswordProvider{Command: *passwordCmd}
-		logger.Info("configured password provider", "type", "command")
-	default:
-		logger.Debug("no password provider configured")
-	}
-
-	s := mcputil.NewServer(mcputil.ServerConfig{
-		Name:         "ssh-mcp",
-		Instructions: "You are connected to ssh-mcp. Use these tools to safely query and manage remote machine state over SSH.",
-		Logger:       logger.With("component", "mcp-sdk"),
-		Prompts: []*mcp.Prompt{
-			{
-				Name:        "troubleshoot-ssh",
-				Description: "Start a debugging session for a remote server via SSH",
-				Arguments: []*mcp.PromptArgument{
-					{Name: "machine", Description: "Name of the machine to connect to", Required: true},
+		s := mcputil.NewServer(mcputil.ServerConfig{
+			Name:         "ssh-mcp",
+			Instructions: "You are connected to ssh-mcp. Use these tools to safely query and manage remote machine state over SSH.",
+			Logger:       logger.With("component", "mcp-sdk"),
+			Prompts: []*mcp.Prompt{
+				{
+					Name:        "troubleshoot-ssh",
+					Description: "Start a debugging session for a remote server via SSH",
+					Arguments: []*mcp.PromptArgument{
+						{Name: "machine", Description: "Name of the machine to connect to", Required: true},
+					},
 				},
 			},
-		},
-		PromptHandler: mcp.PromptHandler(func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			if req.Params.Name == "troubleshoot-ssh" {
-				return &mcp.GetPromptResult{
-					Description: "Instructions for using SSH tools to debug.",
-					Messages: []*mcp.PromptMessage{
-						{
-							Role: "user",
-							Content: &mcp.TextContent{
-								Text: "Use `ssh_exec` and systemd tools to analyze the server.",
+			PromptHandler: mcp.PromptHandler(func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+				if req.Params.Name == "troubleshoot-ssh" {
+					return &mcp.GetPromptResult{
+						Description: "Instructions for using SSH tools to debug.",
+						Messages: []*mcp.PromptMessage{
+							{
+								Role: "user",
+								Content: &mcp.TextContent{
+									Text: "Use `ssh_exec` and systemd tools to analyze the server.",
+								},
 							},
 						},
-					},
-				}, nil
-			}
-			return nil, fmt.Errorf("unknown prompt: %q", req.Params.Name)
-		}),
-	})
+					}, nil
+				}
+				return nil, fmt.Errorf("unknown prompt: %q", req.Params.Name)
+			}),
+		})
 
-	// The store upload_file reads a blob id from, so a file another server
-	// produced can reach the remote host without ever landing on this one.
-	// Unset leaves a store that refuses, naming the flag.
-	blobStore, runBlob, err := blobFlags.Setup(ctx, mcpcmd.BlobOptions{
-		Name:   "ssh-mcp",
-		Logger: logger.With("component", "blob"),
-	})
-	if err != nil {
-		logger.Error("invalid blob store configuration", "err", err)
-		os.Exit(1)
-	}
-	go func() {
-		if err := runBlob(ctx); err != nil {
-			logger.Error("blob store stopped", "err", err)
+		// The store upload_file reads a blob id from, so a file another server
+		// produced can reach the remote host without ever landing on this one.
+		// Unset leaves a store that refuses, naming the flag.
+		blobStore, runBlob, err := blobFlags.Setup(ctx, mcpcmd.BlobOptions{
+			Name:   "ssh-mcp",
+			Logger: logger.With("component", "blob"),
+		})
+		if err != nil {
+			return errors.Wrap(err, "blob store configuration")
 		}
-	}()
+		go func() {
+			if err := runBlob(ctx); err != nil {
+				logger.Error("blob store stopped", "err", err)
+			}
+		}()
 
-	pool := session.NewPool(session.PoolOptions{
-		CommandTimeout: *commandTimeout,
-		Logger:         logger,
-		// Every host file the tools may touch — upload sources, download
-		// targets, saved output, stdin_file — confined to the working
-		// directory, in one place rather than per tool.
-		LocalFS: effect.Root(uploadRoot),
-		OnDisconnect: func(machine string, err error) {
-			mcputil.BroadcastWarning(s, "ssh-mcp", fmt.Sprintf("SSH session to %s disconnected: %v", machine, err))
-		},
+		pool := session.NewPool(session.PoolOptions{
+			CommandTimeout: *commandTimeout,
+			Logger:         logger,
+			// Every host file the tools may touch — upload sources, download
+			// targets, saved output, stdin_file — confined to the working
+			// directory, in one place rather than per tool.
+			LocalFS: effect.Root(uploadRoot),
+			OnDisconnect: func(machine string, err error) {
+				mcputil.BroadcastWarning(s, "ssh-mcp", fmt.Sprintf("SSH session to %s disconnected: %v", machine, err))
+			},
+		})
+		go pool.RunLoop(ctx)
+
+		logger.Debug("registering MCP tools")
+		core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
+		if *disableSpecializedTools {
+			fs.RegisterFileTransfer(s, pool, fs.Options{Blob: blobStore})
+		} else {
+			fs.Register(s, pool, fs.Options{Blob: blobStore})
+			systemd.Register(s, pool)
+			sysinfo.Register(s, pool)
+			proc.Register(s, pool)
+			disk.Register(s, pool)
+		}
+		logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "disable_specialized_tools", *disableSpecializedTools, "upload_root", uploadRoot)
+
+		return transport.Run(ctx, mcpcmd.RunOptions{
+			Name:   "ssh-mcp",
+			Server: s,
+			Logger: logger.With("component", "transport"),
+		})
 	})
-	go pool.RunLoop(ctx)
-
-	logger.Debug("registering MCP tools")
-	core.Register(s, pool, core.RegisterOptions{DisableSudo: *disableSudo, Passwords: passwords})
-	if *disableSpecializedTools {
-		fs.RegisterFileTransfer(s, pool, fs.Options{Blob: blobStore})
-	} else {
-		fs.Register(s, pool, fs.Options{Blob: blobStore})
-		systemd.Register(s, pool)
-		sysinfo.Register(s, pool)
-		proc.Register(s, pool)
-		disk.Register(s, pool)
-	}
-	logger.Info("MCP tools registered successfully", "disable_sudo", *disableSudo, "disable_specialized_tools", *disableSpecializedTools, "upload_root", uploadRoot)
-
-	if err := transport.Run(ctx, mcpcmd.RunOptions{
-		Name:   "ssh-mcp",
-		Server: s,
-		Logger: logger.With("component", "transport"),
-	}); err != nil {
-		slog.Error("failed to run server", "err", err)
-		os.Exit(1)
-	}
 }

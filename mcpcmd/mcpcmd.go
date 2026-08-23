@@ -9,7 +9,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -37,41 +36,6 @@ func (flags *LoggingFlags) Register(fs *flag.FlagSet) {
 	fs.TextVar(&flags.LogLevel, "log-level", &flags.LogLevel, "log level: debug, info, warn, error")
 	fs.StringVar(&flags.LogFile, "log-file", "", "path to log file; stderr is used when empty")
 	fs.StringVar(&flags.LogFormat, "log-format", "text", "log format: text, json")
-}
-
-// Setup configures slog from common logging flags.
-func (flags *LoggingFlags) Setup() (func(), *slog.Logger, error) {
-	// Validate format before creating the log file to avoid leaking the fd.
-	var newHandler func(io.Writer, *slog.HandlerOptions) slog.Handler
-	switch flags.LogFormat {
-	case "json":
-		newHandler = func(w io.Writer, o *slog.HandlerOptions) slog.Handler { return slog.NewJSONHandler(w, o) }
-	case "text", "":
-		newHandler = func(w io.Writer, o *slog.HandlerOptions) slog.Handler { return slog.NewTextHandler(w, o) }
-	default:
-		return func() {}, slog.Default(), fmt.Errorf("unknown log format: %q", flags.LogFormat)
-	}
-
-	var (
-		out     = io.Writer(os.Stderr)
-		cleanup = func() {}
-	)
-
-	if flags.LogFile != "" {
-		f, err := os.OpenFile(flags.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return cleanup, slog.Default(), fmt.Errorf("open logging file: %w", err)
-		}
-		out = f
-		cleanup = func() { _ = f.Close() }
-	}
-
-	opts := &slog.HandlerOptions{Level: flags.LogLevel}
-	handler := newHandler(out, opts)
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-
-	return cleanup, logger, nil
 }
 
 // TransportFlags are common MCP server transport flags.

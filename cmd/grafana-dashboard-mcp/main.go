@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/go-faster/errors"
+	"github.com/go-faster/sdk/app"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/common/model"
 
@@ -45,86 +47,77 @@ func main() {
 	flag.TextVar(&sessionTTL, "session-ttl", &sessionTTL, "idle session lifetime before deletion (default: disabled; e.g. 1h, 2d, 1w)")
 	flag.Parse()
 
-	cleanup, logger, err := logging.Setup()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%+v\n", err)
-		os.Exit(1)
-	}
-	defer cleanup()
-
-	if *sessionsDir == "" {
-		xdgData := os.Getenv("XDG_DATA_HOME")
-		if xdgData != "" {
-			*sessionsDir = filepath.Join(xdgData, "grafana-dashboard-mcp", "sessions")
-		} else {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				slog.Error("getting user home directory", "err", err)
-				os.Exit(1)
+	mcpcmd.Run(mcpcmd.AppOptions{
+		Name:      "grafana-dashboard-mcp",
+		Logging:   logging,
+		Transport: transport,
+	}, func(ctx context.Context, logger *slog.Logger, _ *app.Telemetry) error {
+		if *sessionsDir == "" {
+			xdgData := os.Getenv("XDG_DATA_HOME")
+			if xdgData != "" {
+				*sessionsDir = filepath.Join(xdgData, "grafana-dashboard-mcp", "sessions")
+			} else {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return errors.Wrap(err, "get user home directory")
+				}
+				*sessionsDir = filepath.Join(home, ".local", "share", "grafana-dashboard-mcp", "sessions")
 			}
-			*sessionsDir = filepath.Join(home, ".local", "share", "grafana-dashboard-mcp", "sessions")
 		}
-	}
 
-	// import_dashboard's file_path and export_dashboard's output_path come from
-	// the agent, so they are confined to the working directory the server was
-	// started in — the same model ssh-mcp uses for its local file tools.
-	workDir, err := os.Getwd()
-	if err != nil {
-		slog.Error("getting working directory", "err", err)
-		os.Exit(1)
-	}
+		// import_dashboard's file_path and export_dashboard's output_path come from
+		// the agent, so they are confined to the working directory the server was
+		// started in — the same model ssh-mcp uses for its local file tools.
+		workDir, err := os.Getwd()
+		if err != nil {
+			return errors.Wrap(err, "get working directory")
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	gc := grafana.NewGrafanaClient(grafana.GrafanaClientOptions{
-		URL:      *grafanaURL,
-		Token:    *grafanaToken,
-		User:     *grafanaUser,
-		Password: *grafanaPassword,
-	})
-	s := mcputil.NewServer(mcputil.ServerConfig{
-		Name:         "grafana-dashboard-mcp",
-		Instructions: "You are connected to grafana-dashboard-mcp. Use these tools to incrementally build and deploy Grafana dashboards.",
-		Logger:       logger.With("component", "mcp-sdk"),
-		Prompts: []*mcp.Prompt{
-			{
-				Name:        "design-dashboard",
-				Description: "Design and build a high-quality Grafana dashboard",
+		gc := grafana.NewGrafanaClient(grafana.GrafanaClientOptions{
+			URL:      *grafanaURL,
+			Token:    *grafanaToken,
+			User:     *grafanaUser,
+			Password: *grafanaPassword,
+		})
+		s := mcputil.NewServer(mcputil.ServerConfig{
+			Name:         "grafana-dashboard-mcp",
+			Instructions: "You are connected to grafana-dashboard-mcp. Use these tools to incrementally build and deploy Grafana dashboards.",
+			Logger:       logger.With("component", "mcp-sdk"),
+			Prompts: []*mcp.Prompt{
+				{
+					Name:        "design-dashboard",
+					Description: "Design and build a high-quality Grafana dashboard",
+				},
 			},
-		},
-		PromptHandler: mcp.PromptHandler(func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			if req.Params.Name == "design-dashboard" {
-				return &mcp.GetPromptResult{
-					Description: "Dashboard design guidelines",
-					Messages: []*mcp.PromptMessage{
-						{
-							Role: "user",
-							Content: &mcp.TextContent{
-								Text: designDashboardPrompt,
+			PromptHandler: mcp.PromptHandler(func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+				if req.Params.Name == "design-dashboard" {
+					return &mcp.GetPromptResult{
+						Description: "Dashboard design guidelines",
+						Messages: []*mcp.PromptMessage{
+							{
+								Role: "user",
+								Content: &mcp.TextContent{
+									Text: designDashboardPrompt,
+								},
 							},
 						},
-					},
-				}, nil
-			}
-			return nil, fmt.Errorf("unknown prompt: %q", req.Params.Name)
-		}),
+					}, nil
+				}
+				return nil, fmt.Errorf("unknown prompt: %q", req.Params.Name)
+			}),
+		})
+
+		sm := grafana.NewSessionManager(*sessionsDir)
+		sm.OnEvict = func(id string) {
+			mcputil.BroadcastWarning(s, "grafana-mcp", fmt.Sprintf("Dashboard session %q evicted due to inactivity", id))
+		}
+		go sm.StartCleanupLoop(ctx, time.Duration(sessionTTL))
+		grafana.Register(s, sm, gc, grafana.RegisterOptions{LocalFS: effect.Root(workDir)})
+
+		return transport.Run(ctx, mcpcmd.RunOptions{
+			Name:   "grafana-dashboard-mcp",
+			Server: s,
+			Logger: logger.With("component", "transport"),
+		})
 	})
-
-	sm := grafana.NewSessionManager(*sessionsDir)
-	sm.OnEvict = func(id string) {
-		mcputil.BroadcastWarning(s, "grafana-mcp", fmt.Sprintf("Dashboard session %q evicted due to inactivity", id))
-	}
-	go sm.StartCleanupLoop(ctx, time.Duration(sessionTTL))
-	grafana.Register(s, sm, gc, grafana.RegisterOptions{LocalFS: effect.Root(workDir)})
-
-	if err := transport.Run(ctx, mcpcmd.RunOptions{
-		Name:   "grafana-dashboard-mcp",
-		Server: s,
-		Logger: logger.With("component", "transport"),
-	}); err != nil {
-		slog.Error("failed to run server", "err", err)
-		os.Exit(1)
-	}
 }
