@@ -13,6 +13,11 @@ import (
 	backoff "github.com/cenkalti/backoff/v5"
 	"github.com/go-faster/errors"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	gwtransport "github.com/go-faster/gooners/internal/gateway/transport"
 )
@@ -60,7 +65,9 @@ type Upstream struct {
 	resolver       SecretResolver
 	redactor       *Redactor
 
-	logger *slog.Logger
+	logger  *slog.Logger
+	tracer  trace.Tracer
+	metrics upstreamMetrics
 
 	mu               sync.RWMutex
 	supervisorCancel context.CancelFunc
@@ -101,6 +108,10 @@ type UpstreamOptions struct {
 	// CallTimeout bounds a single request to this upstream. Zero means no
 	// limit, for upstreams with genuinely long-running tools.
 	CallTimeout time.Duration
+	// TracerProvider and MeterProvider instrument the connection and the calls
+	// forwarded over it. Nil means the global provider.
+	TracerProvider trace.TracerProvider
+	MeterProvider  metric.MeterProvider
 }
 
 func (o *UpstreamOptions) setDefaults() {
@@ -125,6 +136,12 @@ func (o *UpstreamOptions) setDefaults() {
 	if o.DrainTimeout == 0 {
 		o.DrainTimeout = defaultDrainTimeout
 	}
+	if o.TracerProvider == nil {
+		o.TracerProvider = otel.GetTracerProvider()
+	}
+	if o.MeterProvider == nil {
+		o.MeterProvider = otel.GetMeterProvider()
+	}
 }
 
 // NewUpstream creates an Upstream from config. It does not connect.
@@ -144,6 +161,8 @@ func NewUpstream(cfg UpstreamConfig, opts UpstreamOptions) (*Upstream, error) {
 		redactor:         opts.Redactor,
 		drainTimeout:     opts.DrainTimeout,
 		callTimeout:      opts.CallTimeout,
+		tracer:           opts.TracerProvider.Tracer(gatewayMeterName),
+		metrics:          initUpstreamMetrics(opts.MeterProvider, opts.Logger),
 	}
 	impl := &mcp.Implementation{Name: "mcpgateway-client", Version: "0"}
 	u.client = mcp.NewClient(impl, &mcp.ClientOptions{
@@ -200,6 +219,17 @@ func (u *Upstream) Connect(ctx context.Context) error {
 }
 
 func (u *Upstream) connectOnce(ctx context.Context) (rerr error) {
+	// Neither a closed upstream nor one that is already up dials anything, so
+	// neither is counted as an attempt.
+	start := time.Now()
+	dialed := false
+	defer func() {
+		if !dialed {
+			return
+		}
+		u.metrics.recordConnect(ctx, u.cfg.Name, rerr, time.Since(start))
+	}()
+
 	u.mu.RLock()
 	closed := u.closed
 	connected := u.session != nil
@@ -211,6 +241,7 @@ func (u *Upstream) connectOnce(ctx context.Context) (rerr error) {
 	if connected {
 		return nil
 	}
+	dialed = true
 
 	tr, closeTransport, err := u.buildTransport(ctx, u.cfg, u.resolver)
 	if err != nil {
@@ -317,7 +348,9 @@ func (u *Upstream) reconnectLoop(ctx context.Context, bo *backoff.ExponentialBac
 			return false
 		}
 		attempt++
-		if err := u.connectOnce(ctx); err != nil {
+		err := u.connectOnce(ctx)
+		u.metrics.recordReconnect(ctx, u.cfg.Name, err)
+		if err != nil {
 			u.logger.Warn("upstream reconnect failed", "attempt", attempt, "backoff", delay, "error", err)
 			continue
 		}
@@ -506,7 +539,26 @@ func (u *Upstream) ListTools(ctx context.Context) ([]*mcp.Tool, error) {
 }
 
 // CallTool forwards the call to the upstream session.
-func (u *Upstream) CallTool(ctx context.Context, params *mcp.CallToolParams) (*mcp.CallToolResult, error) {
+//
+// The span is a child of the gateway's own tool.call span, which is what
+// separates the time the upstream took from the time the gateway spent getting
+// there: routing, waiting for a reconnect, or blocking on the drain.
+func (u *Upstream) CallTool(ctx context.Context, params *mcp.CallToolParams) (_ *mcp.CallToolResult, err error) {
+	ctx, span := u.spanTracer().Start(ctx, "upstream.call_tool",
+		trace.WithSpanKind(trace.SpanKindClient),
+		trace.WithAttributes(
+			upstreamAttr(u.cfg.Name),
+			attribute.String("mcp.tool.name", params.Name),
+		),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	sess, err := u.enter()
 	if err != nil {
 		return nil, err

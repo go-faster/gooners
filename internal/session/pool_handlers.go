@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/go-faster/gooners/blob"
@@ -56,6 +57,7 @@ type dialResult struct {
 }
 
 func (p *Pool) handleDialResult(ctx context.Context, st *poolState, res dialResult) {
+	p.metrics.SessionOpens.Add(ctx, 1, metric.WithAttributes(statusAttr(res.err)))
 	if res.err != nil {
 		res.req.resp <- OpenResponse{Err: res.err}
 		return
@@ -80,6 +82,7 @@ func (p *Pool) handleDialResult(ctx context.Context, st *poolState, res dialResu
 		platform:  platform,
 	}
 	st.sessions[id] = sess
+	p.liveSessions.Add(1)
 	p.logger.Debug("ssh session opened", "id", id, "machine", res.req.Config.Machine)
 	res.req.resp <- OpenResponse{
 		ID:        id,
@@ -247,6 +250,10 @@ func (p *Pool) handleClose(st *poolState, r CloseRequest) {
 
 		_ = s.client.Close()
 		delete(st.sessions, r.ID)
+		p.liveSessions.Add(-1)
+		// Every session leaves the map here, whether a tool closed it or the
+		// connection dropped, so this is the one place its lifetime is known.
+		p.metrics.SessionDuration.Record(context.Background(), time.Since(s.CreatedAt).Seconds())
 		p.logger.Debug("ssh session closed", "id", r.ID, "machine", s.Machine, "cause", cause)
 	}
 	r.resp <- nil

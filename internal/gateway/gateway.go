@@ -328,6 +328,8 @@ func (g *Gateway) newUpstream(uc UpstreamConfig, cfg *Config, res SecretResolver
 		OnResourceUpdated:     g.onResourceUpdated,
 		OnReconnect:           g.onUpstreamReconnect,
 		Redactor:              globalRedactor,
+		TracerProvider:        g.tp,
+		MeterProvider:         g.mp,
 	}
 	if uc.Redact != nil {
 		if uc.Redact.Enabled {

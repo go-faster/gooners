@@ -36,6 +36,10 @@ not its problem. Keep the split:
 - **Telemetry is not config.** Exporters come from `OTEL_*` env via `go-faster/sdk`'s `app.Run`, so
   there is no `[telemetry]` section — one existed, was validated, and was never read by the binary.
   Do not reintroduce it: a config section the process ignores reads as working configuration.
+- An `Upstream` is also assembled as a struct literal, by the in-memory constructors and by tests,
+  so its instruments are reached through `spanTracer()` and the guarded `upstreamMetrics` methods
+  rather than the fields. A missing counter must never be why a forwarded call panics — that is
+  exactly how the first version of this crashed every gateway test.
 - Reloadable state on `Gateway` (`cfg`, `resolver`, `upstreams`) is guarded by `stateMu`; read it
   through `config()`/`secretResolver()`/`upstreamList()`, never the field directly.
 

@@ -94,9 +94,11 @@ func NewTelemetry(next mcp.ToolHandler, opts TelemetryOptions) (mcp.ToolHandler,
 			zap.Duration("took", elapsed),
 			zap.Error(err),
 		)
-		status := statusAttr(err)
-		m.Calls.Add(ctx, 1, metric.WithAttributes(status))
-		m.CallDuration.Record(ctx, elapsed.Seconds())
+		// The upstream is on the metrics as well as the span: a dashboard
+		// answers "which upstream is slow" without a trace backend.
+		attrs := metric.WithAttributes(statusAttr(err), attribute.String("mcp.upstream", opts.Upstream))
+		m.Calls.Add(ctx, 1, attrs)
+		m.CallDuration.Record(ctx, elapsed.Seconds(), attrs)
 
 		return res, err
 	}
