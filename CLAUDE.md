@@ -174,6 +174,19 @@ func NewFoo(ctx context.Context, opts FooOptions) *Foo {
 }
 ```
 
+## Binaries
+
+- A binary under `cmd/` starts with `mcpcmd.Run`, which configures logging from the shared flags and
+  installs the OpenTelemetry providers globally — that global is what makes the clients in
+  `internal/effect` emit anything. `main` parses flags and returns errors; it does not call
+  `os.Exit` or set up logging itself.
+- Telemetry is opt-in: `mcpcmd.Run` turns a signal off when neither an endpoint nor an exporter is
+  named, because `go-faster/sdk` otherwise defaults to OTLP on localhost and every session pays a
+  refused connection and a slow shutdown.
+- **Nothing but JSON-RPC may reach stdout on the stdio transport.** `mcpcmd.Run` refuses to start
+  when the environment selects a stdout exporter, because stdout *is* the session there. Never
+  print, and never route a log or an exporter to stdout, from a binary that can run on stdio.
+
 ## README
 
 - Keep `README.md` up to date whenever a tool or skill is added, removed, or renamed.

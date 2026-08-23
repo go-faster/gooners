@@ -4,11 +4,12 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
 
+	"github.com/go-faster/errors"
+	"github.com/go-faster/sdk/app"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/go-faster/gooners/internal/effect"
@@ -43,137 +44,128 @@ func main() {
 	)
 	flag.Parse()
 
-	cleanup, logger, err := logging.Setup()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%+v\n", err)
-		os.Exit(1)
-	}
-	defer cleanup()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	mode, err := gitlab.ParseAuthMode(*auth)
-	if err != nil {
-		// A mistyped flag deserves the accepted values, not a stack trace.
-		logger.Error("invalid -auth", "value", *auth, "want", "server, client or client-optional")
-		os.Exit(1)
-	}
-	clientAuth := mode != gitlab.AuthServer
-
-	// A caller's token can only arrive on a header, and stdio has none, so
-	// client auth over stdio would authenticate as nobody. Refusing beats a
-	// server that silently reads every project as anonymous.
-	if clientAuth && transport.Transport == "stdio" {
-		logger.Error("client auth requires an HTTP transport", "auth", mode.String(), "transport", transport.Transport)
-		os.Exit(1)
-	}
-	// Passthrough puts a credential on the wire on every session.
-	if clientAuth && transport.TLSCertFile == "" && !*authInsecure {
-		logger.Error("client auth over plaintext sends tokens in the clear; pass -tls-cert-file/-tls-key-file, or -auth-insecure to accept it", "auth", mode.String())
-		os.Exit(1)
-	}
-
-	cfg := gitlab.Config{
-		BaseURL:        *baseURL,
-		Token:          *token,
-		DefaultProject: *project,
-	}
-
-	// The glab CLI is the likeliest place a token already exists, so an
-	// operator who has run `glab auth login` needs no further setup. Explicit
-	// flags and environment still win.
-	//
-	// Under -auth=client the server holds no credential, so the only thing
-	// worth reading from the glab config is the instance URL.
-	if !*noGlabConfig {
-		dir := *glabConfigDir
-		if dir == "" {
-			dir = gitlab.GlabConfigDir()
-		}
-		glabCfg, err := gitlab.LoadGlabConfig(dir)
+	mcpcmd.Run(mcpcmd.AppOptions{
+		Name:      "gitlab-mcp",
+		Logging:   logging,
+		Transport: transport,
+	}, func(ctx context.Context, logger *slog.Logger, _ *app.Telemetry) error {
+		mode, err := gitlab.ParseAuthMode(*auth)
 		if err != nil {
-			logger.Warn("could not read glab config", "dir", dir, "err", err)
-		} else {
-			// The host we look up is the one being configured, so an explicit
-			// -gitlab-url still picks up its matching stored token.
-			glabURL, glabToken := glabCfg.Resolve(hostOf(cfg.BaseURL))
-			if cfg.BaseURL == "" && glabURL != "" {
-				cfg.BaseURL = glabURL
-				logger.Info("using GitLab instance from glab config", "url", glabURL)
+			// A mistyped flag deserves the accepted values, not a stack trace.
+			return errors.Errorf("invalid -auth %q: want server, client or client-optional", *auth)
+		}
+		clientAuth := mode != gitlab.AuthServer
+
+		// A caller's token can only arrive on a header, and stdio has none, so
+		// client auth over stdio would authenticate as nobody. Refusing beats a
+		// server that silently reads every project as anonymous.
+		if clientAuth && transport.Transport == "stdio" {
+			return errors.Errorf("-auth=%s requires an HTTP transport, got %q", mode, transport.Transport)
+		}
+		// Passthrough puts a credential on the wire on every session.
+		if clientAuth && transport.TLSCertFile == "" && !*authInsecure {
+			return errors.Errorf("-auth=%s over plaintext sends tokens in the clear: pass -tls-cert-file/-tls-key-file, or -auth-insecure to accept it", mode)
+		}
+
+		cfg := gitlab.Config{
+			BaseURL:        *baseURL,
+			Token:          *token,
+			DefaultProject: *project,
+		}
+
+		// The glab CLI is the likeliest place a token already exists, so an
+		// operator who has run `glab auth login` needs no further setup. Explicit
+		// flags and environment still win.
+		//
+		// Under -auth=client the server holds no credential, so the only thing
+		// worth reading from the glab config is the instance URL.
+		if !*noGlabConfig {
+			dir := *glabConfigDir
+			if dir == "" {
+				dir = gitlab.GlabConfigDir()
 			}
-			if cfg.Token == "" && glabToken != "" && mode != gitlab.AuthClientRequired {
-				cfg.Token = glabToken
-				logger.Info("using GitLab token from glab config", "host", hostOf(cfg.BaseURL))
+			glabCfg, err := gitlab.LoadGlabConfig(dir)
+			if err != nil {
+				logger.Warn("could not read glab config", "dir", dir, "err", err)
+			} else {
+				// The host we look up is the one being configured, so an explicit
+				// -gitlab-url still picks up its matching stored token.
+				glabURL, glabToken := glabCfg.Resolve(hostOf(cfg.BaseURL))
+				if cfg.BaseURL == "" && glabURL != "" {
+					cfg.BaseURL = glabURL
+					logger.Info("using GitLab instance from glab config", "url", glabURL)
+				}
+				if cfg.Token == "" && glabToken != "" && mode != gitlab.AuthClientRequired {
+					cfg.Token = glabToken
+					logger.Info("using GitLab token from glab config", "host", hostOf(cfg.BaseURL))
+				}
 			}
 		}
-	}
 
-	// What the release asset tools may touch is decided here, at startup, not
-	// by the paths an agent later passes. Unset means they touch nothing.
-	if *assetsDir != "" {
-		cfg.FS = effect.Root(*assetsDir)
-	}
-
-	// Where a downloaded asset goes when the agent cannot read this server's
-	// filesystem. Unset leaves a store that refuses, naming the flag.
-	blobStore, runBlob, err := blobFlags.Setup(ctx, mcpcmd.BlobOptions{
-		Name:   "gitlab-mcp",
-		Logger: logger.With("component", "blob"),
-	})
-	if err != nil {
-		logger.Error("invalid blob store configuration", "err", err)
-		os.Exit(1)
-	}
-	cfg.Blob = blobStore
-
-	switch {
-	case mode == gitlab.AuthClientRequired:
-		// Nothing should have set it, but an explicit -gitlab-token plus
-		// -auth=client is a contradiction worth naming rather than obeying.
-		if cfg.Token != "" {
-			logger.Warn("ignoring the configured token: every session must present its own")
-			cfg.Token = ""
+		// What the release asset tools may touch is decided here, at startup, not
+		// by the paths an agent later passes. Unset means they touch nothing.
+		if *assetsDir != "" {
+			cfg.FS = effect.Root(*assetsDir)
 		}
-	case cfg.Token == "":
-		logger.Warn("no GitLab token configured; only public projects will be readable")
-	}
 
-	clients, err := gitlab.NewClientSet(cfg)
-	if err != nil {
-		logger.Error("failed to create gitlab client", "err", err)
-		os.Exit(1)
-	}
-
-	logger.Info("gitlab-mcp configured", "url", cfg.BaseURL, "auth", mode.String())
-
-	handler := gitlab.NewSessionServer(gitlab.SessionServerOptions{
-		Clients: clients,
-		Mode:    mode,
-		Server: mcputil.ServerConfig{
-			Name:         "gitlab-mcp",
-			Instructions: gitlab.Instructions,
-			Logger:       logger.With("component", "mcp-sdk"),
-		},
-		Logger: logger.With("component", "auth"),
-	})
-
-	// The blob store serves on its own listener, so it runs alongside the MCP
-	// transport rather than inside it; either one failing stops the other.
-	g, ctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return runBlob(ctx) })
-	g.Go(func() error {
-		defer cancel()
-		return transport.Run(ctx, mcpcmd.RunOptions{
-			Name:    "gitlab-mcp",
-			Handler: handler,
-			Logger:  logger.With("component", "transport"),
+		// Where a downloaded asset goes when the agent cannot read this server's
+		// filesystem. Unset leaves a store that refuses, naming the flag.
+		blobStore, runBlob, err := blobFlags.Setup(ctx, mcpcmd.BlobOptions{
+			Name:   "gitlab-mcp",
+			Logger: logger.With("component", "blob"),
 		})
+		if err != nil {
+			return errors.Wrap(err, "blob store configuration")
+		}
+		cfg.Blob = blobStore
+
+		switch {
+		case mode == gitlab.AuthClientRequired:
+			// Nothing should have set it, but an explicit -gitlab-token plus
+			// -auth=client is a contradiction worth naming rather than obeying.
+			if cfg.Token != "" {
+				logger.Warn("ignoring the configured token: every session must present its own")
+				cfg.Token = ""
+			}
+		case cfg.Token == "":
+			logger.Warn("no GitLab token configured; only public projects will be readable")
+		}
+
+		clients, err := gitlab.NewClientSet(cfg)
+		if err != nil {
+			return errors.Wrap(err, "create gitlab client")
+		}
+
+		logger.Info("gitlab-mcp configured", "url", cfg.BaseURL, "auth", mode.String())
+
+		handler := gitlab.NewSessionServer(gitlab.SessionServerOptions{
+			Clients: clients,
+			Mode:    mode,
+			Server: mcputil.ServerConfig{
+				Name:         "gitlab-mcp",
+				Instructions: gitlab.Instructions,
+				Logger:       logger.With("component", "mcp-sdk"),
+			},
+			Logger: logger.With("component", "auth"),
+		})
+
+		// The blob store serves on its own listener, so it runs alongside the MCP
+		// transport rather than inside it; either one failing stops the other.
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		g, ctx := errgroup.WithContext(ctx)
+		g.Go(func() error { return runBlob(ctx) })
+		g.Go(func() error {
+			defer cancel()
+			return transport.Run(ctx, mcpcmd.RunOptions{
+				Name:    "gitlab-mcp",
+				Handler: handler,
+				Logger:  logger.With("component", "transport"),
+			})
+		})
+		return g.Wait()
 	})
-	if err := g.Wait(); err != nil {
-		slog.Error("failed to run server", "err", err)
-		os.Exit(1)
-	}
 }
 
 // hostOf extracts the hostname of a URL, so the glab config can be indexed by

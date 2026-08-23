@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-faster/sdk/app"
+
 	"github.com/go-faster/gooners/internal/mcputil"
 	"github.com/go-faster/gooners/internal/tools/opencode"
 	"github.com/go-faster/gooners/mcpcmd"
@@ -47,42 +49,34 @@ func main() {
 
 	flag.Parse()
 
-	closeLog, logger, err := logging.Setup()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%+v\n", err)
-		os.Exit(1)
-	}
-	defer closeLog()
+	mcpcmd.Run(mcpcmd.AppOptions{
+		Name:      "opencode-handoff-mcp",
+		Logging:   logging,
+		Transport: transport,
+	}, func(ctx context.Context, logger *slog.Logger, _ *app.Telemetry) error {
+		client, closeClient, err := ocode.Create(ctx, logger)
+		if err != nil {
+			return fmt.Errorf("create opencode client: %w", err)
+		}
+		defer closeClient()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		s := mcputil.NewServer(mcputil.ServerConfig{
+			Name:         "opencode-handoff-mcp",
+			Instructions: "You are connected to opencode-handoff-mcp. Use these tools to delegate coding tasks to opencode agents, monitor their sessions, and answer permission or clarification requests when needed.",
+			Logger:       logger.With("component", "mcp-sdk"),
+		})
+		mgr := opencode.NewManager(ctx, client, opencode.ManagerOptions{
+			Logger:   logger.With("component", "opencode-manager"),
+			StateDir: ocode.StateDir,
+		})
+		opencode.Register(s, client, mgr)
 
-	client, closeClient, err := ocode.Create(ctx, logger)
-	if err != nil {
-		slog.Error("create opencode client", "err", err)
-		os.Exit(1)
-	}
-	defer closeClient()
-
-	s := mcputil.NewServer(mcputil.ServerConfig{
-		Name:         "opencode-handoff-mcp",
-		Instructions: "You are connected to opencode-handoff-mcp. Use these tools to delegate coding tasks to opencode agents, monitor their sessions, and answer permission or clarification requests when needed.",
-		Logger:       logger.With("component", "mcp-sdk"),
+		return transport.Run(ctx, mcpcmd.RunOptions{
+			Name:   "opencode-handoff-mcp",
+			Server: s,
+			Logger: logger.WithGroup("transport"),
+		})
 	})
-	mgr := opencode.NewManager(ctx, client, opencode.ManagerOptions{
-		Logger:   logger.With("component", "opencode-manager"),
-		StateDir: ocode.StateDir,
-	})
-	opencode.Register(s, client, mgr)
-
-	if err := transport.Run(ctx, mcpcmd.RunOptions{
-		Name:   "opencode-handoff-mcp",
-		Server: s,
-		Logger: logger.WithGroup("transport"),
-	}); err != nil {
-		slog.Error("failed to run server", "err", err)
-		os.Exit(1)
-	}
 }
 
 func envDefault(name, fallback string) string {

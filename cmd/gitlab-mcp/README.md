@@ -188,3 +188,24 @@ Per the effect-provider invariant in `CLAUDE.md`:
   `-auth=client` that makes an exposed server safe to share.
 - The per-token client cache is bounded at 128 entries and dropped wholesale past it, because under
   `-auth=client` the set of tokens is caller-supplied and so is attacker-driven input.
+
+## Telemetry
+
+Traces and metrics are configured entirely from the environment, by `go-faster/sdk`'s `app.Run`.
+Telemetry is **opt-in**: with neither an endpoint nor an exporter named, every signal is turned off,
+so a server started where no collector runs neither retries a refused connection nor stalls on
+shutdown flushing it.
+
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otelcol:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_INSECURE=true
+```
+
+Every outbound HTTP request is traced and counted, and carries the trace context to the upstream.
+
+On the stdio transport, stdout is the MCP session: `OTEL_TRACES_EXPORTER=stdout` (or the metrics or
+logs equivalent, or `-log-file` pointing at stdout) would corrupt the protocol stream, so the server
+refuses to start and says so. Use `stderr`, `otlp` or `none`. Logs go to stderr unless `-log-file`
+names a file.

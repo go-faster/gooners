@@ -4,11 +4,12 @@ package main
 import (
 	"context"
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
+	"github.com/go-faster/errors"
+	"github.com/go-faster/sdk/app"
 	"github.com/prometheus/common/model"
 
 	"github.com/go-faster/gooners/internal/mcputil"
@@ -47,52 +48,44 @@ func main() {
 	flag.TextVar(&maxSilenceDuration, "max-silence-duration", &maxSilenceDuration, "maximum duration a create_silence call may request (default: 24h; e.g. 1h, 2d)")
 	flag.Parse()
 
-	cleanup, logger, err := logging.Setup()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%+v\n", err)
-		os.Exit(1)
-	}
-	defer cleanup()
+	mcpcmd.Run(mcpcmd.AppOptions{
+		Name:      "alertmanager-mcp",
+		Logging:   logging,
+		Transport: transport,
+	}, func(ctx context.Context, logger *slog.Logger, _ *app.Telemetry) error {
+		cfg := alertmanager.Config{
+			AlertmanagerURL:       *alertmanagerURL,
+			AlertmanagerToken:     *alertmanagerToken,
+			AlertmanagerUser:      *alertmanagerUser,
+			AlertmanagerPassword:  *alertmanagerPassword,
+			PrometheusURL:         *prometheusURL,
+			PrometheusToken:       *prometheusToken,
+			PrometheusUser:        *prometheusUser,
+			PrometheusPassword:    *prometheusPassword,
+			MaxSilenceDuration:    time.Duration(maxSilenceDuration),
+			TLSCAFile:             *upstreamCAFile,
+			TLSCertFile:           *upstreamClientCertFile,
+			TLSKeyFile:            *upstreamClientKeyFile,
+			TLSInsecureSkipVerify: *upstreamInsecureSkipVerify,
+		}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		c, err := alertmanager.NewClient(cfg)
+		if err != nil {
+			return errors.Wrap(err, "create alertmanager client")
+		}
 
-	cfg := alertmanager.Config{
-		AlertmanagerURL:       *alertmanagerURL,
-		AlertmanagerToken:     *alertmanagerToken,
-		AlertmanagerUser:      *alertmanagerUser,
-		AlertmanagerPassword:  *alertmanagerPassword,
-		PrometheusURL:         *prometheusURL,
-		PrometheusToken:       *prometheusToken,
-		PrometheusUser:        *prometheusUser,
-		PrometheusPassword:    *prometheusPassword,
-		MaxSilenceDuration:    time.Duration(maxSilenceDuration),
-		TLSCAFile:             *upstreamCAFile,
-		TLSCertFile:           *upstreamClientCertFile,
-		TLSKeyFile:            *upstreamClientKeyFile,
-		TLSInsecureSkipVerify: *upstreamInsecureSkipVerify,
-	}
+		s := mcputil.NewServer(mcputil.ServerConfig{
+			Name:         "alertmanager-mcp",
+			Instructions: "You are connected to alertmanager-mcp. Use these tools to inspect Alertmanager alerts, silences, receivers, and cluster status, and to validate/evaluate PromQL queries. Prefer preview_silence before create_silence to check blast radius.",
+			Logger:       logger.With("component", "mcp-sdk"),
+		})
 
-	c, err := alertmanager.NewClient(cfg)
-	if err != nil {
-		slog.Error("failed to create alertmanager client", "err", err)
-		os.Exit(1)
-	}
+		alertmanager.Register(s, c)
 
-	s := mcputil.NewServer(mcputil.ServerConfig{
-		Name:         "alertmanager-mcp",
-		Instructions: "You are connected to alertmanager-mcp. Use these tools to inspect Alertmanager alerts, silences, receivers, and cluster status, and to validate/evaluate PromQL queries. Prefer preview_silence before create_silence to check blast radius.",
-		Logger:       logger.With("component", "mcp-sdk"),
+		return transport.Run(ctx, mcpcmd.RunOptions{
+			Name:   "alertmanager-mcp",
+			Server: s,
+			Logger: logger.With("component", "transport"),
+		})
 	})
-
-	alertmanager.Register(s, c)
-
-	if err := transport.Run(ctx, mcpcmd.RunOptions{
-		Name:   "alertmanager-mcp",
-		Server: s,
-		Logger: logger.With("component", "transport"),
-	}); err != nil {
-		slog.Error("failed to run server", "err", err)
-		os.Exit(1)
-	}
 }
