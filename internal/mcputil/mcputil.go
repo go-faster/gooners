@@ -45,7 +45,14 @@ func NewServer(cfg ServerConfig) *mcp.Server {
 }
 
 // BroadcastWarning sends a warning log message to all connected MCP clients.
+//
+// It relies on MCP logging, which revision 2026-07-28 deprecates (SEP-2577)
+// without a protocol replacement: the advice is stderr or OpenTelemetry, and
+// neither reaches the agent. A client receives the message only if it is on an
+// older revision and has set a logging level; for everyone else this is a
+// no-op.
 func BroadcastWarning(s *mcp.Server, component, message string) {
+	//nolint:staticcheck // SA1019: MCP logging is deprecated with no replacement that reaches the client.
 	params := &mcp.LoggingMessageParams{
 		Level:  "warning",
 		Logger: component,
@@ -54,6 +61,7 @@ func BroadcastWarning(s *mcp.Server, component, message string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	for session := range s.Sessions() {
+		//nolint:staticcheck // SA1019: see above.
 		_ = session.Log(ctx, params)
 	}
 }

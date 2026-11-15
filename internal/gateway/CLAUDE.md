@@ -94,4 +94,17 @@ validates it and rejects the request. Route every request `_meta` through `proxy
 `req.Params.Meta` straight into an upstream call, and do not extend the strip list to keys that are
 genuinely about the client.
 
+A client on revision 2026-07-28 sends all three keys on every request, so this is the normal case,
+not a corner one.
+
+## Upstream protocol version
+
+Upstream sessions are opened on `upstreamProtocolVersion` (`2025-11-25`), not on the newest revision
+the SDK offers. Revision 2026-07-28 is stateless: it has no `ping`, so the SDK never starts keepalive
+on it and a stalled upstream is never replaced, and it turns elicitation and sampling into
+multi-round-trip results the gateway does not relay. Raise the version only together with a liveness
+check that does not need `ping`; `TestUpstream_Reconnect_AfterKeepAliveFails` guards it.
+
+Clients are not held back: the gateway's own server negotiates whatever the SDK supports.
+
 The `blob` package itself has its own guide in `blob/CLAUDE.md`.

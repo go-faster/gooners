@@ -47,7 +47,7 @@ func TestUpstream_InMemory(t *testing.T) {
 	u := &Upstream{cfg: UpstreamConfig{Name: "u1"}, logger: slog.Default(), drainTimeout: defaultDrainTimeout}
 	// wire in-memory directly
 	u.client = mcp.NewClient(&mcp.Implementation{Name: "c", Version: "0"}, nil)
-	sess, err := u.client.Connect(t.Context(), ct, nil)
+	sess, err := u.client.Connect(t.Context(), ct, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -109,6 +109,74 @@ func TestUpstream_Reconnect_AfterSessionDrops(t *testing.T) {
 			return false
 		}
 	}, time.Second, 10*time.Millisecond)
+}
+
+// A stalled upstream keeps its transport open, so only keepalive can tell that
+// it is gone. Keepalive is `ping`, which revision 2026-07-28 does not have: a
+// session on it would never be replaced here.
+func TestUpstream_Reconnect_AfterKeepAliveFails(t *testing.T) {
+	stalled := make(chan struct{})
+	t.Cleanup(func() { close(stalled) })
+	var pings atomic.Int32
+	stallPing := func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			if method == "ping" {
+				pings.Add(1)
+				select {
+				case <-stalled:
+				case <-ctx.Done():
+				}
+			}
+			return next(ctx, method, req)
+		}
+	}
+	clientTr1, cancel1 := newToolServer(t, "up1", stallPing)
+	clientTr2, cancel2 := newToolServer(t, "up2")
+	t.Cleanup(cancel1)
+	t.Cleanup(cancel2)
+
+	transports := make(chan mcp.Transport, 2)
+	transports <- clientTr1
+	transports <- clientTr2
+	buildFn := func(ctx context.Context, _ UpstreamConfig, _ SecretResolver) (mcp.Transport, func() error, error) {
+		select {
+		case tr := <-transports:
+			return tr, func() error { return nil }, nil
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+	}
+
+	reconnected := make(chan string, 1)
+	u, err := NewUpstream(UpstreamConfig{Name: "u1", Kind: "stdio", Command: []string{"ignored"}}, UpstreamOptions{
+		TransportBuilder: buildFn,
+		KeepAlive:        20 * time.Millisecond,
+		DrainTimeout:     50 * time.Millisecond,
+		ReconnectInitial: 10 * time.Millisecond,
+		ReconnectMax:     10 * time.Millisecond,
+		OnReconnect: func(_ context.Context, upstreamName string) error {
+			reconnected <- upstreamName
+			return nil
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, u.Connect(t.Context()))
+	t.Cleanup(func() { _ = u.Close(t.Context()) })
+
+	firstSession := u.currentSession()
+	require.NotNil(t, firstSession)
+	// The server offers 2026-07-28 too; the gateway must not take it.
+	require.Equal(t, upstreamProtocolVersion, firstSession.InitializeResult().ProtocolVersion)
+
+	select {
+	case name := <-reconnected:
+		require.Equal(t, "u1", name)
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled upstream was not replaced")
+	}
+	require.Positive(t, pings.Load())
+	require.NotNil(t, u.currentSession())
+	require.NotSame(t, firstSession, u.currentSession())
 }
 
 func TestUpstream_Reconnect_AfterInitialConnectFailure(t *testing.T) {
@@ -204,7 +272,7 @@ func TestUpstream_Close_Idempotent(t *testing.T) {
 	require.NoError(t, u.Close(t.Context()))
 }
 
-func newToolServer(t *testing.T, serverName string) (mcp.Transport, context.CancelFunc) {
+func newToolServer(t *testing.T, serverName string, middleware ...mcp.Middleware) (mcp.Transport, context.CancelFunc) {
 	t.Helper()
 	serverTr, clientTr := mcp.NewInMemoryTransports()
 	srv := mcp.NewServer(&mcp.Implementation{Name: serverName, Version: "0"}, nil)
@@ -212,6 +280,7 @@ func newToolServer(t *testing.T, serverName string) (mcp.Transport, context.Canc
 	srv.AddTool(&mcp.Tool{Name: toolName, Description: toolName, InputSchema: map[string]any{"type": "object"}}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ok"}}}, nil
 	})
+	srv.AddReceivingMiddleware(middleware...)
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() { _ = srv.Run(ctx, serverTr) }()
 	return clientTr, cancel

@@ -38,7 +38,7 @@ func TestGateway_InMemory(t *testing.T) {
 	u := newUpstreamWithTransport(cfg.Upstreams[0], ct, func() error { return nil })
 	// manually connect the session for this test upstream
 	u.client = mcp.NewClient(&mcp.Implementation{Name: "c", Version: "0"}, nil)
-	sess, err := u.client.Connect(t.Context(), ct, nil)
+	sess, err := u.client.Connect(t.Context(), ct, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -78,7 +78,7 @@ func TestGateway_Build_RegistersTool(t *testing.T) {
 	u := newUpstreamWithInMemoryClient(cfg.Upstreams[0], upClientTr, g.onToolListChanged)
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -166,7 +166,7 @@ func TestGateway_ReSync_AddsAndRemoves(t *testing.T) {
 	u := newUpstreamWithInMemoryClient(cfg.Upstreams[0], upClientTr, g.onToolListChanged)
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -232,10 +232,10 @@ func TestGateway_ReSync_CollisionSkipped(t *testing.T) {
 	u2 := newUpstreamWithInMemoryClient(cfg.Upstreams[1], up2ClientTr, g.onToolListChanged)
 	g.upstreams = []*Upstream{u1, u2}
 
-	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u1.session = s1
-	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u2.session = s2
 
@@ -271,7 +271,7 @@ func TestGateway_ReSync_CollisionSkipped(t *testing.T) {
 	require.NoError(t, err)
 	ux := newUpstreamWithInMemoryClient(cfgPlain.Upstreams[0], upA1c, gx.onToolListChanged)
 	gx.upstreams = []*Upstream{ux}
-	sx, err := ux.client.Connect(t.Context(), upA1c, nil)
+	sx, err := ux.client.Connect(t.Context(), upA1c, upstreamSessionOptions())
 	require.NoError(t, err)
 	ux.session = sx
 	require.NoError(t, gx.Build(t.Context()))
@@ -290,7 +290,7 @@ func TestGateway_ReSync_CollisionSkipped(t *testing.T) {
 	// Instead: inject u2 into gx and call onToolListChanged for u2.
 	u2x := newUpstreamWithInMemoryClient(cfg2.Upstreams[1], upA2c, gx.onToolListChanged)
 	gx.upstreams = append(gx.upstreams, u2x)
-	sx2, err := u2x.client.Connect(t.Context(), upA2c, nil)
+	sx2, err := u2x.client.Connect(t.Context(), upA2c, upstreamSessionOptions())
 	require.NoError(t, err)
 	u2x.session = sx2
 
@@ -332,10 +332,10 @@ func TestGateway_Build_IdenticalToolCollisionWarnsAndAccepts(t *testing.T) {
 	u2 := newUpstreamWithInMemoryClient(cfg.Upstreams[1], up2ClientTr, g.onToolListChanged)
 	g.upstreams = []*Upstream{u1, u2}
 
-	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u1.session = s1
-	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u2.session = s2
 
@@ -382,10 +382,10 @@ func TestGateway_Build_AllowFilterAvoidsFalseCollision(t *testing.T) {
 	u2 := newUpstreamWithInMemoryClient(cfg.Upstreams[1], up2ClientTr, g.onToolListChanged)
 	g.upstreams = []*Upstream{u1, u2}
 
-	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u1.session = s1
-	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u2.session = s2
 
@@ -417,7 +417,7 @@ func TestGateway_Build_RegistersPrompt(t *testing.T) {
 	u := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnPromptListChanged: g.onPromptListChanged})
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -462,7 +462,7 @@ func TestGateway_Build_RegistersResource(t *testing.T) {
 	u := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -507,7 +507,7 @@ func TestGateway_Build_RegistersResourceTemplate(t *testing.T) {
 	u := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -561,10 +561,10 @@ func TestGateway_Build_ResourceCollisionIgnoresPrefix(t *testing.T) {
 	u2 := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[1], up2ClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
 	g.upstreams = []*Upstream{u1, u2}
 
-	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u1.session = s1
-	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u2.session = s2
 
@@ -608,10 +608,10 @@ func TestGateway_Build_IdenticalResourceCollisionWarnsAndAccepts(t *testing.T) {
 	u2 := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[1], up2ClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
 	g.upstreams = []*Upstream{u1, u2}
 
-	s1, err := u1.client.Connect(t.Context(), up1ClientTr, nil)
+	s1, err := u1.client.Connect(t.Context(), up1ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u1.session = s1
-	s2, err := u2.client.Connect(t.Context(), up2ClientTr, nil)
+	s2, err := u2.client.Connect(t.Context(), up2ClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u2.session = s2
 
@@ -643,7 +643,7 @@ func TestGateway_ReSync_Prompts(t *testing.T) {
 	u := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnPromptListChanged: g.onPromptListChanged})
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -697,7 +697,7 @@ func TestGateway_ReSync_Resources(t *testing.T) {
 	u := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -750,7 +750,7 @@ func TestGateway_ReSync_ResourceTemplates(t *testing.T) {
 	u := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnResourceListChanged: g.onResourceListChanged})
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -803,7 +803,7 @@ func TestGateway_ResourceUpdated_Broadcast(t *testing.T) {
 	u := newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnResourceUpdated: g.onResourceUpdated})
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -838,7 +838,7 @@ func TestGateway_Upstream_ListMethods(t *testing.T) {
 	go srv.Run(context.Background(), st)
 
 	u := newUpstreamWithInMemoryClientWithCallbacks(UpstreamConfig{Name: "u1"}, ct, upstreamCallbacks{})
-	sess, err := u.client.Connect(t.Context(), ct, nil)
+	sess, err := u.client.Connect(t.Context(), ct, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -875,7 +875,7 @@ func TestGateway_Upstream_ListMethods_ToolsOnly(t *testing.T) {
 	go func() { _ = srv.Run(t.Context(), st) }()
 
 	u := newUpstreamWithInMemoryClientWithCallbacks(UpstreamConfig{Name: "u1"}, ct, upstreamCallbacks{})
-	sess, err := u.client.Connect(t.Context(), ct, nil)
+	sess, err := u.client.Connect(t.Context(), ct, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -917,7 +917,7 @@ func TestGateway_RedactsToolOutput(t *testing.T) {
 	u.redactor = g.redactor
 	g.upstreams = []*Upstream{u}
 
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
@@ -962,7 +962,7 @@ func TestGateway_ForwardsMeta(t *testing.T) {
 	g, err := New(cfg, Options{})
 	require.NoError(t, err)
 	g.upstreams = []*Upstream{newUpstreamWithInMemoryClientWithCallbacks(cfg.Upstreams[0], upClientTr, upstreamCallbacks{OnToolListChanged: g.onToolListChanged, OnPromptListChanged: g.onPromptListChanged})}
-	sess, err := g.upstreams[0].client.Connect(t.Context(), upClientTr, nil)
+	sess, err := g.upstreams[0].client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	g.upstreams[0].session = sess
 	require.NoError(t, g.Build(t.Context()))
@@ -976,29 +976,33 @@ func TestGateway_ForwardsMeta(t *testing.T) {
 	require.NoError(t, err)
 	defer downSess.Close()
 
+	// The client is on a revision that describes itself in every request's
+	// `_meta`, and the upstream hop is on one that does not, so whatever the
+	// upstream sees under those keys was forwarded, not added by the gateway.
+	require.Equal(t, "2026-07-28", downSess.InitializeResult().ProtocolVersion)
+	require.Equal(t, upstreamProtocolVersion, sess.InitializeResult().ProtocolVersion)
+
+	requireForwarded := func(t *testing.T, got mcp.Meta, client string) {
+		t.Helper()
+		require.Equal(t, client, got["client"], "the caller's own key must reach the upstream")
+		require.Equal(t,
+			map[string]any{"name": "down", "version": "0"}, got[mcp.MetaKeyClientInfo],
+			"the upstream must see the client, not the gateway",
+		)
+		require.Contains(t, got, mcp.MetaKeyClientCapabilities)
+		// The negotiated protocol version belongs to the client<->gateway
+		// hop, so it must not reach an upstream that negotiated its own.
+		require.NotContains(t, got, mcp.MetaKeyProtocolVersion)
+		require.Len(t, got, 3, "nothing else may be added on the way")
+	}
+
 	_, err = downSess.CallTool(t.Context(), &mcp.CallToolParams{Meta: mcp.Meta{"client": "tool"}, Name: "echo"})
 	require.NoError(t, err)
-	require.Equal(t, mcp.Meta{"client": "tool"}, <-toolMeta)
+	requireForwarded(t, <-toolMeta, "tool")
 
 	_, err = downSess.GetPrompt(t.Context(), &mcp.GetPromptParams{Meta: mcp.Meta{"client": "prompt"}, Name: "prompt"})
 	require.NoError(t, err)
-	require.Equal(t, mcp.Meta{"client": "prompt"}, <-promptMeta)
-
-	// The negotiated protocol version belongs to the client<->gateway hop, so
-	// it must not reach an upstream that negotiated its own.
-	_, err = downSess.CallTool(t.Context(), &mcp.CallToolParams{
-		Meta: mcp.Meta{"client": "tool", metaKeyProtocolVersion: "2025-11-25"},
-		Name: "echo",
-	})
-	require.NoError(t, err)
-	require.Equal(t, mcp.Meta{"client": "tool"}, <-toolMeta)
-
-	_, err = downSess.GetPrompt(t.Context(), &mcp.GetPromptParams{
-		Meta: mcp.Meta{"client": "prompt", metaKeyProtocolVersion: "2025-11-25"},
-		Name: "prompt",
-	})
-	require.NoError(t, err)
-	require.Equal(t, mcp.Meta{"client": "prompt"}, <-promptMeta)
+	requireForwarded(t, <-promptMeta, "prompt")
 }
 
 func TestProxyMeta(t *testing.T) {
@@ -1016,12 +1020,12 @@ func TestProxyMeta(t *testing.T) {
 		},
 		{
 			name: "StripsProtocolVersion",
-			in:   mcp.Meta{"client": "x", metaKeyProtocolVersion: "2025-11-25"},
+			in:   mcp.Meta{"client": "x", mcp.MetaKeyProtocolVersion: "2025-11-25"},
 			want: mcp.Meta{"client": "x"},
 		},
 		{
 			name: "StripsOnlyKey",
-			in:   mcp.Meta{metaKeyProtocolVersion: "2025-11-25"},
+			in:   mcp.Meta{mcp.MetaKeyProtocolVersion: "2025-11-25"},
 			want: mcp.Meta{},
 		},
 	} {
