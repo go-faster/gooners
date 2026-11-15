@@ -227,7 +227,11 @@ command = ["ignored"]
 	defer cancel()
 	go func() { _ = r.Run(ctx) }()
 
-	require.NoError(t, os.WriteFile(path, []byte(updated), 0o600))
+	// Replace the file atomically: os.WriteFile truncates first, and the
+	// 1ms poll can read the empty file and report an invalid config.
+	tmp := path + ".tmp"
+	require.NoError(t, os.WriteFile(tmp, []byte(updated), 0o600))
+	require.NoError(t, os.Rename(tmp, path))
 	requireReload(t, reloaded, false)
 	require.Equal(t, []string{"a", "b"}, registeredNames(g))
 }
