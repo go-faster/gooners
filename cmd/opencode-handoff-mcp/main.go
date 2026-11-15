@@ -260,7 +260,9 @@ func (o *opencodeCfg) startLocal(ctx context.Context, defaultBaseURL string, lg 
 			}
 		case <-time.After(5 * time.Second):
 			_ = cmd.Process.Kill()
-			<-done
+			if err := <-done; err != nil {
+				lg.Debug("local opencode serve killed", "err", err)
+			}
 		}
 	}
 

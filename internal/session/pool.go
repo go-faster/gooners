@@ -642,7 +642,10 @@ func (p *Pool) cleanupExec(spoolCtx context.Context, sess *ssh.Session, r ExecRe
 	select {
 	case <-killCtx.Done():
 		lg.DebugContext(spoolCtx, "ssh run: cancel cleanup timed out")
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			lg.DebugContext(spoolCtx, "ssh run: command exited after cancel", "err", err)
+		}
 	}
 
 	_ = stdout.Close()
