@@ -314,7 +314,9 @@ func (u *Upstream) supervise(ctx context.Context, done chan struct{}, onReconnec
 		select {
 		case <-ctx.Done():
 			_ = sess.Close()
-			<-waitErr
+			if err := <-waitErr; err != nil {
+				u.logger.Debug("upstream session closed", "error", err)
+			}
 			return
 		case err = <-waitErr:
 		}
