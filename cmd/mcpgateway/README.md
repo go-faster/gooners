@@ -104,6 +104,12 @@ connection, and there are two of them here — client↔gateway and gateway↔up
 client's value through would tell an upstream a version it never agreed to, which a validating server
 rejects outright.
 
+## Protocol version
+
+Clients negotiate any revision the SDK supports. Upstreams are always reached on `2025-11-25`, the
+last revision with a session: `2026-07-28` has no `ping`, and the gateway relies on keepalive pings to
+notice a stalled upstream and replace it.
+
 ## Flags
 
 - `-config` path to TOML (default `gateway.toml`)

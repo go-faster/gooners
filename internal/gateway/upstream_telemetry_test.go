@@ -52,7 +52,7 @@ func TestUpstreamTracesForwardedCalls(t *testing.T) {
 		tracer:       tp.Tracer("test"),
 	}
 	u.client = mcp.NewClient(&mcp.Implementation{Name: "c", Version: "0"}, nil)
-	sess, err := u.client.Connect(t.Context(), ct, nil)
+	sess, err := u.client.Connect(t.Context(), ct, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 	t.Cleanup(func() { _ = u.Close(context.Background()) })
@@ -135,7 +135,7 @@ func TestUpstreamDoesNotCountANoopConnect(t *testing.T) {
 	})
 	require.NoError(t, err)
 	u.client = mcp.NewClient(&mcp.Implementation{Name: "c", Version: "0"}, nil)
-	sess, err := u.client.Connect(t.Context(), ct, nil)
+	sess, err := u.client.Connect(t.Context(), ct, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 	t.Cleanup(func() { _ = u.Close(context.Background()) })

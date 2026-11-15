@@ -218,6 +218,23 @@ func (u *Upstream) Connect(ctx context.Context) error {
 	return nil
 }
 
+// upstreamProtocolVersion is the newest MCP revision the gateway offers an
+// upstream: the last one with a session.
+//
+// Revision 2026-07-28 is stateless and drops `ping`, so on it the SDK never
+// starts keepalive, and a stalled upstream would stay "connected" until its
+// transport broke. It also replaces server-initiated requests with
+// multi-round-trip results, which the gateway does not relay. Supervision here
+// (keepalive, reconnect, re-sync) is built on a session, so the upstream hop
+// stays on a revision that has one until that is redesigned.
+const upstreamProtocolVersion = "2025-11-25"
+
+// upstreamSessionOptions returns the options every upstream session is opened
+// with.
+func upstreamSessionOptions() *mcp.ClientSessionOptions {
+	return &mcp.ClientSessionOptions{ProtocolVersion: upstreamProtocolVersion}
+}
+
 func (u *Upstream) connectOnce(ctx context.Context) (rerr error) {
 	// Neither a closed upstream nor one that is already up dials anything, so
 	// neither is counted as an attempt.
@@ -259,7 +276,7 @@ func (u *Upstream) connectOnce(ctx context.Context) (rerr error) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	sess, err := u.client.Connect(cctx, tr, nil)
+	sess, err := u.client.Connect(cctx, tr, upstreamSessionOptions())
 	if err != nil {
 		return errors.Wrap(err, "connect")
 	}

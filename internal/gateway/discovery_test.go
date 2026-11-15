@@ -254,7 +254,7 @@ func TestGateway_Discovery_EndToEnd(t *testing.T) {
 
 	u := newUpstreamWithInMemoryClient(cfg.Upstreams[0], upClientTr, g.onToolListChanged)
 	g.upstreams = []*Upstream{u}
-	sess, err := u.client.Connect(t.Context(), upClientTr, nil)
+	sess, err := u.client.Connect(t.Context(), upClientTr, upstreamSessionOptions())
 	require.NoError(t, err)
 	u.session = sess
 
