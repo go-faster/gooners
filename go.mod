@@ -16,7 +16,7 @@ require (
 	github.com/go-faster/sdk v0.40.0
 	github.com/go-faster/yaml v0.4.6
 	github.com/go-openapi/runtime v0.33.2
-	github.com/go-openapi/strfmt v0.27.2
+	github.com/go-openapi/strfmt v0.27.4
 	github.com/google/uuid v1.6.0
 	github.com/grafana/grafana-foundation-sdk/go v0.0.18
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
