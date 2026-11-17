@@ -15,7 +15,7 @@ require (
 	github.com/go-faster/jx v1.2.0
 	github.com/go-faster/sdk v0.40.0
 	github.com/go-faster/yaml v0.4.6
-	github.com/go-openapi/runtime v0.33.2
+	github.com/go-openapi/runtime v0.33.3
 	github.com/go-openapi/strfmt v0.27.4
 	github.com/google/uuid v1.6.0
 	github.com/grafana/grafana-foundation-sdk/go v0.0.18
@@ -25,8 +25,8 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/ogen-go/ogen v1.24.0
 	github.com/pkg/sftp v1.13.11
-	github.com/prometheus/alertmanager v0.34.0
-	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/alertmanager v0.35.0
+	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/common v0.74.0
 	github.com/stretchr/testify v1.12.1
 	github.com/testcontainers/testcontainers-go v0.44.0
@@ -74,13 +74,13 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-logr/zapr v1.3.0 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
-	github.com/go-openapi/analysis v1.0.0 // indirect
+	github.com/go-openapi/analysis v1.0.1 // indirect
 	github.com/go-openapi/errors v0.22.9 // indirect
-	github.com/go-openapi/jsonpointer v1.0.1 // indirect
-	github.com/go-openapi/jsonreference v1.0.1 // indirect
-	github.com/go-openapi/loads v0.25.2 // indirect
-	github.com/go-openapi/runtime/server-middleware v0.33.2 // indirect
-	github.com/go-openapi/spec v1.0.0 // indirect
+	github.com/go-openapi/jsonpointer v1.0.2 // indirect
+	github.com/go-openapi/jsonreference v1.0.2 // indirect
+	github.com/go-openapi/loads v0.25.3 // indirect
+	github.com/go-openapi/runtime/server-middleware v0.33.3 // indirect
+	github.com/go-openapi/spec v1.0.1 // indirect
 	github.com/go-openapi/swag v0.29.2 // indirect
 	github.com/go-openapi/swag/cmdutils v0.29.2 // indirect
 	github.com/go-openapi/swag/conv v0.29.2 // indirect
@@ -108,7 +108,7 @@ require (
 	github.com/inconshreveable/log15/v3 v3.0.0-testing.5 // indirect
 	github.com/jpillora/backoff v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
-	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
 	github.com/kr/fs v0.1.0 // indirect
