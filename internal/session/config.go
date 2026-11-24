@@ -631,8 +631,7 @@ func knownHostsAlgorithms(kh, home string, addrs []string, logger *slog.Logger) 
 // A key-changed error on the alias is always fatal (possible MITM). A
 // key-changed error on a fallback address is only a warning — stale IP entries
 // in known_hosts are common and should not block a new connection whose alias
-// has no entry yet. If all addresses are unknown the error names all of them so
-// the user knows exactly what to add.
+// has no entry yet. Other verification errors stop the lookup immediately.
 func multiAddrHostKeyCallback(kh, home string, logger *slog.Logger, addresses ...string) ssh.HostKeyCallback {
 	rawCB := hostKeyCallback(kh, home, logger)
 	return func(_ string, remote net.Addr, key ssh.PublicKey) error {
@@ -643,15 +642,16 @@ func multiAddrHostKeyCallback(kh, home string, logger *slog.Logger, addresses ..
 				return nil
 			}
 			var keyErr *knownhosts.KeyError
-			if errors.As(err, &keyErr) && len(keyErr.Want) > 0 {
-				if i == 0 {
-					// Alias entry exists but key changed — treat as hard failure.
-					return fmt.Errorf("host key changed for %s: %w", addr, err)
-				}
-				// Stale fallback (IP) entry — log and skip rather than failing.
-				logger.Warn("stale known_hosts entry, skipping", "addr", addr)
+			if !errors.As(err, &keyErr) {
+				return err
+			}
+			if len(keyErr.Want) == 0 {
 				continue
 			}
+			if i == 0 {
+				return fmt.Errorf("host key changed for %s: %w", addr, err)
+			}
+			logger.Warn("stale known_hosts entry, skipping", "addr", addr)
 		}
 		// addresses[0] is the alias (not necessarily DNS-resolvable by ssh-keyscan);
 		// addresses[1] is the resolved IP. Use the last address for the keyscan

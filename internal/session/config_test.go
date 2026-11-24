@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"log/slog"
@@ -500,6 +501,50 @@ func TestMultiAddrHostKeyCallback(t *testing.T) {
 	cbIP := multiAddrHostKeyCallback(khPath, tmp, slog.New(slog.DiscardHandler), "alias-host:22", "ip-host:22")
 	err = cbIP("alias-host:22", &net.TCPAddr{}, key1)
 	require.NoError(t, err)
+}
+
+func TestMultiAddrHostKeyCallbackVerificationError(t *testing.T) {
+	t.Parallel()
+
+	key := throwawayPublicKey()
+	const algorithm = "ssh-mldsa44-ed25519"
+	keyBlob := base64.StdEncoding.EncodeToString(ssh.Marshal(struct{ Algorithm string }{algorithm}))
+	hybridEntry := "unrelated-host " + algorithm + " " + keyBlob + "\n"
+	trustedEntry := "ip-host " + string(ssh.MarshalAuthorizedKey(key))
+	for _, tc := range []struct {
+		name    string
+		entries string
+		want    string
+	}{
+		{
+			name:    "unsupported key without a usable entry",
+			entries: hybridEntry,
+			want:    fmt.Sprintf("no valid entries, line 1: ssh: unknown key algorithm: %q", algorithm),
+		},
+		{
+			name:    "unsupported key beside a trusted entry",
+			entries: hybridEntry + trustedEntry,
+		},
+		{
+			name:    "revoked key",
+			entries: trustedEntry + "@revoked alias-host " + string(ssh.MarshalAuthorizedKey(key)),
+			want:    "knownhosts: key is revoked",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tmp := t.TempDir()
+			khPath := filepath.Join(tmp, "known_hosts")
+			require.NoError(t, os.WriteFile(khPath, []byte(tc.entries), 0o600))
+			cb := multiAddrHostKeyCallback(khPath, tmp, slog.New(slog.DiscardHandler), "alias-host:22", "ip-host:22")
+			err := cb("alias-host:22", &net.TCPAddr{}, key)
+			if tc.want == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, tc.want)
+		})
+	}
 }
 
 func TestDialProxyCommand(t *testing.T) {
