@@ -18,7 +18,7 @@ require (
 	github.com/go-openapi/runtime v0.33.4
 	github.com/go-openapi/strfmt v0.27.4
 	github.com/google/uuid v1.6.0
-	github.com/grafana/grafana-foundation-sdk/go v0.0.18
+	github.com/grafana/grafana-foundation-sdk/go v0.0.22
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51
 	github.com/kevinburke/ssh_config v1.6.0
 	github.com/minio/minio-go/v7 v7.3.0
