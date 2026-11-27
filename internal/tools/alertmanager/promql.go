@@ -175,14 +175,14 @@ func evaluatePromQLQueryHandler(c *Client) mcp.ToolHandlerFor[EvaluatePromQLQuer
 					return nil, EvaluatePromQLQueryRes{}, fmt.Errorf("invalid step: %w", err)
 				}
 			}
-			val, warnings, queryErr = c.Prometheus().QueryRange(ctx, args.Expr, promv1.Range{Start: start, End: end, Step: step})
+			val, warnings, _, queryErr = c.Prometheus().QueryRange(ctx, args.Expr, promv1.Range{Start: start, End: end, Step: step})
 		} else {
 			// Instant query
 			ts, err := parseTimeOrNow(args.Time)
 			if err != nil {
 				return nil, EvaluatePromQLQueryRes{}, fmt.Errorf("invalid time: %w", err)
 			}
-			val, warnings, queryErr = c.Prometheus().Query(ctx, args.Expr, ts)
+			val, warnings, _, queryErr = c.Prometheus().Query(ctx, args.Expr, ts)
 		}
 
 		if queryErr != nil {
