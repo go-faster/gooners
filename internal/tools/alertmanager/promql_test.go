@@ -194,7 +194,9 @@ func TestEvaluatePromQLQuery_InstantVector_HappyPath(t *testing.T) {
 
 		// Return an instant vector response
 		response := map[string]any{
-			"status": "success",
+			"status":   "success",
+			"warnings": []string{"instant query warning"},
+			"infos":    []string{"instant query info"},
 			"data": map[string]any{
 				"resultType": "vector",
 				"result": []map[string]any{
@@ -225,6 +227,7 @@ func TestEvaluatePromQLQuery_InstantVector_HappyPath(t *testing.T) {
 	handler := evaluatePromQLQueryHandler(client)
 	_, res, err := handler(context.Background(), nil, EvaluatePromQLQueryReq{Expr: "up"})
 	require.NoError(t, err)
+	require.Equal(t, []string{"instant query warning"}, res.Warnings)
 	require.Equal(t, "vector", res.ResultType)
 	require.Equal(t, 1, res.SeriesCount)
 	require.NotNil(t, res.Values)
@@ -240,7 +243,9 @@ func TestEvaluatePromQLQuery_Matrix_HappyPath(t *testing.T) {
 
 		// Return a matrix response for range query
 		response := map[string]any{
-			"status": "success",
+			"status":   "success",
+			"warnings": []string{"range query warning"},
+			"infos":    []string{"range query info"},
 			"data": map[string]any{
 				"resultType": "matrix",
 				"result": []map[string]any{
@@ -277,6 +282,7 @@ func TestEvaluatePromQLQuery_Matrix_HappyPath(t *testing.T) {
 		Step:  "1m",
 	})
 	require.NoError(t, err)
+	require.Equal(t, []string{"range query warning"}, res.Warnings)
 	require.Equal(t, "matrix", res.ResultType)
 	require.Equal(t, 1, res.SeriesCount)
 	require.NotNil(t, res.Values)
